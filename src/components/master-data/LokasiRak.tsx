@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import { Card, CardContent, CardHeader } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Toast } from '../ui/Toast';
-import { Plus, Edit2, Trash2, MapPin } from 'lucide-react';
+import { Search, MapPin, Plus, X, Edit2, Trash2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { useDatabaseConfig } from '../../lib/DatabaseContext';
+import { DatabaseService } from '../../lib/DatabaseService';
 
 interface RackLocation {
   id: string;
@@ -16,10 +18,12 @@ interface RackLocation {
 }
 
 export function LokasiRak() {
+  const { writeMode } = useDatabaseConfig();
   const [rackLocations, setRackLocations] = useState<RackLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
   const [formData, setFormData] = useState({
     nama: '',
     tampil_di_menu: 'KEDUANYA' as 'INPUT_MASUK' | 'INPUT_KELUAR' | 'KEDUANYA',
@@ -88,14 +92,11 @@ export function LokasiRak() {
     try {
       if (editingId) {
         // Update existing rack location
-        const { error } = await supabase
-          .from('rack_locations')
-          .update({
-            nama: formData.nama,
-            tampil_di_menu: formData.tampil_di_menu,
-            status: formData.status
-          })
-          .eq('id', editingId);
+        const { error } = await DatabaseService.updateMasterData('rack_locations', editingId, {
+          nama: formData.nama,
+          tampil_di_menu: formData.tampil_di_menu,
+          status: formData.status
+        }, writeMode);
 
         if (error) {
           console.error('Error updating rack location:', error);
@@ -106,13 +107,11 @@ export function LokasiRak() {
         showToast('Lokasi rak berhasil diupdate!', 'success');
       } else {
         // Add new rack location
-        const { error } = await supabase
-          .from('rack_locations')
-          .insert([{
-            nama: formData.nama,
-            tampil_di_menu: formData.tampil_di_menu,
-            status: formData.status
-          }]);
+        const { error } = await DatabaseService.insertMasterData('rack_locations', [{
+          nama: formData.nama,
+          tampil_di_menu: formData.tampil_di_menu,
+          status: formData.status
+        }], writeMode);
 
         if (error) {
           console.error('Error adding rack location:', error);
@@ -169,10 +168,7 @@ export function LokasiRak() {
   const handleDelete = async (id: string, nama: string) => {
     if (confirm(`Apakah Anda yakin ingin menghapus lokasi rak "${nama}"?`)) {
       try {
-        const { error } = await supabase
-          .from('rack_locations')
-          .delete()
-          .eq('id', id);
+        const { error } = await DatabaseService.deleteMasterData('rack_locations', id, writeMode);
 
         if (error) {
           console.error('Error deleting rack location:', error);
@@ -201,7 +197,7 @@ export function LokasiRak() {
       <div className="space-y-6">
         {/* PREMIUM IMMERSIVE HEADER (310px) */}
         <div className="flex flex-col mb-8 lg:mb-12 uppercase">
-          <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+          <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
             <div className="absolute -top-12 -right-12 text-white opacity-5">
               <MapPin className="w-72 h-72 lg:w-[480px] lg:h-[480px]" />
             </div>
@@ -321,6 +317,30 @@ export function LokasiRak() {
         {/* Rack Locations Table */}
         <Card>
           <CardContent className="p-0">
+            {/* Search Bar */}
+            <div className="p-4 border-b border-gray-100 flex items-center justify-end">
+              <div className="relative w-full md:w-64">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <Search className="h-4 w-4 text-gray-400" />
+                </div>
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Cari lokasi rak..."
+                  className="w-full pl-10 pr-10 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50/50"
+                />
+                {searchTerm && (
+                  <button
+                    onClick={() => setSearchTerm('')}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+
             {loading && (
               <div className="flex items-center justify-center p-8">
                 <div className="text-blue-600 font-medium">Memuat data...</div>
@@ -338,7 +358,9 @@ export function LokasiRak() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rackLocations.map((location, index) => (
+                  {rackLocations
+                    .filter(loc => loc.nama.toLowerCase().includes(searchTerm.toLowerCase()))
+                    .map((location, index) => (
                     <tr key={location.id} className={`${index % 2 === 0 ? 'bg-blue-50' : 'bg-white'} hover:bg-blue-100 border-b border-gray-200`}>
                       <td className="px-4 py-3 text-sm font-bold border-r border-gray-200">
                         {location.nama}

@@ -11,6 +11,7 @@ import { UpdateLokasi } from './components/UpdateLokasi';
 import { DataGudang } from './components/DataGudang';
 import { RiwayatBarang } from './components/RiwayatBarang';
 import { DatabaseLog } from './components/DatabaseLog';
+import ImportDataExport from './components/ImportDataExport';
 import { PindahDataBarang } from './components/PindahDataBarang';
 import { NamaGudang } from './components/master-data/NamaGudang';
 import { JenisBarang } from './components/master-data/JenisBarang';
@@ -20,7 +21,9 @@ import { LokasiRak } from './components/master-data/LokasiRak';
 import { FixStockSync } from './components/FixStockSync';
 import { UpdatePacking } from './components/UpdatePacking';
 import { StokLantai3 } from './components/StokLantai3';
+import { InputCancelFisik } from './components/InputCancelFisik';
 import { DevRackUpdate } from './components/DevRackUpdate';
+import { DevRackAutoFill } from './components/DevRackAutoFill';
 import { AutoSyncSettings } from './components/AutoSyncSettings';
 import { UpdateNotificationManager } from './components/UpdateNotificationManager';
 import { UpdateNotificationPopup } from './components/UpdateNotificationPopup';
@@ -32,7 +35,12 @@ import { CekRak } from './components/CekRak';
 import { UserManagement } from './components/UserManagement';
 import { realtimeManager } from './lib/realtimeManager';
 import { AppUpdateListener } from './components/AppUpdateListener';
-
+import { DailyMonitoring } from './components/DailyMonitoring';
+import { DailyQuestManager } from './components/DailyQuestManager';
+import { DatabaseSettings } from './components/DatabaseSettings';
+import { DevModeSettings } from './components/DevModeSettings';
+import { RoleNotificationBlocker } from './components/RoleNotificationBlocker';
+import { ManageRoleNotifications } from './components/ManageRoleNotifications';
 function AuthenticatedApp() {
   const { user, loading } = useAuth();
 
@@ -73,11 +81,13 @@ function AuthenticatedApp() {
     <>
       <AppUpdateListener />
       <UpdateNotificationPopup />
+      <RoleNotificationBlocker />
       <Layout>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/input-masuk" element={<InputBarangMasuk />} />
           <Route path="/input-keluar" element={<InputBarangKeluar />} />
+          <Route path="/monitoring-harian" element={<DailyMonitoring />} />
           <Route path="/stok-minus" element={<StokMinus />} />
           <Route path="/data-karantina" element={<DataKarantina />} />
           <Route path="/pindah-barang" element={<PindahDataBarang />} />
@@ -85,6 +95,7 @@ function AuthenticatedApp() {
           <Route path="/riwayat" element={<RiwayatBarang />} />
           <Route path="/update-lokasi" element={<UpdateLokasi />} />
           <Route path="/database-log" element={<DatabaseLog />} />
+          <Route path="/import-data-export" element={<ImportDataExport />} />
           <Route path="/master-data/gudang" element={<NamaGudang />} />
           <Route path="/master-data/jenis-barang" element={<JenisBarang />} />
           <Route path="/master-data/satuan" element={<Satuan />} />
@@ -94,23 +105,33 @@ function AuthenticatedApp() {
           <Route path="/update-packing" element={<UpdatePacking />} />
           <Route path="/auto-sync" element={<AutoSyncSettings />} />
           <Route path="/stok-lantai-3" element={<StokLantai3 />} />
+          <Route path="/input-cancel-fisik" element={<InputCancelFisik />} />
           <Route path="/dev-rack-update" element={<DevRackUpdate />} />
+          <Route path="/dev-rack-autofill" element={<DevRackAutoFill />} />
           <Route path="/notification-manager" element={<UpdateNotificationManager />} />
           <Route path="/rack-priority-settings" element={<RackPrioritySettings />} />
           <Route path="/transfer-sync" element={<TransferSync />} />
           <Route path="/cek-rak" element={<CekRak />} />
           <Route path="/user-management" element={<UserManagement />} />
+          <Route path="/daily-quest-manager" element={<DailyQuestManager />} />
+          <Route path="/database-settings" element={<DatabaseSettings />} />
+          <Route path="/dev-settings" element={<DevModeSettings />} />
+          <Route path="/manage-role-notifications" element={<ManageRoleNotifications />} />
         </Routes>
       </Layout>
     </>
   );
 }
 
+import { DatabaseProvider } from './lib/DatabaseContext';
+
 function App() {
   return (
     <Router>
       <AuthProvider>
-        <AuthenticatedApp />
+        <DatabaseProvider>
+          <AuthenticatedApp />
+        </DatabaseProvider>
       </AuthProvider>
     </Router>
   );

@@ -5,6 +5,8 @@ import { Toast } from './ui/Toast';
 import { StockTableSkeleton } from './ui/SkeletonLoader';
 import { supabase, fetchAllStockItems, warmupConnection } from '../lib/supabase';
 import { queryOptimizer } from '../lib/queryOptimizer';
+import { useDatabaseConfig } from '../lib/DatabaseContext';
+import { DatabaseService } from '../lib/DatabaseService';
 
 // Cache untuk optimasi performa
 const CACHE_PRODUCTS_KEY = 'dashboard_products_cache';
@@ -17,6 +19,7 @@ interface ProductStock {
   stok_keluar: number;
   tersedia: number;
   lokasi_rak: string;
+  packing: string;
 }
 
 interface DatabaseLogEntry {
@@ -190,6 +193,7 @@ const OptimizedSearchDropdown = ({
 };
 
 export function Dashboard() {
+  const { readMode } = useDatabaseConfig();
   const [selectedProduct, setSelectedProduct] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
@@ -430,46 +434,77 @@ export function Dashboard() {
       setLoading(true);
       console.log(`📊 Dashboard: Loading ${productName} ${force ? '(FORCE - NO CACHE)' : '(with cache)'}`);
 
-      // Step 1: Ambil semua stock_items untuk produk ini
-      const { data: stockItems, error: stockError } = await supabase
-        .from('stock_items')
-        .select('*')
-        .ilike('nama_produk', productName)
-        .eq('status', 'Aktif');
+      // Step 1: Ambil semua stock_items untuk produk ini (Supabase)
+      let items: any[] = [];
+      try {
+        const { data: stockItems, error: stockError } = await supabase
+          .from('stock_items')
+          .select('*')
+          .ilike('nama_produk', productName)
+          .eq('status', 'Aktif');
 
-      if (stockError) throw stockError;
-      const items = stockItems || [];
-      console.log(`   - Found ${items.length} stock items`);
+        if (stockError && readMode !== 'firebase') throw stockError;
+        items = stockItems || [];
+      } catch (err) {
+        console.error('Error loading stock_items (Fallback to logs if in Firebase mode):', err);
+      }
+      console.log(`   - Found ${items.length} stock items from Supabase`);
 
-      if (items.length === 0) {
+      // Step 2: Ambil semua log untuk produk ini SEKALIGUS menggunakan DatabaseService (Supabase/Firebase)
+      let allLogs: any[] = [];
+      try {
+          allLogs = await DatabaseService.fetchLogsBySku(productName, readMode);
+      } catch (logError) {
+          console.error('Error fetching logs:', logError);
+      }
+
+      console.log(`   - Found ${allLogs.length} log entries (Mode: ${readMode})`);
+
+      // Jika tidak ada data sama sekali, return kosong
+      if (items.length === 0 && allLogs.length === 0) {
         setProductStocks([]);
         setTotalProductStock(0);
         return;
       }
 
-      // Step 2: Ambil semua log untuk produk ini SEKALIGUS (metode sama dengan DataGudang)
-      const { data: logData, error: logError } = await supabase
-        .from('database_log')
-        .select('sku, rak, type, jumlah')
-        .ilike('sku', productName)
-        .in('type', ['IN', 'OUT']);
-
-      if (logError) {
-        console.error('Error fetching logs:', logError);
-      }
-
-      const allLogs = logData || [];
-      console.log(`   - Found ${allLogs.length} log entries`);
-
       // Step 3: Buat map log berdasarkan rak (in-memory, same as DataGudang)
       const logMap = new Map<string, any[]>();
+      const uniqueRacksFromLogs = new Set<string>();
+      
       allLogs.forEach(log => {
-        const key = log.rak?.toString().trim().toLowerCase() || '';
+        const rakName = log.rak?.toString().trim() || '';
+        const key = rakName.toLowerCase();
         if (!logMap.has(key)) {
           logMap.set(key, []);
         }
         logMap.get(key)!.push(log);
+        if (rakName) uniqueRacksFromLogs.add(rakName);
       });
+
+      // Step 3.5: Buat daftar rak final (gabungan dari stock_items dan log yang mungkin yatim piatu di Firebase)
+      const existingRacks = new Set(items.map(i => (i.rak || '').toLowerCase().trim()));
+      uniqueRacksFromLogs.forEach(rakName => {
+        if (!existingRacks.has(rakName.toLowerCase())) {
+           // Buat item virtual jika Supabase kosong tapi log ada di Firebase
+           items.push({
+              nama_produk: productName,
+              rak: rakName,
+              stok_awal: 0,
+              packing: ''
+           });
+        }
+      });
+
+      let bestPacking = '';
+      for (const item of items) {
+        const p = (item.packing || '').trim();
+        if (p.length > bestPacking.length && p.toUpperCase() !== 'CTN/') {
+          bestPacking = p;
+        }
+      }
+      if (!bestPacking && items.length > 0) {
+        bestPacking = items[0].packing || '';
+      }
 
       // Step 4: Hitung per item
       const productStockData: ProductStock[] = items.map((item) => {
@@ -488,6 +523,7 @@ export function Dashboard() {
           stok_keluar: keluar,
           tersedia: tersedia,
           lokasi_rak: item.rak,
+          packing: bestPacking,
         };
       });
 
@@ -652,12 +688,33 @@ export function Dashboard() {
     };
   }, [showDropdown]);
 
-  // Reset highlighted index when search term changes
-  useEffect(() => {
-    setHighlightedIndex(0);
-  }, [debouncedSearchTerm]);
+  const renderFormattedLokasiRak = (lokasi: string) => {
+    if (!lokasi) return <span className="text-gray-400 font-medium">-</span>;
+    
+    const parts = lokasi.split(',').map(p => p.trim());
+    const isTemp = parts.some(p => p.toUpperCase().startsWith('TEMP'));
+    
+    const formattedParts = parts.map(part => {
+      if (part.toUpperCase().startsWith('TEMP')) {
+        return `${part} (DALAM PENGECEKAN)`;
+      }
+      return part;
+    });
 
+    const label = formattedParts.join(', ');
 
+    return (
+      <span
+        className={`inline-block px-3 py-1.5 rounded-lg text-xs font-bold leading-tight max-w-[280px] break-words whitespace-normal text-center shadow-sm ${
+          isTemp
+            ? 'bg-amber-100 text-amber-900 border border-amber-300'
+            : 'bg-gray-100 text-gray-800 border border-gray-200'
+        }`}
+      >
+        {label}
+      </span>
+    );
+  };
 
   return (
     <>
@@ -673,7 +730,7 @@ export function Dashboard() {
       {/* ======================================================== */}
       <div className="flex flex-col mb-8 lg:mb-12">
         {/* Full Immersive Background Banner with Floating Shapes */}
-        <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+        <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
           {/* Decorative Background Icon */}
           <div className="absolute -top-6 -right-6 text-white opacity-5">
@@ -805,6 +862,7 @@ export function Dashboard() {
                     <thead>
                       <tr className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
                         <th className="px-6 py-4 text-left text-sm font-semibold border-r border-blue-500">Nama Barang</th>
+                        <th className="px-6 py-4 text-center text-sm font-semibold border-r border-blue-500">Packing</th>
                         <th className="px-6 py-4 text-center text-sm font-semibold border-r border-blue-500">
                           <div className="flex items-center justify-center gap-1">
                             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -830,6 +888,11 @@ export function Dashboard() {
                         <tr key={index} className={`${index % 2 === 0 ? 'bg-gray-50' : 'bg-white'} border-b border-gray-100 hover:bg-blue-50 transition-colors`}>
                           <td className="px-6 py-4 text-sm font-medium text-gray-900 border-r border-gray-200">{stock.nama_produk}</td>
                           <td className="px-6 py-4 text-sm text-center border-r border-gray-200">
+                            <span className="text-rose-600 font-bold bg-rose-50 px-3 py-1 rounded-md text-xs border border-rose-100 whitespace-nowrap">
+                              {stock.packing && !stock.packing.toUpperCase().startsWith('CTN/') ? `CTN/${stock.packing}` : (stock.packing || '-')}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-center border-r border-gray-200">
                             <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-semibold ${stock.stok_masuk > 0
                               ? 'bg-green-100 text-green-700'
                               : 'bg-gray-100 text-gray-400'
@@ -851,9 +914,7 @@ export function Dashboard() {
                             </span>
                           </td>
                           <td className="px-6 py-4 text-sm text-center">
-                            <span className="inline-flex items-center gap-1 bg-gray-200 text-gray-800 px-3 py-1 rounded-md font-medium">
-                              {stock.lokasi_rak}
-                            </span>
+                            {renderFormattedLokasiRak(stock.lokasi_rak)}
                           </td>
                         </tr>
                       ))}
@@ -870,7 +931,12 @@ export function Dashboard() {
                       {/* Card Header */}
                       <div className="flex items-start justify-between">
                         <div className="flex flex-col gap-1 flex-1 pr-3">
-                          <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest bg-blue-50 w-fit px-2 py-0.5 rounded-md mb-1">SKU Info</span>
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                            <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest bg-blue-50 w-fit px-2 py-0.5 rounded-md">SKU Info</span>
+                            <span className="text-[10px] font-bold text-rose-600 uppercase tracking-widest bg-rose-50 border border-rose-100 w-fit px-2 py-0.5 rounded-md">
+                              {stock.packing && !stock.packing.toUpperCase().startsWith('CTN/') ? `CTN/${stock.packing}` : (stock.packing || '-')}
+                            </span>
+                          </div>
                           <h4 className="text-[16px] font-black text-gray-900 leading-tight">{stock.nama_produk}</h4>
                         </div>
                         <span className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-100 text-gray-600 flex items-center justify-center text-xs font-black">
@@ -896,12 +962,12 @@ export function Dashboard() {
                       </div>
 
                       {/* Bottom Info */}
-                      <div className="flex items-center justify-between pt-1">
-                        <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between pt-1 gap-2">
+                        <div className="flex flex-col gap-1 min-w-0 flex-1">
                           <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Lokasi Rak</span>
-                          <span className="font-bold text-gray-800 text-[14px]">
-                            {stock.lokasi_rak || '-'}
-                          </span>
+                          <div>
+                            {renderFormattedLokasiRak(stock.lokasi_rak)}
+                          </div>
                         </div>
 
                         <div className="flex flex-col items-end gap-1">

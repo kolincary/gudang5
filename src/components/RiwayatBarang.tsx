@@ -2,9 +2,16 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
-import { Download, X, RefreshCw, QrCode, ChevronDown, Filter, Calendar, Package, Building, Layers, ArrowRightLeft, List, Tag } from 'lucide-react';
+import { Modal } from './ui/Modal';
+import { Download, X, RefreshCw, QrCode, ChevronDown, Filter, Calendar, Package, Building, Layers, ArrowRightLeft, List, Tag, Calculator, AlertCircle, Search, Edit2, ArrowRight, CheckCircle, ArrowUpDown, Database, History } from 'lucide-react';
 import { supabase, fetchAllProducts } from '../lib/supabase';
 import { runDateMigration } from '../lib/dateMigration';
+import { realtimeManager } from '../lib/realtimeManager';
+import { useAuth } from '../lib/AuthContext';
+import { saveExportHistory } from '../lib/exportHistoryService';
+import { ExportHistoryModal } from './ExportHistoryModal';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
 
 // --- Konstanta Cache ---
 const CACHE_KEY_PRODUCTS = 'riwayat_barang_products_cache';
@@ -328,6 +335,42 @@ function CustomDropdown({ value, onChange, options, placeholder, className, isIn
 }
 
 // --- Komponen Utama ---
+
+const formatDateDisplay = (dateStr: string): string => {
+  if (!dateStr) return '';
+  let cleanStr = dateStr.trim();
+
+  // Jika string berisi jam (ada spasi atau T), ambil hanya tanggalnya
+  if (cleanStr.includes(' ') || cleanStr.includes('T')) {
+    cleanStr = cleanStr.split(/[ T]/)[0];
+  }
+
+  // New: Check for YYYY-MM-DD or YYYY-M-D and normalize to YYYY-MM-DD
+  if (/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.test(cleanStr)) {
+    const match = cleanStr.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (match) {
+      return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+    }
+  }
+
+  // Check for DD/MM/YYYY or DD-MM-YYYY
+  if (/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.test(cleanStr)) {
+    const match = cleanStr.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (match) {
+      let day = match[1];
+      let month = match[2];
+      const year = match[3];
+      // Simple heuristic: if month part is > 12, it must be the day (US format MM/DD/YYYY)
+      if (parseInt(month) > 12 && parseInt(day) <= 12) {
+        [day, month] = [month, day];
+      }
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+  }
+
+  return cleanStr;
+};
+
 export function RiwayatBarang() {
   // --- State Komponen ---
   const [historyData, setHistoryData] = useState<HistoryItem[]>([]);
@@ -342,6 +385,54 @@ export function RiwayatBarang() {
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingMessage, setLoadingMessage] = useState('');
   const [isUpdatingInBackground, setIsUpdatingInBackground] = useState(false);
+  const [hideRiwayatStats, setHideRiwayatStats] = useState<boolean>(false);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const { userName } = useAuth();
+
+  useEffect(() => {
+    const fetchStatsSetting = async () => {
+      try {
+        const { data } = await supabase
+          .from('app_settings')
+          .select('value')
+          .eq('key', 'hide_riwayat_stats')
+          .maybeSingle();
+
+        if (data) {
+          setHideRiwayatStats(data.value === 'true');
+        }
+      } catch (err) {
+        console.error('Error loading riwayat stats setting:', err);
+      }
+    };
+
+    fetchStatsSetting();
+
+    // Direct Supabase Realtime Channel for zero-delay update across all users
+    const channel = supabase
+      .channel('app_settings_riwayat_stats_' + Math.random().toString(36).substring(7))
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'app_settings' },
+        (payload: any) => {
+          if (payload.new && payload.new.key === 'hide_riwayat_stats') {
+            setHideRiwayatStats(payload.new.value === 'true');
+          } else {
+            fetchStatsSetting();
+          }
+        }
+      )
+      .subscribe();
+
+    const subId = realtimeManager.subscribe('app_settings', () => {
+      fetchStatsSetting();
+    });
+
+    return () => {
+      supabase.removeChannel(channel);
+      realtimeManager.unsubscribe(subId);
+    };
+  }, []);
   const [qrModalData, setQrModalData] = useState<{ sku: string; tgl: string; tgl_scan: string } | null>(null);
   const [filters, setFilters] = useState({
     barang: '',
@@ -377,6 +468,523 @@ export function RiwayatBarang() {
   });
   const [isDevMode, setIsDevMode] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
+
+  const [isAnalysisModalOpen, setIsAnalysisModalOpen] = useState(false);
+  const [analysisResults, setAnalysisResults] = useState<BalanceAnalysisResult[]>([]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisSearchTerm, setAnalysisSearchTerm] = useState('');
+  const [analysisSku, setAnalysisSku] = useState('');
+
+  // --- REDISTRIBUTION (FIX LEBIH POTONG) STATE ---
+  const [isRedistributeModalOpen, setIsRedistributeModalOpen] = useState(false);
+  const [redistributeMoves, setRedistributeMoves] = useState<any[]>([]);
+  const [isProcessingRedistribution, setIsProcessingRedistribution] = useState(false);
+  const [excludedScanDates, setExcludedScanDates] = useState('');
+  const [limitBeforeDate, setLimitBeforeDate] = useState('');
+  const [limitAfterDate, setLimitAfterDate] = useState('');
+
+  // --- RAK MISMATCH ANALYSIS STATE ---
+  interface RakMismatchResult {
+    sku: string;
+    tglScanRaw: string;
+    normalizedTglScan: string;
+    inRak: string;
+    inSubRak: string;
+    outRak: string;
+    outSubRak: string;
+    inTotal: number;
+    outTotal: number;
+    outRowIds: string[];
+    status: 'mismatch' | 'overcut';
+  }
+  const [rakMismatchResults, setRakMismatchResults] = useState<RakMismatchResult[]>([]);
+  const [isRakMismatchAnalyzing, setIsRakMismatchAnalyzing] = useState(false);
+  const [isRakMismatchFixing, setIsRakMismatchFixing] = useState(false);
+  const [activeAnalysisTab, setActiveAnalysisTab] = useState<'balance' | 'mismatch'>('balance');
+
+
+
+  const handleAnalyzeRakMismatch = async (skuToAnalyze?: string) => {
+    if (!skuToAnalyze) {
+      showToast('Silakan pilih atau cari SKU terlebih dahulu untuk melakukan analisis.', 'warning');
+      return;
+    }
+
+    try {
+      setIsRakMismatchAnalyzing(true);
+      setRakMismatchResults([]);
+      showToast('Memulai analisis rak beda antara IN & OUT...', 'info');
+
+      let query = supabase
+        .from('database_log')
+        .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah')
+        .or('type.ilike.%IN%,type.ilike.%OUT%')
+        .order('id', { ascending: true });
+
+      if (skuToAnalyze) {
+        query = query.ilike('sku', skuToAnalyze.trim());
+      }
+
+      const batchSize = 1000;
+      let from = 0;
+      let hasMore = true;
+      let allLogs: any[] = [];
+
+      while (hasMore) {
+        const { data, error } = await query.range(from, from + batchSize - 1);
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          allLogs = [...allLogs, ...data];
+          from += batchSize;
+          if (data.length < batchSize) hasMore = false;
+        } else {
+          hasMore = false;
+        }
+      }
+
+      // Group by SKU + TglScan
+      const groups = new Map<string, any[]>();
+      allLogs.forEach(log => {
+        const normSku = (log.sku || '').trim().toUpperCase();
+        const normTglScan = formatDateDisplay(log.tgl_scan) || 'No Date';
+        const key = `${normSku}|${normTglScan}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(log);
+      });
+
+      const results: RakMismatchResult[] = [];
+
+      groups.forEach((logs, key) => {
+        const [sku, tglScan] = key.split('|');
+
+        // Calculate balance per Rak|SubRak
+        const rakBalances = new Map<string, { rak: string, subRak: string, balance: number, outRows: any[], inTotal: number, outTotal: number }>();
+
+        logs.forEach(log => {
+          const normType = (log.type || '').trim().toUpperCase();
+          const finalType = normType.includes('IN') ? 'IN' : 'OUT';
+          const r = (log.rak || '').trim();
+          const sr = (log.sub_rak || '').trim();
+          const rakKey = `${r}|${sr}`;
+
+          if (!rakBalances.has(rakKey)) {
+            rakBalances.set(rakKey, { rak: r, subRak: sr, balance: 0, outRows: [], inTotal: 0, outTotal: 0 });
+          }
+
+          const rb = rakBalances.get(rakKey)!;
+          const qty = Number(log.jumlah || 0);
+
+          if (finalType === 'IN') {
+            rb.balance += qty;
+            rb.inTotal += qty;
+          } else {
+            rb.balance -= qty;
+            rb.outTotal += qty;
+            rb.outRows.push({ id: log.id, jumlah: qty });
+          }
+        });
+
+        const surpluses = Array.from(rakBalances.values()).filter(rb => rb.balance > 0);
+        const deficits = Array.from(rakBalances.values()).filter(rb => rb.balance < 0);
+
+        deficits.forEach(def => {
+          // Sort out rows by largest first
+          const outRows = [...def.outRows].sort((a, b) => b.jumlah - a.jumlah);
+          let currentDeficit = Math.abs(def.balance);
+
+          for (const row of outRows) {
+            if (currentDeficit <= 0) break;
+
+            // Find a surplus rak to move this OUT row to (prioritize exact fit, or just any surplus)
+            const targetSurplus = surpluses.find(s => s.balance >= row.jumlah) || surpluses.find(s => s.balance > 0);
+
+            if (targetSurplus) {
+              results.push({
+                sku,
+                tglScanRaw: tglScan,
+                normalizedTglScan: tglScan,
+                inRak: targetSurplus.rak,
+                inSubRak: targetSurplus.subRak,
+                outRak: def.rak,
+                outSubRak: def.subRak,
+                inTotal: targetSurplus.inTotal,
+                outTotal: row.jumlah,
+                outRowIds: [row.id],
+                status: def.inTotal === 0 ? 'mismatch' : 'overcut'
+              });
+
+              targetSurplus.balance -= row.jumlah;
+              currentDeficit -= row.jumlah;
+            }
+          }
+        });
+      });
+
+      setRakMismatchResults(results);
+      if (results.length > 0) {
+        showToast(`Analisis selesai! Menemukan ${results.length} rekomendasi perbaikan rak.`, 'success');
+      } else {
+        showToast('Analisis selesai! Tidak ditemukan ketidakcocokan rak.', 'success');
+      }
+
+    } catch (error: any) {
+      console.error('Analysis mismatch failed:', error);
+      const isNetworkError = !navigator.onLine || (error?.message || '').includes('Failed to fetch');
+      if (isNetworkError) {
+        showToast('❌ Koneksi terputus (Network Offline). Periksa internet Anda lalu coba lagi.', 'error');
+      } else {
+        showToast(`❌ Gagal melakukan analisis rak: ${error?.message || 'Terjadi kesalahan sistem'}`, 'error');
+      }
+    } finally {
+      setIsRakMismatchAnalyzing(false);
+    }
+  };
+
+  const handleFixRakMismatch = async () => {
+    if (rakMismatchResults.length === 0) return;
+
+    try {
+      setIsRakMismatchFixing(true);
+      showToast(`Memproses ${rakMismatchResults.length} perbaikan rak...`, 'info');
+
+      let successCount = 0;
+      for (const res of rakMismatchResults) {
+        for (const rowId of res.outRowIds) {
+          const { error } = await supabase
+            .from('database_log')
+            .update({ rak: res.inRak, sub_rak: res.inSubRak })
+            .eq('id', rowId);
+          if (!error) successCount++;
+        }
+      }
+
+      showToast(`Sukses memperbarui rak/sub_rak pada ${successCount} data log!`, 'success');
+      setRakMismatchResults([]);
+      if (analysisSku) {
+        handleAnalyzeRakMismatch(analysisSku);
+      } else {
+        handleAnalyzeRakMismatch();
+      }
+
+    } catch (error) {
+      console.error('Error fixing rak mismatch:', error);
+      showToast('Terjadi kesalahan saat mengeksekusi perbaikan rak.', 'error');
+    } finally {
+      setIsRakMismatchFixing(false);
+    }
+  };
+
+
+  const handleAnalyzeStockBalance = async (skuToAnalyze: string) => {
+    if (!skuToAnalyze) {
+      showToast('Silakan pilih atau cari SKU terlebih dahulu untuk melakukan analisis.', 'warning');
+      return;
+    }
+
+    try {
+      setIsAnalyzing(true);
+      setAnalysisResults([]);
+
+      showToast('Memulai analisis saldo stok... Ini mungkin memakan waktu untuk data yang besar.', 'info');
+
+      // 1. Fetch relevant logs based on current filters (SKU and Rak if applicable)
+      let query = supabase
+        .from('database_log')
+        .select('sku, rak, sub_rak, tgl_scan, type, jumlah')
+        .or('type.ilike.%IN%,type.ilike.%OUT%') // Support variations like "IN ", " in", etc.
+        .order('id', { ascending: true });
+
+      // Target filters to optimize analysis if possible
+      if (skuToAnalyze) {
+        query = query.ilike('sku', skuToAnalyze.trim());
+      }
+      if (filters.rak) query = query.ilike('rak', `%${filters.rak.trim()}%`);
+
+      const batchSize = 1000;
+      let from = 0;
+      let hasMore = true;
+      let allLogs: any[] = [];
+
+      while (hasMore) {
+        const { data, error } = await query.range(from, from + batchSize - 1);
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          allLogs = [...allLogs, ...data];
+          from += batchSize;
+          if (data.length < batchSize) hasMore = false;
+        } else {
+          hasMore = false;
+        }
+
+        // Safety break to prevent browser hang on massive data (adjust as needed)
+        if (allLogs.length > 50000) {
+          showToast('Data terlalu besar (>50.000). Hasil dibatasi untuk performa.', 'warning');
+          hasMore = false;
+        }
+      }
+
+      // 2. Aggregate logs: key = `${sku}|${rak}|${tgl_scan}`
+      const balanceMap = new Map<string, BalanceAnalysisResult>();
+
+      allLogs.forEach(log => {
+        // Normalize values to ensure consistent grouping
+        const normSku = (log.sku || '').trim().toUpperCase();
+        const normRak = (log.rak || '').trim().toUpperCase();
+        const normSubRak = (log.sub_rak || '').trim().toUpperCase();
+        const normTglScan = formatDateDisplay(log.tgl_scan) || 'No Date';
+        const normType = (log.type || '').trim().toUpperCase();
+
+        // Cek tipe: kita hanya ingin IN dan OUT murni
+        if (!normType.includes('IN') && !normType.includes('OUT')) return;
+        const finalType = normType.includes('IN') ? 'IN' : 'OUT';
+
+        const key = `${normSku}|${normRak}|${normTglScan}`;
+
+        if (!balanceMap.has(key)) {
+          balanceMap.set(key, {
+            sku: normSku,
+            rak: normRak,
+            subRaks: new Set<string>(),
+            tglScan: normTglScan,
+            totalIn: 0,
+            totalOut: 0,
+            balance: 0
+          });
+        }
+
+        const result = balanceMap.get(key)!;
+        if (normSubRak) result.subRaks.add(normSubRak);
+
+        const jumlah = Number(log.jumlah || 0);
+
+        if (finalType === 'IN') {
+          result.totalIn += jumlah;
+        } else {
+          result.totalOut += jumlah;
+        }
+        result.balance = result.totalIn - result.totalOut;
+      });
+
+      // 3. Convert to array and filter
+      const resultsArray = Array.from(balanceMap.values());
+
+      resultsArray.sort((a, b) => {
+        if (a.balance === 0 && b.balance !== 0) return 1;
+        if (b.balance === 0 && a.balance !== 0) return -1;
+        return a.sku.localeCompare(b.sku);
+      });
+
+      setAnalysisResults(resultsArray);
+      showToast(`Analisis selesai! Menampilkan ${resultsArray.length} kombinasi SKU/Rak/Tgl Scan.`, 'success');
+
+    } catch (error) {
+      console.error('Analysis failed:', error);
+      showToast('Gagal melakukan analisis saldo stok.', 'error');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handlePrepareRedistribute = async () => {
+    if (!analysisSku) return;
+
+    try {
+      setIsAnalyzing(true);
+      showToast('Menghitung rekomendasi pemindahan data...', 'info');
+
+      // 1. Fetch ALL relevant logs for this specific SKU to get the full picture
+      const { data: allLogs, error } = await supabase
+        .from('database_log')
+        .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah')
+        .ilike('sku', analysisSku.trim())
+        .or('type.ilike.%IN%,type.ilike.%OUT%')
+        .order('id', { ascending: true });
+
+      if (error) throw error;
+      if (!allLogs || allLogs.length === 0) {
+        showToast('Tidak ada data untuk diperbaiki.', 'warning');
+        return;
+      }
+
+      // 2. Group into balances and collect OUT rows by group
+      const groups = new Map<string, {
+        balance: number,
+        tglScanRaw: string,
+        normalizedTglScan: string,
+        rak: string,
+        outRows: any[]
+      }>();
+
+      const excludedList = excludedScanDates.split(',').map(d => d.trim().toUpperCase()).filter(Boolean);
+
+      allLogs.forEach(log => {
+        const normRak = (log.rak || '').trim().toUpperCase();
+        const normTglScan = formatDateDisplay(log.tgl_scan) || 'No Date';
+        const normType = (log.type || '').trim().toUpperCase();
+        const finalType = normType.includes('IN') ? 'IN' : 'OUT';
+        const key = `${normRak}|${normTglScan}`;
+
+        if (!groups.has(key)) {
+          groups.set(key, {
+            balance: 0,
+            tglScanRaw: (log.tgl_scan || '').trim(),
+            normalizedTglScan: normTglScan,
+            rak: (log.rak || '').trim(),
+            outRows: []
+          });
+        }
+
+        const g = groups.get(key)!;
+        const qty = Number(log.jumlah || 0);
+        if (finalType === 'IN') {
+          g.balance += qty;
+        } else {
+          g.balance -= qty;
+          g.outRows.push({
+            id: log.id,
+            jumlah: qty,
+            tglScan: log.tgl_scan || ''
+          });
+        }
+      });
+
+      // 3. Logic Redistribution
+      const moves: any[] = [];
+      const rakKeys = Array.from(new Set(Array.from(groups.values()).map(g => g.rak.toUpperCase())));
+
+      // Helper function to check if a group is excluded
+      const checkIfExcluded = (g: any) => {
+        const normTgl = g.normalizedTglScan.toUpperCase();
+        // Strict normalization check: compare formatted versions
+        if (excludedList.some(excluded => {
+          const normExcluded = formatDateDisplay(excluded).toUpperCase();
+          return normTgl === normExcluded || normTgl === excluded.toUpperCase();
+        })) return true;
+
+        if (limitBeforeDate || limitAfterDate) {
+          const targetDate = new Date(g.normalizedTglScan);
+          if (isNaN(targetDate.getTime())) return true;
+
+          if (limitBeforeDate) {
+            const limitBefore = new Date(limitBeforeDate);
+            if (targetDate > limitBefore) return true;
+          }
+          if (limitAfterDate) {
+            const limitAfter = new Date(limitAfterDate);
+            if (targetDate < limitAfter) return true;
+          }
+        }
+
+        return false;
+      };
+
+      rakKeys.forEach(rakName => {
+        const rakGroups = Array.from(groups.entries())
+          .filter(([, g]) => g.rak.toUpperCase() === rakName);
+
+        // Surplus groups that are NOT excluded
+        const surpluses = rakGroups.filter(([, g]) => {
+          if (g.balance <= 0) return false;
+          return !checkIfExcluded(g);
+        }).sort((a, b) => b[1].balance - a[1].balance);
+
+        // Deficit groups that are NOT excluded
+        const deficits = rakGroups.filter(([, g]) => {
+          if (g.balance >= 0) return false;
+          return !checkIfExcluded(g);
+        });
+
+        deficits.forEach(([, negG]) => {
+          // Try to move OUT rows from this deficit group to surplus groups
+          const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
+
+          for (const row of rows) {
+            if (negG.balance >= 0) break;
+
+            const targetEntry = surpluses.find(([, tg]) => tg.balance > 0);
+
+            if (targetEntry) {
+              const [, targetG] = targetEntry;
+
+              moves.push({
+                id: row.id,
+                sku: analysisSku,
+                rak: negG.rak,
+                fromTgl: negG.tglScanRaw,
+                toTgl: targetG.tglScanRaw,
+                jumlah: row.jumlah
+              });
+
+              negG.balance += row.jumlah;
+              targetG.balance -= row.jumlah;
+
+              surpluses.sort((a, b) => b[1].balance - a[1].balance);
+            }
+          }
+        });
+      });
+
+      if (moves.length === 0) {
+        showToast('Semua saldo sudah optimal atau tidak ada kapasitas untuk memindahkan lebih potong.', 'info');
+      } else {
+        setRedistributeMoves(moves);
+        setIsRedistributeModalOpen(true);
+      }
+
+    } catch (error) {
+      console.error('Error preparing redistribution:', error);
+      showToast('Gagal menyiapkan perbaikan saldo.', 'error');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleExecuteRedistribute = async () => {
+    if (redistributeMoves.length === 0) return;
+
+    try {
+      setIsProcessingRedistribution(true);
+      showToast(`Memproses ${redistributeMoves.length} pembaruan data...`, 'info');
+
+      // Process in batches
+      const batchSize = 50;
+      let successCount = 0;
+
+      for (let i = 0; i < redistributeMoves.length; i += batchSize) {
+        const batch = redistributeMoves.slice(i, i + batchSize);
+
+        // Update each record individually (or use a stored procedure if available)
+        // Since we are changing different IDs to different values, bulk .update([])
+        // only works for multiple IDs to SAME value.
+        // We'll use Promise.all for the batch.
+        const promises = batch.map(move =>
+          supabase
+            .from('database_log')
+            .update({ tgl_scan: move.toTgl })
+            .eq('id', move.id)
+        );
+
+        const results = await Promise.all(promises);
+        results.forEach(res => {
+          if (!res.error) successCount++;
+        });
+      }
+
+      showToast(`Sukses memperbarui ${successCount} data log!`, 'success');
+      setIsRedistributeModalOpen(false);
+      setRedistributeMoves([]);
+      // Refresh analysis
+      handleAnalyzeStockBalance(analysisSku);
+
+    } catch (error) {
+      console.error('Error executing redistribution:', error);
+      showToast('Terjadi kesalahan saat mengeksekusi perbaikan.', 'error');
+    } finally {
+      setIsProcessingRedistribution(false);
+    }
+  };
 
   const handleRunMigration = async () => {
     if (!window.confirm('PERINGATAN: Memperbaiki format tanggal akan mengubah data di database. Pastikan Anda tahu apa yang Anda lakukan. Lanjutkan?')) {
@@ -734,6 +1342,7 @@ export function RiwayatBarang() {
       let query = supabase
         .from('database_log')
         .select('*', { count: 'exact' })
+        .not('gudang', 'in', '("VERIFY","UNVERIFY")')
         .in('tgl', dateList); // Base filter
 
       // Apply conditional filters BEFORE sorting/pagination
@@ -828,6 +1437,7 @@ export function RiwayatBarang() {
       let query = supabase
         .from('database_log')
         .select('*')
+        .not('gudang', 'in', '("VERIFY","UNVERIFY")')
         .in('tgl', dateList); // Base filter
 
       // Apply conditional filters BEFORE sorting/pagination
@@ -916,17 +1526,22 @@ export function RiwayatBarang() {
       const headers = ['Tanggal', 'Waktu', 'SKU/Nama Barang', 'Jumlah', 'Type', 'Gudang', 'Rak', 'Tgl Scan', 'User'];
       const csvContent = [
         headers.join(','),
-        ...dataToExport.map(item => [
-          `"${item.tgl}"`,
-          `"${item.waktu}"`,
-          `"${item.sku}"`,
-          item.jumlah,
-          `"${item.type}"`,
-          `"${item.gudang}"`,
-          `"${item.rak}"`,
-          `"${item.tgl_scan}"`,
-          `"${item.user_name}"`
-        ].join(','))
+        ...dataToExport.map(item => {
+          const rawRak = item.rak || '';
+          const upperRak = rawRak.trim().toUpperCase();
+          const displayRak = (upperRak.startsWith('TEMP') || upperRak.startsWith('LORONG-')) ? 'UTAMA' : rawRak;
+          return [
+            `"${item.tgl}"`,
+            `"${item.waktu}"`,
+            `"${item.sku}"`,
+            item.jumlah,
+            `"${item.type}"`,
+            `"${item.gudang}"`,
+            `"${displayRak}"`,
+            `"${item.tgl_scan}"`,
+            `"${item.user_name}"`
+          ].join(',');
+        })
       ].join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
@@ -953,10 +1568,6 @@ export function RiwayatBarang() {
         showToast('Tidak ada data yang valid untuk diekspor (setelah filter TRANSFER)', 'warning');
         return;
       }
-
-      // Dynamic import to avoid build issues if types are missing initially or strict checks
-      const ExcelJS = (await import('exceljs')).default;
-      const { saveAs } = await import('file-saver');
 
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Riwayat Barang');
@@ -1005,8 +1616,12 @@ export function RiwayatBarang() {
       const forbiddenRakValues = new Set(['BLOK-I', 'ECER-M', 'ECER-N', 'ECER-O', 'LANTAI 2', 'LANTAI 4', 'UTAMA']);
 
       filteredData.forEach(item => {
-        const rakColumn1 = isUtamaPattern(item.rak) ? 'UTAMA' : item.rak;
-        const rakColumn2 = forbiddenRakValues.has(item.rak) ? '' : item.rak;
+        const rawRak = item.rak || '';
+        const upperRak = rawRak.trim().toUpperCase();
+        const isTempRak = upperRak.startsWith('TEMP');
+        const isLorongRak = upperRak.startsWith('LORONG-');
+        const rakColumn1 = (isTempRak || isLorongRak || isUtamaPattern(rawRak)) ? 'UTAMA' : rawRak;
+        const rakColumn2 = forbiddenRakValues.has(rawRak) ? '' : rawRak;
 
         // Parse date for proper Excel formatting
         // item.tgl is likely string YYYY-MM-DD or similar from DB. 
@@ -1060,12 +1675,46 @@ export function RiwayatBarang() {
         };
       });
 
-      // Generate buffer
+      // Generate buffer & blob
       const buffer = await workbook.xlsx.writeBuffer();
-
-      // Save file
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      saveAs(blob, `riwayat-barang-${new Date().toISOString().split('T')[0]}.xlsx`);
+
+      // Save file with dynamic date range filename
+      let exportDateRange = '';
+      const { tanggal_awal, tanggal_akhir, tanggal_scan } = filters;
+
+      if (tanggal_awal && tanggal_akhir) {
+        if (tanggal_awal === tanggal_akhir) {
+          exportDateRange = tanggal_awal;
+        } else {
+          exportDateRange = `${tanggal_awal}~${tanggal_akhir}`;
+        }
+      } else if (tanggal_awal) {
+        exportDateRange = tanggal_awal;
+      } else if (tanggal_akhir) {
+        exportDateRange = tanggal_akhir;
+      } else if (tanggal_scan) {
+        exportDateRange = tanggal_scan;
+      } else {
+        exportDateRange = new Date().toISOString().split('T')[0];
+      }
+
+      const exportFileName = `riwayat-barang-${exportDateRange}.xlsx`;
+      saveAs(blob, exportFileName);
+
+      // Async background task for history
+      saveExportHistory(
+        blob,
+        userName || 'Unknown',
+        exportDateRange,
+        new Date().toLocaleTimeString('id-ID', { hour12: false }).replace(/:/g, '.'),
+        exportFileName
+      ).then(() => {
+        console.log('Riwayat export berhasil disimpan.');
+      }).catch((error) => {
+        console.error('Gagal menyimpan riwayat:', error);
+        showToast(`Gagal menyimpan riwayat export: ${error.message}`, 'error');
+      });
 
       showToast(`Export Excel berhasil! ${filteredData.length} data telah diunduh.`, 'success');
     } catch (error) {
@@ -1154,7 +1803,7 @@ export function RiwayatBarang() {
     <div className="relative">
       {/* PREMIUM IMMERSIVE HEADER (310px) */}
       <div className="flex flex-col mb-8 lg:mb-12 uppercase">
-        <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+        <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
           {/* Decorative Background Icon */}
           <div className="absolute -top-6 -right-6 text-white opacity-5">
@@ -1204,14 +1853,24 @@ export function RiwayatBarang() {
                   FIX DATE FORMAT
                 </button>
               )}
+
+              <button
+                onClick={() => setIsHistoryModalOpen(true)}
+                className="px-5 py-2.5 bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-[10px] font-black rounded-xl shadow-[0_8px_25px_rgba(192,38,211,0.4)] transition-all flex items-center gap-2 tracking-widest active:scale-95 border border-fuchsia-400/50"
+              >
+                <History className="w-4 h-4" />
+                RIWAYAT EXPORT
+              </button>
+
               <button
                 onClick={exportDataStandard}
-                className="px-5 py-2.5 bg-white hover:bg-blue-50 text-blue-700 text-[10px] font-black rounded-xl shadow-lg transition-all border-none flex items-center gap-2 tracking-widest active:scale-95"
+                className="px-5 py-2.5 bg-white hover:bg-blue-50 text-blue-700 text-[10px] font-black rounded-xl shadow-[0_8px_25px_rgba(37,99,235,0.2)] transition-all border-none flex items-center gap-2 tracking-widest active:scale-95"
               >
                 <Download className="w-4 h-4" />
                 EXPORT
               </button>
             </div>
+            
           </div>
         </div>
       </div>
@@ -1221,6 +1880,11 @@ export function RiwayatBarang() {
         message={toast.message}
         type={toast.type}
         onClose={() => setToast({ isOpen: false, message: '', type: 'info' })}
+      />
+
+      <ExportHistoryModal 
+        isOpen={isHistoryModalOpen} 
+        onClose={() => setIsHistoryModalOpen(false)} 
       />
 
       <div className="space-y-6 lg:px-10 pb-12">
@@ -1664,28 +2328,31 @@ export function RiwayatBarang() {
           </div>
         </div>
 
-        <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-5 rounded-xl shadow-md border border-blue-200">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div className="bg-white rounded-lg p-4 shadow-sm">
-              <span className="text-xs font-semibold text-gray-500 uppercase block mb-1">Total Data</span>
-              <span className="text-2xl font-bold text-blue-600">{paginationInfo.totalCount.toLocaleString()}</span>
-            </div>
-            <div className="bg-white rounded-lg p-4 shadow-sm">
-              <span className="text-xs font-semibold text-gray-500 uppercase block mb-1">Data Ditampilkan</span>
-              <span className="text-2xl font-bold text-green-600">{historyData.length.toLocaleString()}</span>
-            </div>
-            <div className="bg-white rounded-lg p-4 shadow-sm">
-              <span className="text-xs font-semibold text-gray-500 uppercase block mb-1">Total Qty</span>
-              <span className="text-2xl font-bold text-orange-600">
-                {/* Note: Summing quantity on client side only works for current page. For total qty of all pages, we would need an aggregate query. For now, showing sum of visible items. */
-                  historyData.reduce((sum, item) => sum + (item.jumlah || 0), 0).toLocaleString()}
-              </span>
-            </div>
-            <div className="bg-white rounded-lg p-4 shadow-sm">
-              <span className="text-xs font-semibold text-gray-500 uppercase block mb-1">Halaman</span>
-              <span className="text-2xl font-bold text-purple-600">{currentPage} / {paginationInfo.totalPages || 1}</span>
+        {!hideRiwayatStats && (
+          <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-5 rounded-xl shadow-md border border-blue-200">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="bg-white rounded-lg p-4 shadow-sm">
+                <span className="text-xs font-semibold text-gray-500 uppercase block mb-1">Total Data</span>
+                <span className="text-2xl font-bold text-blue-600">{paginationInfo.totalCount.toLocaleString()}</span>
+              </div>
+              <div className="bg-white rounded-lg p-4 shadow-sm">
+                <span className="text-xs font-semibold text-gray-500 uppercase block mb-1">Data Ditampilkan</span>
+                <span className="text-2xl font-bold text-green-600">{historyData.length.toLocaleString()}</span>
+              </div>
+              <div className="bg-white rounded-lg p-4 shadow-sm">
+                <span className="text-xs font-semibold text-gray-500 uppercase block mb-1">Total Qty</span>
+                <span className="text-2xl font-bold text-orange-600">
+                  {/* Note: Summing quantity on client side only works for current page. For total qty of all pages, we would need an aggregate query. For now, showing sum of visible items. */
+                    historyData.reduce((sum, item) => sum + (item.jumlah || 0), 0).toLocaleString()}
+                </span>
+              </div>
+              <div className="bg-white rounded-lg p-4 shadow-sm">
+                <span className="text-xs font-semibold text-gray-500 uppercase block mb-1">Halaman</span>
+                <span className="text-2xl font-bold text-purple-600">{currentPage} / {paginationInfo.totalPages || 1}</span>
+              </div>
             </div>
           </div>
+        )}
 
           {paginationInfo.totalCount > itemsPerPage && (
             <div className="mt-6 flex flex-col sm:flex-row justify-between items-center gap-4">
@@ -1823,7 +2490,6 @@ export function RiwayatBarang() {
             </div>
           )}
         </div>
-      </div >
 
       {
         qrModalData && (() => {
@@ -1925,6 +2591,625 @@ export function RiwayatBarang() {
 
       {/* Bottom Spacer for Mobile Sticky Bar */}
       <div className="h-24 lg:hidden"></div>
+      <Modal
+        isOpen={isAnalysisModalOpen}
+        onClose={() => setIsAnalysisModalOpen(false)}
+        title="Analisis Rak Beda"
+        size="7xl"
+      >
+        <div className="space-y-6">
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-start space-x-3">
+            <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5" />
+            <div className="text-sm text-blue-700">
+              <p className="font-semibold mb-1">Cara Kerja Analisis:</p>
+              <p>Sistem merangkum data IN dan OUT berdasarkan <strong>SKU dan Tgl Scan</strong>.
+                Jika pada tanggal yang sama barang di-scan IN di Rak A, tetapi di-scan OUT di Rak B, sistem akan mendeteksinya sebagai <strong>Rak Beda</strong>.</p>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 shadow-inner space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-2 ml-1">Cari / Pilih SKU</label>
+                <FilterDropdown
+                  value={analysisSku}
+                  onChange={(val) => setAnalysisSku(val)}
+                  options={products.map(p => p.nama)}
+                  placeholder="Ketik nama produk..."
+                  loading={initialLoading}
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => handleAnalyzeRakMismatch(analysisSku)}
+                  disabled={isRakMismatchAnalyzing}
+                  className="h-10 bg-gradient-to-r from-purple-600 to-pink-700 hover:from-purple-700 hover:to-pink-800 text-white font-bold rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 flex-1"
+                >
+                  {isRakMismatchAnalyzing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                  <span>{isRakMismatchAnalyzing ? 'Menganalisis...' : 'Analisis Rak Beda'}</span>
+                </Button>
+
+                {rakMismatchResults.length > 0 && (
+                  <Button
+                    onClick={handleFixRakMismatch}
+                    disabled={isRakMismatchAnalyzing || isRakMismatchFixing}
+                    className="h-10 bg-gradient-to-r from-red-500 to-red-700 hover:from-red-600 hover:to-red-800 text-white font-bold rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 flex-1"
+                  >
+                    {isRakMismatchFixing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Edit2 className="h-4 w-4" />}
+                    <span>{isRakMismatchFixing ? 'Memperbaiki...' : 'Perbaiki Rak Beda'}</span>
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <div className="relative mt-4">
+              <input
+                type="text"
+                placeholder="Cari dalam hasil (Rak, Tgl Scan)..."
+                value={analysisSearchTerm}
+                onChange={(e) => setAnalysisSearchTerm(e.target.value)}
+                className="w-full px-4 py-2 pl-10 pr-10 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm bg-white"
+              />
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+              {analysisSearchTerm && (
+                <button
+                  onClick={() => setAnalysisSearchTerm('')}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                  title="Hapus pencarian"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="overflow-auto" style={{ maxHeight: '480px' }}>
+              <table className="w-full text-sm">
+                <thead className="bg-gray-100 border-b border-gray-200 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">SKU</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700">Tgl Scan</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Rak IN (Seharusnya)</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Rak OUT (Salah)</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700">Total Qty Tersesat</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {isRakMismatchAnalyzing ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-12 text-center text-gray-500 italic">
+                        <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-3 text-purple-500" />
+                        Menganalisis data, mohon tunggu...
+                      </td>
+                    </tr>
+                  ) : rakMismatchResults.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-12 text-center text-gray-500 italic">
+                        Klik "Analisis Rak Beda" untuk memproses data.
+                      </td>
+                    </tr>
+                  ) : (
+                    rakMismatchResults
+                      .filter(res =>
+                        res.sku.toLowerCase().includes(analysisSearchTerm.toLowerCase()) ||
+                        res.inRak.toLowerCase().includes(analysisSearchTerm.toLowerCase()) ||
+                        res.outRak.toLowerCase().includes(analysisSearchTerm.toLowerCase()) ||
+                        res.tglScanRaw.toLowerCase().includes(analysisSearchTerm.toLowerCase())
+                      )
+                      .map((res, idx) => (
+                        <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-4 py-3 font-medium text-gray-900">{res.sku}</td>
+                          <td className="px-4 py-3 text-center text-gray-600 font-mono text-xs">
+                            {formatDateDisplay(res.tglScanRaw)}
+                          </td>
+                          <td className="px-4 py-3 text-green-700 font-medium">
+                            <div className="font-bold">{res.inRak}</div>
+                            {res.inSubRak && <div className="text-[10px] text-green-600/70 italic mt-0.5">Sub: {res.inSubRak}</div>}
+                          </td>
+                          <td className="px-4 py-3 text-red-700 font-medium">
+                            <div className="font-bold">{res.outRak}</div>
+                            {res.outSubRak && <div className="text-[10px] text-red-600/70 italic mt-0.5">Sub: {res.outSubRak}</div>}
+                          </td>
+                          <td className="px-4 py-3 text-center text-amber-700 font-bold">{res.outTotal.toLocaleString()}</td>
+                          <td className="px-4 py-3 text-center">
+                            <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                              <AlertCircle className="h-3 w-3" />
+                              <span>RAK BEDA</span>
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-4">
+            <Button
+              onClick={() => setIsAnalysisModalOpen(false)}
+              className="h-11 px-8 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg transition-all"
+            >
+              Tutup
+            </Button>
+          </div>
+        </div>
+      </Modal>
+      <RedistributionPreviewModal
+        isOpen={isRedistributeModalOpen}
+        onClose={() => setIsRedistributeModalOpen(false)}
+        moves={redistributeMoves}
+        isProcessing={isProcessingRedistribution}
+        onConfirm={handleExecuteRedistribute}
+      />
+    </div>
+  );
+}
+
+function RedistributionPreviewModal({ isOpen, onClose, moves, isProcessing, onConfirm }: {
+  isOpen: boolean,
+  onClose: () => void,
+  moves: any[],
+  isProcessing: boolean,
+  onConfirm: () => void
+}) {
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Preview Perbaikan Saldo (Lebih Potong)" size="xl">
+      <div className="space-y-4">
+        <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-start space-x-3">
+          <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5" />
+          <div className="text-sm text-amber-800">
+            <p className="font-bold mb-1">Peringatan Migrasi Data:</p>
+            <p>Sistem akan memindahkan data <strong>OUT</strong> yang menyebabkan saldo negatif ke baris data yang memiliki saldo sisa (Surplus).
+              Ini dilakukan dengan memperbarui kolom <strong>Tgl Scan</strong> pada baris transaksi OUT tersebut.</p>
+          </div>
+        </div>
+
+        <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+          <div className="max-h-[400px] overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
+                <tr>
+                  <th className="px-4 py-2 text-left">SKU / Rak</th>
+                  <th className="px-4 py-2 text-center text-red-600">Dari Tgl Scan</th>
+                  <th className="px-4 py-2 text-center text-green-600">Ke Tgl Scan</th>
+                  <th className="px-4 py-2 text-center">Qty</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 italic">
+                {moves.map((m, i) => (
+                  <tr key={i} className="hover:bg-gray-50">
+                    <td className="px-4 py-2">
+                      <div className="font-bold">{m.sku}</div>
+                      <div className="text-xs text-gray-500">{m.rak}</div>
+                    </td>
+                    <td className="px-4 py-2 text-center text-red-500 font-mono text-xs">
+                      {m.fromTgl || '(KOSONG)'}
+                    </td>
+                    <td className="px-4 py-2 text-center text-green-600 font-mono text-xs font-bold">
+                      {m.toTgl || '(KOSONG)'}
+                    </td>
+                    <td className="px-4 py-2 text-center font-bold">{m.jumlah}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-200">
+          <div className="text-sm font-medium text-gray-700">
+            Total Rekomendasi: <span className="text-blue-600 font-bold">{moves.length} baris</span>
+          </div>
+          <div className="flex space-x-3">
+            <Button onClick={onClose} variant="secondary" disabled={isProcessing}>
+              Batal
+            </Button>
+            <Button
+              onClick={onConfirm}
+              disabled={isProcessing}
+              className="px-8 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-bold rounded-xl shadow-lg flex items-center space-x-2"
+            >
+              {isProcessing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+              <span>{isProcessing ? 'Memproses...' : 'Terapkan Perbaikan'}</span>
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+interface FilterDropdownProps {
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  placeholder?: string;
+  loading?: boolean;
+}
+
+function FilterDropdown({ value, onChange, options, placeholder, loading = false }: FilterDropdownProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [filteredOptions, setFilteredOptions] = useState<string[]>([]);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  useEffect(() => {
+    if (value && value.trim() !== '') {
+      const searchTerm = value.toLowerCase().trim();
+      const filtered = options.filter(option =>
+        String(option).toLowerCase().includes(searchTerm)
+      );
+      // Limit to 100 to avoid performance issues and display noise
+      setFilteredOptions(filtered.slice(0, 100));
+    } else {
+      setFilteredOptions(options.slice(0, 100));
+    }
+    setHighlightedIndex(0);
+  }, [value, options]);
+
+  useEffect(() => {
+    if (isOpen && highlightedIndex >= 0 && highlightedIndex < itemRefs.current.length) {
+      const highlightedElement = itemRefs.current[highlightedIndex];
+      if (highlightedElement && listRef.current) {
+        const listRect = listRef.current.getBoundingClientRect();
+        const itemRect = highlightedElement.getBoundingClientRect();
+
+        if (itemRect.bottom > listRect.bottom) {
+          highlightedElement.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        } else if (itemRect.top < listRect.top) {
+          highlightedElement.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+    }
+  }, [highlightedIndex, isOpen]);
+
+  const handleFocus = () => {
+    if (loading) return;
+    console.log('FilterDropdown focused, options:', options.length, 'filtered:', filteredOptions.length);
+    setIsOpen(true);
+    setHighlightedIndex(0);
+  };
+
+  const handleClick = () => {
+    if (loading) return;
+    console.log('FilterDropdown clicked, options:', options.length, 'filtered:', filteredOptions.length);
+    setIsOpen(true);
+    setHighlightedIndex(0);
+  };
+
+  const handleOptionSelect = (option: string) => {
+    onChange(option);
+    setIsOpen(false);
+  };
+
+  const handleClearClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onChange('');
+    setIsOpen(false);
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onChange(e.target.value);
+    if (!isOpen && !loading) {
+      setIsOpen(true);
+      setHighlightedIndex(0);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (loading) return;
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setIsOpen(true);
+        setHighlightedIndex(0);
+      }
+      return;
+    }
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setHighlightedIndex(prev => {
+          const nextIndex = prev < filteredOptions.length - 1 ? prev + 1 : 0;
+          return nextIndex;
+        });
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setHighlightedIndex(prev => {
+          const nextIndex = prev > 0 ? prev - 1 : filteredOptions.length - 1;
+          return nextIndex;
+        });
+        break;
+      case 'Enter':
+      case 'Tab':
+        e.preventDefault();
+        if (filteredOptions[highlightedIndex]) {
+          handleOptionSelect(filteredOptions[highlightedIndex]);
+        }
+        break;
+      case 'Escape':
+        e.preventDefault();
+        setIsOpen(false);
+        break;
+    }
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  const showButton = value && value.trim() !== '';
+
+  return (
+    <div ref={dropdownRef} className="relative w-full">
+      <div className="relative">
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={handleInputChange}
+          onFocus={handleFocus}
+          onClick={handleClick}
+          onKeyDown={handleKeyDown}
+          className={`w-full px-3 py-2 pr-8 border border-gray-300 border-t-0 rounded-b-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white ${loading ? 'opacity-50 cursor-wait' : ''}`}
+          placeholder={loading ? 'Memuat data...' : placeholder}
+          autoComplete="off"
+          disabled={loading}
+        />
+        <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center space-x-1">
+          {showButton && (
+            <button
+              onClick={handleClearClick}
+              className="text-gray-400 hover:text-gray-600 pointer-events-auto"
+              type="button"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+          <ChevronDown className="h-4 w-4 text-gray-400 pointer-events-none" />
+        </div>
+      </div>
+      {isOpen && filteredOptions.length > 0 && (
+        <div
+          ref={listRef}
+          className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-auto"
+        >
+          {filteredOptions.map((option, index) => (
+            <div
+              key={`${option}-${index}`}
+              ref={el => itemRefs.current[index] = el}
+              onClick={() => handleOptionSelect(option)}
+              className={`px-3 py-2 cursor-pointer text-sm ${index === highlightedIndex
+                ? 'bg-blue-100 text-blue-900'
+                : 'hover:bg-gray-100'
+                }`}
+            >
+              {option}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface EditDropdownProps {
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  placeholder?: string;
+  loading?: boolean;
+}
+
+function EditDropdown({ value, onChange, options, placeholder, loading = false }: EditDropdownProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [filteredOptions, setFilteredOptions] = useState<string[]>([]);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  useEffect(() => {
+    if (value && value.trim() !== '') {
+      const searchTerm = value.toLowerCase().trim();
+      const filtered = options.filter(option =>
+        String(option).toLowerCase().includes(searchTerm)
+      );
+
+      // Limit to 100 for performance
+      const limited = filtered.slice(0, 100);
+      setFilteredOptions(limited);
+
+      const exactMatchIndex = limited.findIndex(option =>
+        option.toLowerCase() === searchTerm
+      );
+      if (exactMatchIndex !== -1) {
+        setHighlightedIndex(exactMatchIndex);
+      } else {
+        const startsWithIndex = limited.findIndex(option =>
+          option.toLowerCase().startsWith(searchTerm)
+        );
+        setHighlightedIndex(startsWithIndex !== -1 ? startsWithIndex : 0);
+      }
+    } else {
+      setFilteredOptions(options.slice(0, 100));
+      setHighlightedIndex(0);
+    }
+  }, [value, options]);
+
+  useEffect(() => {
+    if (isOpen && highlightedIndex >= 0 && highlightedIndex < itemRefs.current.length) {
+      const highlightedElement = itemRefs.current[highlightedIndex];
+      if (highlightedElement && listRef.current) {
+        const listRect = listRef.current.getBoundingClientRect();
+        const itemRect = highlightedElement.getBoundingClientRect();
+
+        if (itemRect.bottom > listRect.bottom) {
+          highlightedElement.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        } else if (itemRect.top < listRect.top) {
+          highlightedElement.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+    }
+  }, [highlightedIndex, isOpen]);
+
+  const handleFocus = () => {
+    if (loading) return;
+    setIsOpen(true);
+    setHighlightedIndex(0);
+  };
+
+  const handleClick = () => {
+    if (loading) return;
+    setIsOpen(true);
+    setHighlightedIndex(0);
+  };
+
+  const handleOptionSelect = (option: string) => {
+    onChange(option);
+    setIsOpen(false);
+  };
+
+  const handleClearClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onChange('');
+    setIsOpen(false);
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onChange(e.target.value);
+    if (!loading) {
+      setIsOpen(true);
+      setHighlightedIndex(0);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (loading) return;
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setIsOpen(true);
+        setHighlightedIndex(0);
+      }
+      return;
+    }
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setHighlightedIndex(prev => {
+          const nextIndex = prev < filteredOptions.length - 1 ? prev + 1 : 0;
+          return nextIndex;
+        });
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setHighlightedIndex(prev => {
+          const nextIndex = prev > 0 ? prev - 1 : filteredOptions.length - 1;
+          return nextIndex;
+        });
+        break;
+      case 'Enter':
+      case 'Tab':
+        e.preventDefault();
+        if (filteredOptions[highlightedIndex]) {
+          handleOptionSelect(filteredOptions[highlightedIndex]);
+        }
+        break;
+      case 'Escape':
+        e.preventDefault();
+        setIsOpen(false);
+        break;
+    }
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  const showButton = value && value.trim() !== '';
+
+  return (
+    <div ref={dropdownRef} className="relative w-full">
+      <div className="relative">
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={handleInputChange}
+          onFocus={handleFocus}
+          onClick={handleClick}
+          onKeyDown={handleKeyDown}
+          className={`w-full px-3 py-2 pr-8 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white ${loading ? 'opacity-50 cursor-wait' : ''}`}
+          placeholder={loading ? 'Memuat data...' : placeholder}
+          autoComplete="off"
+          disabled={loading}
+        />
+        <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center space-x-1">
+          {showButton && (
+            <button
+              onClick={handleClearClick}
+              className="text-gray-400 hover:text-gray-600 pointer-events-auto"
+              type="button"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+          <ChevronDown className="h-4 w-4 text-gray-400 pointer-events-none" />
+        </div>
+      </div>
+      {isOpen && filteredOptions.length > 0 && (
+        <div
+          ref={listRef}
+          className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-auto"
+        >
+          {filteredOptions.map((option, index) => (
+            <div
+              key={`${option}-${index}`}
+              ref={el => itemRefs.current[index] = el}
+              onClick={() => handleOptionSelect(option)}
+              className={`px-3 py-2 cursor-pointer text-sm ${index === highlightedIndex
+                ? 'bg-blue-100 text-blue-900'
+                : 'hover:bg-gray-100'
+                }`}
+            >
+              {option}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

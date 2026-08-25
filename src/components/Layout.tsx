@@ -1,7 +1,16 @@
 import React from 'react';
 import logo from '../assets/logo.jpeg';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
+import { APP_VERSION } from './AppUpdateListener';
+import { DailyQuestOverlay } from './DailyQuestOverlay';
+import { 
+  navigationItems, 
+  devNavigationItems, 
+  masterDataItems, 
+  monitoringItems, 
+  additionalMenuItems 
+} from '../lib/menuConfig';
 import {
   LayoutDashboard,
   Package,
@@ -30,7 +39,8 @@ import {
   ShieldAlert,
   QrCode,
   LogOut,
-  Users
+  Users,
+  Activity
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -38,31 +48,45 @@ interface LayoutProps {
 }
 
 // Hook untuk mendeteksi devmode
-const useDevMode = () => {
+const useDevMode = (userName?: string | null, userEmail?: string | null) => {
   const [isDevMode, setIsDevMode] = React.useState(() => {
     return localStorage.getItem('devmode') === 'true';
   });
   const [keySequence, setKeySequence] = React.useState('');
+  const navigate = useNavigate();
+
+  React.useEffect(() => {
+    // Auto-enable for Dev Mode Admin
+    if (userName?.toLowerCase().includes('dev mode') || userEmail?.toLowerCase().includes('devmode')) {
+      if (localStorage.getItem('devmode') !== 'true') {
+        localStorage.setItem('devmode', 'true');
+        setIsDevMode(true);
+      }
+    }
+  }, [userName, userEmail]);
 
   React.useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
-      const newSequence = keySequence + event.key.toLowerCase();
-
-      if ('devmode'.startsWith(newSequence)) {
-        setKeySequence(newSequence);
-
-        if (newSequence === 'devmode') {
+      if (event.key.length > 1) return;
+      
+      setKeySequence((prev) => {
+        const newSequence = (prev + event.key.toLowerCase()).slice(-25);
+        
+        if (newSequence.endsWith('devmode')) {
           const newDevMode = !isDevMode;
           setIsDevMode(newDevMode);
           localStorage.setItem('devmode', newDevMode.toString());
-          setKeySequence('');
-
-          // Optional: Show notification
           console.log(`Dev mode ${newDevMode ? 'enabled' : 'disabled'}`);
+          return '';
         }
-      } else {
-        setKeySequence('');
-      }
+
+        if (newSequence.endsWith('opendatabaselogmenu@')) {
+          navigate('/database-log', { state: { showHackerTerminal: true } });
+          return '';
+        }
+        
+        return newSequence;
+      });
     };
 
     // Reset sequence after timeout
@@ -81,46 +105,6 @@ const useDevMode = () => {
   return isDevMode;
 };
 
-const navigationItems = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Input Barang Masuk', href: '/input-masuk', icon: Package },
-  { name: 'Input Barang Keluar', href: '/input-keluar', icon: PackageOpen },
-  { name: 'Pindah Data Barang', href: '/pindah-barang', icon: ArrowRightLeft },
-  { name: 'Data Gudang', href: '/data-gudang', icon: Database },
-  { name: 'Riwayat Barang', href: '/riwayat', icon: History },
-  { name: 'Update Lokasi', href: '/update-lokasi', icon: MapPin },
-  { name: 'Database Log', href: '/database-log', icon: Database },
-];
-
-// Dev-only navigation items
-const devNavigationItems = [
-  { name: 'Transfer Sync Manager', href: '/transfer-sync', icon: ArrowRightLeft },
-  { name: 'Perbaiki Sinkronisasi Stok', href: '/fix-stock-sync', icon: DatabaseIcon },
-  { name: 'Update Packing', href: '/update-packing', icon: PackageCheck },
-  { name: 'Auto-Sync Pengaturan', href: '/auto-sync', icon: Settings },
-  { name: 'Dev: Update Rak Khusus', href: '/dev-rack-update', icon: Settings },
-  { name: 'Kelola Notifikasi Update', href: '/notification-manager', icon: Bell },
-  { name: 'Pengaturan Prioritas Rak', href: '/rack-priority-settings', icon: Settings },
-  { name: 'Stok Lantai 3', href: '/stok-lantai-3', icon: Building },
-  { name: 'User Management', href: '/user-management', icon: Users },
-];
-const masterDataItems = [
-  { name: 'Nama Gudang', href: '/master-data/gudang', icon: Building2 },
-  { name: 'Jenis Barang', href: '/master-data/jenis-barang', icon: Package2 },
-  { name: 'Satuan', href: '/master-data/satuan', icon: Scale },
-  { name: 'Data SKU', href: '/master-data/sku', icon: Tag },
-  { name: 'Lokasi Rak', href: '/master-data/lokasi-rak', icon: MapPin },
-];
-
-const monitoringItems = [
-  { name: 'Stok Minus', href: '/stok-minus', icon: AlertTriangle },
-  { name: 'Data Karantina', href: '/data-karantina', icon: ShieldAlert },
-];
-
-const additionalMenuItems = [
-  { name: 'Cek Rak', href: '/cek-rak', icon: QrCode },
-];
-
 export function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
@@ -130,8 +114,22 @@ export function Layout({ children }: LayoutProps) {
   const [masterDataOpen, setMasterDataOpen] = React.useState(false);
   const [monitoringOpen, setMonitoringOpen] = React.useState(false);
   const [devModeOpen, setDevModeOpen] = React.useState(false);
-  const isDevMode = useDevMode();
-  const { userEmail, userName, userAvatar, signOut } = useAuth();
+  const { userEmail, userName, userAvatar, userRole, userPermissions, signOut } = useAuth();
+  const isDevMode = useDevMode(userName, userEmail);
+  const [scrolled, setScrolled] = React.useState(false);
+
+  React.useEffect(() => {
+    const handleScroll = () => {
+      setScrolled(window.scrollY > 20);
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  const hasAccess = (href: string) => {
+    if (userRole === 'developer') return true;
+    return userPermissions.includes(href);
+  };
 
   const toggleDesktopSidebar = () => {
     const newState = !desktopSidebarCollapsed;
@@ -151,6 +149,7 @@ export function Layout({ children }: LayoutProps) {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      <DailyQuestOverlay />
       {/* Mobile sidebar */}
       <div className={`fixed inset-0 z-[200] lg:hidden ${sidebarOpen ? 'block' : 'hidden'}`}>
         {/* Modern Blur Overlay */}
@@ -200,7 +199,7 @@ export function Layout({ children }: LayoutProps) {
                 <div className="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>
                 <span className="text-[10px] font-medium text-gray-400 uppercase tracking-[0.2em]">Navigasi Utama</span>
               </div>
-              {navigationItems.map((item) => {
+              {navigationItems.filter(item => hasAccess(item.href)).map((item) => {
                 const Icon = item.icon;
                 const isActive = location.pathname === item.href;
                 return (
@@ -221,6 +220,7 @@ export function Layout({ children }: LayoutProps) {
             </div>
 
             {/* Nav Group: Analysis & Monitoring */}
+            {(monitoringItems.filter(item => hasAccess(item.href)).length > 0 || masterDataItems.filter(item => hasAccess(item.href)).length > 0) && (
             <div className="space-y-2">
               <div className="px-3 mb-3 flex items-center gap-2">
                 <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
@@ -228,81 +228,91 @@ export function Layout({ children }: LayoutProps) {
               </div>
 
               {/* Monitoring Dropdown */}
-              <button
-                onClick={() => setMonitoringOpen(!monitoringOpen)}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-sm font-medium transition-all ${isMonitoringActive
-                  ? 'bg-emerald-50 text-emerald-700'
-                  : 'text-gray-600 hover:bg-gray-50'
-                  }`}
-              >
-                <div className="flex items-center">
-                  <ShieldAlert className={`mr-4 h-5 w-5 ${isMonitoringActive ? 'text-emerald-600' : 'text-gray-400'}`} />
-                  <span className="uppercase tracking-tight">Monitoring Stok</span>
-                </div>
-                <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${monitoringOpen ? 'rotate-180' : ''}`} />
-              </button>
+              {monitoringItems.filter(item => hasAccess(item.href)).length > 0 && (
+              <>
+                <button
+                  onClick={() => setMonitoringOpen(!monitoringOpen)}
+                  className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-sm font-medium transition-all ${isMonitoringActive
+                    ? 'bg-emerald-50 text-emerald-700'
+                    : 'text-gray-600 hover:bg-gray-50'
+                    }`}
+                >
+                  <div className="flex items-center">
+                    <ShieldAlert className={`mr-4 h-5 w-5 ${isMonitoringActive ? 'text-emerald-600' : 'text-gray-400'}`} />
+                    <span className="uppercase tracking-tight">Monitoring Stok</span>
+                  </div>
+                  <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${monitoringOpen ? 'rotate-180' : ''}`} />
+                </button>
 
-              {monitoringOpen && (
-                <div className="ml-6 space-y-1 animate-in slide-in-from-top-2 duration-200">
-                  {monitoringItems.map((item) => {
-                    const isActive = location.pathname === item.href;
-                    return (
-                      <Link
-                        key={item.name}
-                        to={item.href}
-                        onClick={() => setSidebarOpen(false)}
-                        className={`flex items-center px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${isActive ? 'text-emerald-600 bg-emerald-100/50' : 'text-gray-500 hover:text-emerald-600 hover:bg-emerald-50/50'}`}
-                      >
-                        <span className="w-1 h-1 bg-current rounded-full mr-3 opacity-40"></span>
-                        <span className="uppercase tracking-tighter">{item.name}</span>
-                      </Link>
-                    );
-                  })}
-                </div>
+                {monitoringOpen && (
+                  <div className="ml-6 space-y-1 animate-in slide-in-from-top-2 duration-200">
+                    {monitoringItems.filter(item => hasAccess(item.href)).map((item) => {
+                      const isActive = location.pathname === item.href;
+                      return (
+                        <Link
+                          key={item.name}
+                          to={item.href}
+                          onClick={() => setSidebarOpen(false)}
+                          className={`flex items-center px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${isActive ? 'text-emerald-600 bg-emerald-100/50' : 'text-gray-500 hover:text-emerald-600 hover:bg-emerald-50/50'}`}
+                        >
+                          <span className="w-1 h-1 bg-current rounded-full mr-3 opacity-40"></span>
+                          <span className="uppercase tracking-tighter">{item.name}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
               )}
 
               {/* Master Data Dropdown */}
-              <button
-                onClick={() => setMasterDataOpen(!masterDataOpen)}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-sm font-medium transition-all ${isMasterDataActive
-                  ? 'bg-blue-50 text-blue-700'
-                  : 'text-gray-600 hover:bg-gray-50'
-                  }`}
-              >
-                <div className="flex items-center">
-                  <FolderTree className={`mr-4 h-5 w-5 ${isMasterDataActive ? 'text-blue-600' : 'text-gray-400'}`} />
-                  <span className="uppercase tracking-tight">Master Data</span>
-                </div>
-                <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${masterDataOpen ? 'rotate-180' : ''}`} />
-              </button>
+              {masterDataItems.filter(item => hasAccess(item.href)).length > 0 && (
+              <>
+                <button
+                  onClick={() => setMasterDataOpen(!masterDataOpen)}
+                  className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-sm font-medium transition-all ${isMasterDataActive
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-50'
+                    }`}
+                >
+                  <div className="flex items-center">
+                    <FolderTree className={`mr-4 h-5 w-5 ${isMasterDataActive ? 'text-blue-600' : 'text-gray-400'}`} />
+                    <span className="uppercase tracking-tight">Master Data</span>
+                  </div>
+                  <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${masterDataOpen ? 'rotate-180' : ''}`} />
+                </button>
 
-              {masterDataOpen && (
-                <div className="ml-6 space-y-1 animate-in slide-in-from-top-2 duration-200">
-                  {masterDataItems.map((item) => {
-                    const isActive = location.pathname === item.href;
-                    return (
-                      <Link
-                        key={item.name}
-                        to={item.href}
-                        onClick={() => setSidebarOpen(false)}
-                        className={`flex items-center px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${isActive ? 'text-blue-600 bg-blue-100/50' : 'text-gray-500 hover:text-blue-600 hover:bg-blue-50/50'}`}
-                      >
-                        <span className="w-1 h-1 bg-current rounded-full mr-3 opacity-40"></span>
-                        <span className="uppercase tracking-tighter">{item.name}</span>
-                      </Link>
-                    );
-                  })}
-                </div>
+                {masterDataOpen && (
+                  <div className="ml-6 space-y-1 animate-in slide-in-from-top-2 duration-200">
+                    {masterDataItems.filter(item => hasAccess(item.href)).map((item) => {
+                      const isActive = location.pathname === item.href;
+                      return (
+                        <Link
+                          key={item.name}
+                          to={item.href}
+                          onClick={() => setSidebarOpen(false)}
+                          className={`flex items-center px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${isActive ? 'text-blue-600 bg-blue-100/50' : 'text-gray-500 hover:text-blue-600 hover:bg-blue-50/50'}`}
+                        >
+                          <span className="w-1 h-1 bg-current rounded-full mr-3 opacity-40"></span>
+                          <span className="uppercase tracking-tighter">{item.name}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
               )}
             </div>
+            )}
 
             {/* Nav Group: Utilities */}
+            {additionalMenuItems.filter(item => hasAccess(item.href)).length > 0 && (
             <div className="space-y-1.5 box-border">
               <div className="px-3 mb-2 flex items-center gap-2 text-none">
                 <div className="w-1.5 h-1.5 bg-amber-500 rounded-full"></div>
                 <span className="text-[10px] font-medium text-gray-400 uppercase tracking-[0.2em]">Tools & Alat</span>
               </div>
-              {additionalMenuItems.map((item) => {
+              {additionalMenuItems.filter(item => hasAccess(item.href)).map((item) => {
                 const Icon = item.icon;
                 const isActive = location.pathname === item.href;
                 return (
@@ -321,9 +331,10 @@ export function Layout({ children }: LayoutProps) {
                 );
               })}
             </div>
+            )}
 
             {/* Nav Group: Developer (Conditioned) */}
-            {isDevMode && (
+            {isDevMode && devNavigationItems.filter(item => hasAccess(item.href)).length > 0 && (
               <div className="space-y-1.5 pt-2 border-t border-gray-100">
                 <button
                   onClick={() => setDevModeOpen(!devModeOpen)}
@@ -341,7 +352,7 @@ export function Layout({ children }: LayoutProps) {
 
                 {devModeOpen && (
                   <div className="ml-6 space-y-1 animate-in slide-in-from-top-2 duration-200">
-                    {devNavigationItems.map((item) => (
+                    {devNavigationItems.filter(item => hasAccess(item.href)).map((item) => (
                       <Link
                         key={item.name}
                         to={item.href}
@@ -381,7 +392,7 @@ export function Layout({ children }: LayoutProps) {
               </button>
             </div>
             <div className="mt-2 text-center">
-              <span className="text-[8px] font-medium text-gray-300 uppercase tracking-[0.4em]">v2.4.10 Build #502</span>
+              <span className="text-[8px] font-medium text-gray-300 uppercase tracking-[0.4em]">v{APP_VERSION}</span>
             </div>
           </div>
         </div>
@@ -437,7 +448,7 @@ export function Layout({ children }: LayoutProps) {
 
           <nav className="mt-8 flex-1 px-4 py-4 pb-6 overflow-y-auto no-scrollbar">
             <div className="space-y-3">
-              {navigationItems.map((item) => {
+              {navigationItems.filter(item => hasAccess(item.href)).map((item) => {
                 const Icon = item.icon;
                 const isActive = location.pathname === item.href;
                 return (
@@ -457,7 +468,7 @@ export function Layout({ children }: LayoutProps) {
               })}
 
               {/* Monitoring Stok Dropdown - Desktop */}
-              {!desktopSidebarCollapsed && (
+              {!desktopSidebarCollapsed && monitoringItems.filter(item => hasAccess(item.href)).length > 0 && (
                 <div className="space-y-1.5 pt-2">
                   <button
                     onClick={() => setMonitoringOpen(!monitoringOpen)}
@@ -475,7 +486,7 @@ export function Layout({ children }: LayoutProps) {
 
                   {monitoringOpen && (
                     <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
-                      {monitoringItems.map((item) => {
+                      {monitoringItems.filter(item => hasAccess(item.href)).map((item) => {
                         const Icon = item.icon;
                         const isActive = location.pathname === item.href;
                         return (
@@ -498,7 +509,7 @@ export function Layout({ children }: LayoutProps) {
               )}
 
               {/* Monitoring Stok Icon Only - Collapsed */}
-              {desktopSidebarCollapsed && (
+              {desktopSidebarCollapsed && monitoringItems.filter(item => hasAccess(item.href)).length > 0 && (
                 <Link
                   to="/stok-minus"
                   className={`flex items-center justify-center px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMonitoringActive
@@ -512,7 +523,7 @@ export function Layout({ children }: LayoutProps) {
               )}
 
               {/* Master Data Dropdown - Desktop */}
-              {!desktopSidebarCollapsed && (
+              {!desktopSidebarCollapsed && masterDataItems.filter(item => hasAccess(item.href)).length > 0 && (
                 <div className="space-y-1.5 pt-2">
                   <button
                     onClick={() => setMasterDataOpen(!masterDataOpen)}
@@ -530,7 +541,7 @@ export function Layout({ children }: LayoutProps) {
 
                   {masterDataOpen && (
                     <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
-                      {masterDataItems.map((item) => {
+                      {masterDataItems.filter(item => hasAccess(item.href)).map((item) => {
                         const Icon = item.icon;
                         const isActive = location.pathname === item.href;
                         return (
@@ -553,7 +564,7 @@ export function Layout({ children }: LayoutProps) {
               )}
 
               {/* Master Data Icon Only - Collapsed */}
-              {desktopSidebarCollapsed && (
+              {desktopSidebarCollapsed && masterDataItems.filter(item => hasAccess(item.href)).length > 0 && (
                 <Link
                   to="/master-data/gudang"
                   className={`flex items-center justify-center px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMasterDataActive
@@ -567,13 +578,14 @@ export function Layout({ children }: LayoutProps) {
               )}
 
               {/* Additional Menu Items - Desktop */}
+              {additionalMenuItems.filter(item => hasAccess(item.href)).length > 0 && (
               <div className="space-y-1 mt-4 pt-4 border-t border-gray-100">
                 {!desktopSidebarCollapsed && (
                   <div className="px-3 mb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
                     Menu Tambahan
                   </div>
                 )}
-                {additionalMenuItems.map((item) => {
+                {additionalMenuItems.filter(item => hasAccess(item.href)).map((item) => {
                   const Icon = item.icon;
                   const isActive = location.pathname === item.href;
                   return (
@@ -592,9 +604,10 @@ export function Layout({ children }: LayoutProps) {
                   );
                 })}
               </div>
+              )}
 
               {/* Dev Mode Dropdown - Desktop */}
-              {isDevMode && !desktopSidebarCollapsed && (
+              {isDevMode && !desktopSidebarCollapsed && devNavigationItems.filter(item => hasAccess(item.href)).length > 0 && (
                 <div className="space-y-1.5 mt-4 border-t border-gray-200 pt-4">
                   <button
                     onClick={() => setDevModeOpen(!devModeOpen)}
@@ -612,7 +625,7 @@ export function Layout({ children }: LayoutProps) {
 
                   {devModeOpen && (
                     <div className="ml-6 space-y-1">
-                      {devNavigationItems.map((item) => {
+                      {devNavigationItems.filter(item => hasAccess(item.href)).map((item) => {
                         const Icon = item.icon;
                         const isActive = location.pathname === item.href;
                         return (
@@ -699,11 +712,11 @@ export function Layout({ children }: LayoutProps) {
       {/* Main content */}
       <div className={`transition-all duration-500 relative min-h-screen flex flex-col ${desktopSidebarCollapsed ? 'lg:pl-20' : 'lg:pl-72'}`}>
         {/* Top bar - Standardized Global Immersive Header */}
-        <div className="sticky top-0 z-[60] flex h-16 items-center transition-all duration-300 bg-transparent text-white border-none shadow-none">
-          <div className="flex-1 flex items-center gap-x-4 px-4 sm:gap-x-6 sm:px-6 lg:px-8 pointer-events-auto">
+        <div className={`sticky top-0 z-[60] flex h-16 items-center transition-all duration-300 text-white ${scrolled ? 'backdrop-blur-md bg-blue-900/40 shadow-lg border-b border-white/10' : 'bg-transparent border-transparent shadow-none'}`}>
+          <div className="flex-1 flex items-center gap-x-4 px-6 sm:gap-x-6 lg:px-12 pointer-events-auto">
             <button
               type="button"
-              className={`-m-2.5 p-2.5 lg:hidden ${location.pathname === '/cek-rak' ? 'hidden' : ''} text-white`}
+              className="-m-2.5 p-2.5 lg:hidden text-white"
               onClick={() => setSidebarOpen(true)}
             >
               <Menu className="h-6 w-6" aria-hidden="true" />

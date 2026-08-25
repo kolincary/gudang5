@@ -3,8 +3,11 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Download, Upload, FileText, CheckCircle, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database } from 'lucide-react';
+import { Download, Upload, FileText, CheckCircle, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../lib/AuthContext';
+import { saveExportHistory } from '../lib/exportHistoryService';
+import { ExportHistoryModal } from './ExportHistoryModal';
 
 export interface DatabaseLogEntry {
   id: string;
@@ -49,7 +52,12 @@ function useDebounce<T>(value: T, delay: number): T {
   return debouncedValue;
 }
 
-export function DatabaseLog() {
+export interface DatabaseLogProps {
+  initialGudangFilter?: string;
+  bypassPin?: boolean;
+}
+
+export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: DatabaseLogProps = {}) {
 
   const [totalCount, setTotalCount] = useState(0);
   const [filteredEntries, setFilteredEntries] = useState<DatabaseLogEntry[]>([]);
@@ -63,6 +71,8 @@ export function DatabaseLog() {
     current: 0,
     message: ''
   });
+  
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
 
   // DevMode State - uses global devmode key from Layout
   const [showFixDates, setShowFixDates] = useState(() => {
@@ -90,10 +100,28 @@ export function DatabaseLog() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(100);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [isSyncingSubRak, setIsSyncingSubRak] = useState(false);
+  const [isFixingTransferDates, setIsFixingTransferDates] = useState(false);
 
-  const [isPinModalOpen, setIsPinModalOpen] = useState(true);
-  const [isAccessGranted, setIsAccessGranted] = useState(false);
+  const { userPermissions, userName } = useAuth();
+  
+  const [isPinModalOpen, setIsPinModalOpen] = useState(() => {
+    if (bypassPin) return false;
+    return !userPermissions?.includes('bypass_pin_log');
+  });
+  const [isAccessGranted, setIsAccessGranted] = useState(() => {
+    if (bypassPin) return true;
+    return !!userPermissions?.includes('bypass_pin_log');
+  });
   const [pin, setPin] = useState('');
+
+  useEffect(() => {
+      if (bypassPin || userPermissions?.includes('bypass_pin_log')) {
+          setIsPinModalOpen(false);
+          setIsAccessGranted(true);
+      }
+  }, [userPermissions, bypassPin]);
+
   const [pinMessage, setPinMessage] = useState({ text: '', type: '' });
   const correctPin = '8888';
 
@@ -105,12 +133,38 @@ export function DatabaseLog() {
   const [filters, setFilters] = useState({
     sku: '',
     type: '',
-    gudang: '',
+    gudang: initialGudangFilter || '',
     rak: '',
+    subRak: '',
+    waktu: '',
+    logUpdateUser: '',
     tanggal: '',
     tglScan: '',
-    isAdjustment: ''
+    isAdjustment: '',
+    onlySelected: false
   });
+
+  useEffect(() => {
+    if (initialGudangFilter) {
+      setFilters(prev => ({ ...prev, gudang: initialGudangFilter }));
+    }
+  }, [initialGudangFilter]);
+
+  // DevMode typing trigger: if user types "devmode" in any filter field, activate devMode
+  useEffect(() => {
+    const term = (filters.sku || filters.gudang || filters.rak || '').toLowerCase().trim();
+    if (term === 'devmode') {
+      localStorage.setItem('devmode', 'true');
+      setShowFixDates(true);
+      setFilters(prev => ({
+        ...prev,
+        sku: prev.sku === 'devmode' ? '' : prev.sku,
+        gudang: prev.gudang === 'devmode' ? '' : prev.gudang,
+        rak: prev.rak === 'devmode' ? '' : prev.rak
+      }));
+      showToast('DevMode Aktif! Filter Waktu, Sub Rak, dan Log Update User telah dibuka.', 'success');
+    }
+  }, [filters.sku, filters.gudang, filters.rak]);
 
   // Debounce filter changes to prevent lag when typing dates
   const debouncedFilters = useDebounce(filters, 500);
@@ -128,12 +182,12 @@ export function DatabaseLog() {
   const [bulkEditValue, setBulkEditValue] = useState('');
   const [isBulkOperationLoading, setIsBulkOperationLoading] = useState(false);
 
-  // --- MANUAL DATE FILTER STATE ---
+  // --- MANUAL DATE / TIME FILTER STATE ---
   const [isManualDateModalOpen, setIsManualDateModalOpen] = useState(false);
   const [manualDateValue, setManualDateValue] = useState('');
-  const [manualDateTarget, setManualDateTarget] = useState<'tanggal' | 'tglScan' | 'bulk_tanggal' | 'bulk_tgl_scan' | null>(null);
+  const [manualDateTarget, setManualDateTarget] = useState<'tanggal' | 'tglScan' | 'waktu' | 'bulk_tanggal' | 'bulk_tgl_scan' | null>(null);
 
-  const handleOpenManualFilter = (target: 'tanggal' | 'tglScan') => {
+  const handleOpenManualFilter = (target: 'tanggal' | 'tglScan' | 'waktu') => {
     setManualDateTarget(target);
     setManualDateValue(filters[target]);
     setIsManualDateModalOpen(true);
@@ -496,8 +550,11 @@ export function DatabaseLog() {
     if (isAccessGranted) {
       loadTotalCount();
       loadDropdownOptions();
+      if (initialGudangFilter) {
+        handleLoadData();
+      }
     }
-  }, [isAccessGranted]);
+  }, [isAccessGranted, initialGudangFilter]);
 
   useEffect(() => {
     // Memberikan fokus ke input PIN saat modal terbuka
@@ -603,7 +660,8 @@ export function DatabaseLog() {
 
       const { count, error } = await supabase
         .from('database_log')
-        .select('*', { count: 'exact', head: true });
+        .select('*', { count: 'exact', head: true })
+        .not('gudang', 'in', '("VERIFY","UNVERIFY")');
 
       if (error) {
         console.error('Error loading count:', error);
@@ -740,15 +798,21 @@ export function DatabaseLog() {
     }
   };
 
-  const loadLogEntries = async (page = 1, perPage = itemsPerPage, currentFilters = filters) => {
+  const loadLogEntries = async (page = 1, perPage = itemsPerPage, currentFilters = filters, specificSelectedIds?: Set<string>) => {
     if (!isAccessGranted) return;
 
     try {
       setLoading(true);
 
+      let safePage = Number(page);
+      if (isNaN(safePage) || safePage < 1) safePage = 1;
+      let safePerPage = Number(perPage);
+      if (isNaN(safePerPage) || safePerPage < 1) safePerPage = 100;
+
       let query = supabase
         .from('database_log')
-        .select('*', { count: 'exact' });
+        .select('*', { count: 'exact' })
+        .not('gudang', 'in', '("VERIFY","UNVERIFY")');
 
       if (sortConfig) {
         if (sortConfig.key === 'tgl') {
@@ -776,6 +840,18 @@ export function DatabaseLog() {
       }
       if (currentFilters.rak) {
         query = query.ilike('rak', `%${currentFilters.rak}%`);
+      }
+      if (currentFilters.subRak) {
+        query = query.ilike('sub_rak', `%${currentFilters.subRak}%`);
+      }
+      if (currentFilters.waktu) {
+        const rawWaktu = currentFilters.waktu.trim();
+        const colonWaktu = rawWaktu.replace(/\./g, ':');
+        const dotWaktu = rawWaktu.replace(/:/g, '.');
+        query = query.or(`waktu.ilike.%${rawWaktu}%,waktu.ilike.%${colonWaktu}%,waktu.ilike.%${dotWaktu}%`);
+      }
+      if (currentFilters.logUpdateUser) {
+        query = query.ilike('log_update_user', `%${currentFilters.logUpdateUser}%`);
       }
       if (currentFilters.tanggal) {
         const isoDate = normalizeFilterDate(currentFilters.tanggal);
@@ -805,9 +881,88 @@ export function DatabaseLog() {
       if (currentFilters.isAdjustment) {
         query = query.eq('is_adjustment', currentFilters.isAdjustment === 'true');
       }
+      
+      if (currentFilters.onlySelected) {
+        const targetIds = specificSelectedIds || selectedIds;
+        const targetIdsArray = Array.from(targetIds);
+        
+        if (targetIdsArray.length === 0) {
+          setFilteredEntries([]);
+          setTotalCount(0);
+          setDataLoaded(true);
+          setLoading(false);
+          return;
+        }
 
-      const from = (page - 1) * perPage;
-      const to = from + perPage - 1;
+        let allSelectedData: any[] = [];
+        const batchSize = 100;
+        
+        for (let i = 0; i < targetIdsArray.length; i += batchSize) {
+          const batch = targetIdsArray.slice(i, i + batchSize);
+          const { data, error } = await supabase
+            .from('database_log')
+            .select('*')
+            .in('id', batch);
+            
+          if (error) {
+            console.error('Error loading selected entries:', error);
+            showToast('Gagal memuat data terpilih', 'error');
+            setLoading(false);
+            return;
+          }
+          if (data) {
+            allSelectedData = [...allSelectedData, ...data];
+          }
+        }
+        
+        // Sorting manual di client
+        allSelectedData.sort((a, b) => {
+          let aVal, bVal;
+          if (sortConfig) {
+            const key = sortConfig.key === 'tgl' ? 'tgl_normalized' : sortConfig.key;
+            aVal = a[key];
+            bVal = b[key];
+          } else {
+            // Default sort: tgl_normalized DESC, waktu DESC, id DESC
+            if (a.tgl_normalized !== b.tgl_normalized) {
+              return a.tgl_normalized > b.tgl_normalized ? -1 : 1;
+            }
+            if (a.waktu !== b.waktu) {
+              return a.waktu > b.waktu ? -1 : 1;
+            }
+            return a.id > b.id ? -1 : 1;
+          }
+          
+          if (aVal === bVal) {
+             return a.id > b.id ? -1 : 1;
+          }
+          
+          const ascending = sortConfig ? sortConfig.direction === 'asc' : false;
+          if (aVal < bVal) return ascending ? -1 : 1;
+          if (aVal > bVal) return ascending ? 1 : -1;
+          return 0;
+        });
+        
+        // Pagination manual di client
+        const count = allSelectedData.length;
+        const from = (safePage - 1) * safePerPage;
+        const to = from + safePerPage;
+        const pagedData = allSelectedData.slice(from, to);
+        
+        const mappedData = pagedData.map((item: any) => ({
+          ...item,
+          user: item.user_name
+        }));
+        
+        setFilteredEntries(mappedData);
+        setTotalCount(count);
+        setDataLoaded(true);
+        setLoading(false);
+        return;
+      }
+
+      const from = (safePage - 1) * safePerPage;
+      const to = from + safePerPage - 1;
       query = query.range(from, to);
 
       const { data, error, count } = await query;
@@ -822,7 +977,6 @@ export function DatabaseLog() {
         ...item,
         user: item.user_name
       }));
-
 
       setFilteredEntries(mappedData);
       setTotalCount(count || 0);
@@ -845,8 +999,12 @@ export function DatabaseLog() {
   }, [debouncedFilters, currentPage, itemsPerPage, sortConfig]);
 
   useEffect(() => {
-    setSelectedIds(new Set());
-    setIsAllPageSelected(false);
+    // Jangan reset seleksi jika mode 'onlySelected' sedang aktif,
+    // karena akan menghapus hasil otomatis dari tombol Self-Transfer atau saat user memfilter pilihan
+    if (!filters.onlySelected) {
+      setSelectedIds(new Set());
+      setIsAllPageSelected(false);
+    }
   }, [currentPage, filters]);
 
   const handleCheckboxChange = (id: string) => {
@@ -867,11 +1025,16 @@ export function DatabaseLog() {
 
   const handleSelectAll = () => {
     if (isAllPageSelected) {
-      setSelectedIds(new Set());
+      // Unselect current page
+      const newSelected = new Set(selectedIds);
+      filteredEntries.forEach(entry => newSelected.delete(entry.id));
+      setSelectedIds(newSelected);
       setIsAllPageSelected(false);
     } else {
-      const allIds = new Set(filteredEntries.map(entry => entry.id));
-      setSelectedIds(allIds);
+      // Select current page
+      const newSelected = new Set(selectedIds);
+      filteredEntries.forEach(entry => newSelected.add(entry.id));
+      setSelectedIds(newSelected);
       setIsAllPageSelected(true);
     }
   };
@@ -879,6 +1042,9 @@ export function DatabaseLog() {
   const clearSelection = () => {
     setSelectedIds(new Set());
     setIsAllPageSelected(false);
+    if (filters.onlySelected) {
+      setFilters(prev => ({ ...prev, onlySelected: false }));
+    }
   };
 
   const handleLoadData = () => {
@@ -1026,6 +1192,106 @@ export function DatabaseLog() {
     }
   };
 
+  const handleSelectSelfTransfers = async () => {
+    try {
+      setLoading(true);
+      showToast('Mencari data Self-Transfer (TRANSFER pada rak yang sama)...', 'info');
+
+      // Ambil total count terlebih dahulu agar bisa concurrent fetching
+      const { count, error: countError } = await supabase
+        .from('database_log')
+        .select('*', { count: 'exact', head: true })
+        .eq('gudang', 'TRANSFER');
+        
+      if (countError) throw countError;
+      
+      if (!count || count === 0) {
+        showToast('Tidak ada data TRANSFER sama sekali di database.', 'info');
+        setLoading(false);
+        return;
+      }
+
+      let allData: any[] = [];
+      const batchSize = 1000;
+      const totalPages = Math.ceil(count / batchSize);
+      
+      const queries = [];
+      for (let p = 0; p < totalPages; p++) {
+        const from = p * batchSize;
+        const to = from + batchSize - 1;
+        queries.push(
+          supabase
+            .from('database_log')
+            .select('id, sku, type, rak, tgl, waktu, jumlah')
+            .eq('gudang', 'TRANSFER')
+            .range(from, to)
+        );
+      }
+      
+      // Batch requests dengan limit 15 concurrency
+      const concurrency = 15;
+      for (let i = 0; i < queries.length; i += concurrency) {
+        const batchPromises = queries.slice(i, i + concurrency);
+        const results = await Promise.all(batchPromises);
+        
+        for (const res of results) {
+          if (res.error) throw res.error;
+          if (res.data && res.data.length > 0) {
+            allData = [...allData, ...res.data];
+          }
+        }
+      }
+
+      if (allData.length === 0) {
+        showToast('Tidak ada data TRANSFER sama sekali di database.', 'info');
+        setLoading(false);
+        return;
+      }
+
+      const groups = new Map<string, any[]>();
+      allData.forEach(entry => {
+        // Gabungkan tgl, waktu, sku, rak, jumlah sebagai unique key transaksi transfer
+        const normTgl = (entry.tgl || '').trim();
+        const normWaktu = (entry.waktu || '').trim();
+        const normSku = (entry.sku || '').trim().toUpperCase();
+        const normRak = (entry.rak || '').trim().toUpperCase();
+        const normJumlah = Math.abs(Number(entry.jumlah || 0));
+        const key = `${normTgl}_${normWaktu}_${normSku}_${normRak}_${normJumlah}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(entry);
+      });
+
+      const selfTransfers = new Set<string>();
+      groups.forEach((entries) => {
+        if (entries.length > 1) {
+          const hasIn = entries.some(e => e.type === 'IN');
+          const hasOut = entries.some(e => e.type === 'OUT');
+          if (hasIn && hasOut) {
+            entries.forEach(e => selfTransfers.add(e.id));
+          }
+        }
+      });
+
+      if (selfTransfers.size === 0) {
+        showToast('Ternyata tidak ditemukan Self-Transfer (Transfer ke rak yang sama).', 'success');
+      } else {
+        setSelectedIds(selfTransfers);
+        const nextFilters = { ...filters, gudang: 'TRANSFER', onlySelected: true } as any;
+        setFilters(nextFilters);
+        setTimeout(() => {
+          loadLogEntries(1, itemsPerPage, nextFilters, selfTransfers);
+        }, 100);
+        showToast(`Ditemukan ${selfTransfers.size} baris Self-Transfer! Data telah ditampilkan dan otomatis terpilih, silakan periksa & hapus.`, 'warning');
+      }
+
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal mencari Self-Transfer', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
 
@@ -1062,13 +1328,417 @@ export function DatabaseLog() {
         showToast(`Berhasil menghapus ${successCount} data, ${errorCount} gagal`, 'warning');
       }
 
-      clearSelection();
-      loadLogEntries(currentPage, itemsPerPage);
+      if (filters.onlySelected) {
+        const newSelectedIds = new Set(selectedIds);
+        ids.forEach(id => newSelectedIds.delete(id));
+        setSelectedIds(newSelectedIds);
+        setIsAllPageSelected(false);
+        
+        // Langsung panggil loadLogEntries dengan next state agar tabel langsung terupdate
+        loadLogEntries(currentPage, itemsPerPage, filters, newSelectedIds);
+      } else {
+        clearSelection();
+        loadLogEntries(currentPage, itemsPerPage);
+      }
     } catch (error) {
       console.error('Error bulk deleting:', error);
       showToast('Terjadi kesalahan saat bulk delete', 'error');
     } finally {
       setIsBulkOperationLoading(false);
+    }
+  };
+
+  const handleSyncTglScanWithTgl = async () => {
+    if (selectedIds.size === 0) return;
+
+    if (!confirm(`Apakah Anda yakin ingin menyamakan Tgl Scan = Tgl untuk ${selectedIds.size} data terpilih?`)) {
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const selectedArray = Array.from(selectedIds);
+      const batchSize = 100;
+      let totalSuccess = 0;
+      let totalError = 0;
+
+      for (let i = 0; i < selectedArray.length; i += batchSize) {
+        const batchIds = selectedArray.slice(i, i + batchSize);
+        const { data: records, error: fetchError } = await supabase
+          .from('database_log')
+          .select('id, tgl')
+          .in('id', batchIds);
+
+        if (fetchError) {
+          console.error('Error fetching records for sync:', fetchError);
+          totalError += batchIds.length;
+          continue;
+        }
+
+        if (records && records.length > 0) {
+          // Group IDs by their own row's tgl value
+          const tglGroups: Record<string, string[]> = {};
+          records.forEach((row: any) => {
+            if (row.tgl) {
+              if (!tglGroups[row.tgl]) tglGroups[row.tgl] = [];
+              tglGroups[row.tgl].push(row.id);
+            }
+          });
+
+          // Perform batch updates for each distinct tgl value
+          for (const [tglVal, ids] of Object.entries(tglGroups)) {
+            const { error: updateError } = await supabase
+              .from('database_log')
+              .update({
+                tgl_scan: tglVal,
+                log_update_user: `DEVMODE: Sync Tgl Scan = Tgl`
+              })
+              .in('id', ids);
+
+            if (updateError) {
+              console.error('Error updating tgl_scan:', updateError);
+              totalError += ids.length;
+            } else {
+              totalSuccess += ids.length;
+            }
+          }
+        }
+      }
+
+      if (totalError === 0) {
+        showToast(`Berhasil menyamakan Tgl Scan dengan Tgl untuk ${totalSuccess} data!`, 'success');
+      } else {
+        showToast(`Berhasil menyamakan ${totalSuccess} data, ${totalError} gagal.`, 'warning');
+      }
+
+      clearSelection();
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (error) {
+      console.error('Error syncing tgl_scan with tgl:', error);
+      showToast('Terjadi kesalahan saat menyamakan Tgl Scan', 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
+  const handleSyncSubRakWithRak = async () => {
+    if (selectedIds.size === 0) return;
+
+    if (!confirm(`Apakah Anda yakin ingin menyamakan Sub Rak = Rak untuk ${selectedIds.size} data terpilih?`)) {
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const selectedArray = Array.from(selectedIds);
+      const batchSize = 100;
+      let totalSuccess = 0;
+      let totalError = 0;
+
+      for (let i = 0; i < selectedArray.length; i += batchSize) {
+        const batchIds = selectedArray.slice(i, i + batchSize);
+        const { data: records, error: fetchError } = await supabase
+          .from('database_log')
+          .select('id, rak')
+          .in('id', batchIds);
+
+        if (fetchError) {
+          console.error('Error fetching records for sub_rak sync:', fetchError);
+          totalError += batchIds.length;
+          continue;
+        }
+
+        if (records && records.length > 0) {
+          const rakGroups: Record<string, string[]> = {};
+          records.forEach((row: any) => {
+            if (row.rak) {
+              if (!rakGroups[row.rak]) rakGroups[row.rak] = [];
+              rakGroups[row.rak].push(row.id);
+            }
+          });
+
+          for (const [rakVal, ids] of Object.entries(rakGroups)) {
+            const { error: updateError } = await supabase
+              .from('database_log')
+              .update({
+                sub_rak: rakVal,
+                log_update_user: `DEVMODE: Sync Sub Rak = Rak`
+              })
+              .in('id', ids);
+
+            if (updateError) {
+              console.error('Error updating sub_rak:', updateError);
+              totalError += ids.length;
+            } else {
+              totalSuccess += ids.length;
+            }
+          }
+        }
+      }
+
+      if (totalError === 0) {
+        showToast(`Berhasil menyamakan Sub Rak dengan Rak untuk ${totalSuccess} data!`, 'success');
+      } else {
+        showToast(`Berhasil menyamakan ${totalSuccess} data, ${totalError} gagal.`, 'warning');
+      }
+
+      clearSelection();
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (error) {
+      console.error('Error syncing sub_rak with rak:', error);
+      showToast('Terjadi kesalahan saat menyamakan Sub Rak', 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
+  const handleSyncAllSubRakWithRak = async () => {
+    if (!confirm('Apakah Anda yakin ingin menyamakan Sub Rak = Rak untuk SELURUH DATA di database_log?')) {
+      return;
+    }
+
+    try {
+      setIsSyncingSubRak(true);
+      let totalUpdated = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data: records, error: fetchError } = await supabase
+          .from('database_log')
+          .select('id, rak, sub_rak')
+          .not('rak', 'is', null)
+          .neq('rak', '')
+          .or('sub_rak.is.null,sub_rak.eq.UTAMA,sub_rak.neq.rak')
+          .limit(200);
+
+        if (fetchError) {
+          console.error('Error fetching records for all sub_rak sync:', fetchError);
+          showToast(`Gagal memuat data: ${fetchError.message}`, 'error');
+          break;
+        }
+
+        if (!records || records.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        const rowsToSync = records.filter(r => r.rak && r.sub_rak !== r.rak);
+        if (rowsToSync.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        const rakGroups: Record<string, string[]> = {};
+        rowsToSync.forEach((row: any) => {
+          if (!rakGroups[row.rak]) rakGroups[row.rak] = [];
+          rakGroups[row.rak].push(row.id);
+        });
+
+        let batchSuccess = 0;
+        for (const [rakVal, ids] of Object.entries(rakGroups)) {
+          const { error: updateError } = await supabase
+            .from('database_log')
+            .update({
+              sub_rak: rakVal,
+              log_update_user: `DEVMODE: Sync All Sub Rak = Rak`
+            })
+            .in('id', ids);
+
+          if (!updateError) {
+            batchSuccess += ids.length;
+          }
+        }
+
+        totalUpdated += batchSuccess;
+        if (batchSuccess === 0) {
+          break;
+        }
+      }
+
+      if (totalUpdated > 0) {
+        showToast(`Berhasil menyamakan Sub Rak = Rak untuk ${totalUpdated} data secara keseluruhan!`, 'success');
+      } else {
+        showToast(`Semua data Sub Rak sudah sesuai dengan Rak!`, 'info');
+      }
+
+      fetchLogs(); // refresh table
+    } catch (err: any) {
+      console.error('Error in handleSyncAllSubRakWithRak:', err);
+      showToast(`Gagal menyamakan Sub Rak: ${err.message || 'unknown error'}`, 'error');
+    } finally {
+      setIsSyncingSubRak(false);
+    }
+  };
+
+  const handleFixAllTransferDates = async () => {
+    if (!confirm('Apakah Anda yakin ingin memperhitungkan & menyamakan tgl & tgl_scan SELURUH log TRANSFER (OUT & IN berpasangan) secara otomatis di database_log?')) {
+      return;
+    }
+
+    try {
+      setIsFixingTransferDates(true);
+      showToast('Memuat seluruh data log TRANSFER...', 'info');
+
+      // 1. Fetch ALL TRANSFER logs in bulk
+      let allTransferLogs: any[] = [];
+      let from = 0;
+      const batchSize = 1000;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from('database_log')
+          .select('id, sku, tgl, tgl_scan, type, gudang, waktu, jumlah, created_at')
+          .eq('gudang', 'TRANSFER')
+          .order('id', { ascending: true })
+          .range(from, from + batchSize - 1);
+
+        if (error) {
+          console.error('Error loading TRANSFER logs:', error);
+          showToast(`Gagal memuat log transfer: ${error.message}`, 'error');
+          break;
+        }
+
+        if (data && data.length > 0) {
+          allTransferLogs.push(...data);
+          from += batchSize;
+          if (data.length < batchSize) hasMore = false;
+        } else {
+          hasMore = false;
+        }
+      }
+
+      if (allTransferLogs.length === 0) {
+        showToast('Tidak ditemukan data log TRANSFER di database.', 'info');
+        return;
+      }
+
+      // Extract unique SKUs present in TRANSFER logs
+      const uniqueSkusMap = new Map<string, string>();
+      allTransferLogs.forEach(l => {
+        const rawSku = (l.sku || '').trim();
+        if (rawSku) uniqueSkusMap.set(rawSku.toUpperCase(), rawSku);
+      });
+
+      const uniqueSkus = Array.from(uniqueSkusMap.values());
+      showToast(`Mencari data penerimaan bon asli untuk ${uniqueSkus.length} SKU unik...`, 'info');
+
+      // 2. Fetch original IN receipt logs per unique SKU
+      const inReceiptsBySku = new Map<string, any[]>();
+      const skuChunkSize = 20;
+
+      for (let i = 0; i < uniqueSkus.length; i += skuChunkSize) {
+        const chunkSkus = uniqueSkus.slice(i, i + skuChunkSize);
+        await Promise.all(
+          chunkSkus.map(async (sku) => {
+            const { data } = await supabase
+              .from('database_log')
+              .select('tgl, tgl_scan, created_at')
+              .ilike('sku', sku)
+              .eq('type', 'IN')
+              .neq('gudang', 'TRANSFER')
+              .order('created_at', { ascending: true });
+
+            if (data && data.length > 0) {
+              const formatted = data.map(d => ({
+                tgl: d.tgl,
+                tgl_scan: d.tgl_scan || d.tgl,
+                createdAt: new Date(d.created_at).getTime()
+              }));
+              inReceiptsBySku.set(sku.toUpperCase(), formatted);
+            }
+          })
+        );
+      }
+
+      // Helper to find chronological IN date for a given SKU at/before transferTimestamp
+      const findCorrectDate = (normSku: string, transferTimestamp: number) => {
+        const list = inReceiptsBySku.get(normSku);
+        if (!list || list.length === 0) return null;
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i].createdAt <= transferTimestamp) {
+            return list[i];
+          }
+        }
+        return list[0];
+      };
+
+      // 3. Process TRANSFER OUT logs and match pairs
+      const updatesMap = new Map<string, { tgl: string; tgl_scan: string }>();
+      const outPairs = new Map<string, { tgl: string; tgl_scan: string }>();
+
+      const outLogs = allTransferLogs.filter(l => (l.type || '').trim().toUpperCase() === 'OUT');
+      const inLogs = allTransferLogs.filter(l => (l.type || '').trim().toUpperCase() === 'IN');
+
+      outLogs.forEach(outRow => {
+        const normSku = (outRow.sku || '').trim().toUpperCase();
+        const transferTime = new Date(outRow.created_at).getTime();
+        const matched = findCorrectDate(normSku, transferTime);
+
+        if (matched) {
+          const correctTgl = matched.tgl;
+          const correctTglScan = matched.tgl_scan;
+
+          if (outRow.tgl !== correctTgl || outRow.tgl_scan !== correctTglScan) {
+            updatesMap.set(outRow.id, { tgl: correctTgl, tgl_scan: correctTglScan });
+          }
+
+          const pairKey = `${normSku}|${(outRow.waktu || '').trim()}|${outRow.jumlah}`;
+          outPairs.set(pairKey, { tgl: correctTgl, tgl_scan: correctTglScan });
+        }
+      });
+
+      // Match IN logs with their corresponding OUT pair
+      inLogs.forEach(inRow => {
+        const normSku = (inRow.sku || '').trim().toUpperCase();
+        const pairKey = `${normSku}|${(inRow.waktu || '').trim()}|${inRow.jumlah}`;
+        const pairMatched = outPairs.get(pairKey);
+
+        if (pairMatched) {
+          if (inRow.tgl !== pairMatched.tgl || inRow.tgl_scan !== pairMatched.tgl_scan) {
+            updatesMap.set(inRow.id, { tgl: pairMatched.tgl, tgl_scan: pairMatched.tgl_scan });
+          }
+        }
+      });
+
+      const totalToUpdate = updatesMap.size;
+      if (totalToUpdate === 0) {
+        showToast('Seluruh data log TRANSFER sudah 100% cocok & akurat!', 'success');
+        return;
+      }
+
+      showToast(`Memperbarui ${totalToUpdate} baris log TRANSFER yang belum sesuai...`, 'info');
+
+      // 4. Batch update updatesMap in parallel chunks of 50
+      const entries = Array.from(updatesMap.entries());
+      let updatedCount = 0;
+      const updateBatchSize = 50;
+
+      for (let i = 0; i < entries.length; i += updateBatchSize) {
+        const chunk = entries.slice(i, i + updateBatchSize);
+        await Promise.all(
+          chunk.map(([id, val]) =>
+            supabase
+              .from('database_log')
+              .update({
+                tgl: val.tgl,
+                tgl_scan: val.tgl_scan,
+                log_update_user: 'DEVMODE: Fix Transfer Date'
+              })
+              .eq('id', id)
+          )
+        );
+        updatedCount += chunk.length;
+        showToast(`Memperbarui data: ${updatedCount} / ${totalToUpdate}...`, 'info');
+      }
+
+      showToast(`Selesai! Berhasil memperbarui ${totalToUpdate} baris log TRANSFER!`, 'success');
+      loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
+    } catch (err: any) {
+      console.error('Error in handleFixAllTransferDates:', err);
+      showToast(`Gagal memperbaiki tanggal transfer: ${err.message || 'unknown error'}`, 'error');
+    } finally {
+      setIsFixingTransferDates(false);
     }
   };
 
@@ -1101,7 +1771,7 @@ export function DatabaseLog() {
     setFilters({
       sku: '',
       type: '',
-      gudang: '',
+      gudang: initialGudangFilter || '',
       rak: '',
       tanggal: '',
       tglScan: '',
@@ -1162,13 +1832,22 @@ export function DatabaseLog() {
         // 1. Get Total Count First
         let countQuery = supabase
           .from('database_log')
-          .select('*', { count: 'exact', head: true });
+          .select('*', { count: 'exact', head: true })
+          .not('gudang', 'in', '("VERIFY","UNVERIFY")');
 
         // Apply Filters to Count Query
         if (filters.sku) countQuery = countQuery.eq('sku', filters.sku);
         if (filters.type) countQuery = countQuery.eq('type', filters.type);
         if (filters.gudang) countQuery = countQuery.ilike('gudang', `%${filters.gudang}%`);
         if (filters.rak) countQuery = countQuery.ilike('rak', `%${filters.rak}%`);
+        if (filters.subRak) countQuery = countQuery.ilike('sub_rak', `%${filters.subRak}%`);
+        if (filters.waktu) {
+          const rawW = filters.waktu.trim();
+          const colonW = rawW.replace(/\./g, ':');
+          const dotW = rawW.replace(/:/g, '.');
+          countQuery = countQuery.or(`waktu.ilike.%${rawW}%,waktu.ilike.%${colonW}%,waktu.ilike.%${dotW}%`);
+        }
+        if (filters.logUpdateUser) countQuery = countQuery.ilike('log_update_user', `%${filters.logUpdateUser}%`);
         if (filters.tanggal) countQuery = countQuery.eq('tgl', filters.tanggal);
         if (filters.tglScan) countQuery = countQuery.eq('tgl_scan', filters.tglScan);
         if (filters.isAdjustment) countQuery = countQuery.eq('is_adjustment', filters.isAdjustment === 'true');
@@ -1189,13 +1868,21 @@ export function DatabaseLog() {
         let hasMore = true;
 
         while (hasMore) {
-          let batchQuery = supabase.from('database_log').select('*');
+          let batchQuery = supabase.from('database_log').select('*').not('gudang', 'in', '("VERIFY","UNVERIFY")');
 
           // Apply Filters to Data Query
           if (filters.sku) batchQuery = batchQuery.eq('sku', filters.sku);
           if (filters.type) batchQuery = batchQuery.eq('type', filters.type);
           if (filters.gudang) batchQuery = batchQuery.ilike('gudang', `%${filters.gudang}%`);
           if (filters.rak) batchQuery = batchQuery.ilike('rak', `%${filters.rak}%`);
+          if (filters.subRak) batchQuery = batchQuery.ilike('sub_rak', `%${filters.subRak}%`);
+          if (filters.waktu) {
+            const rawW = filters.waktu.trim();
+            const colonW = rawW.replace(/\./g, ':');
+            const dotW = rawW.replace(/:/g, '.');
+            batchQuery = batchQuery.or(`waktu.ilike.%${rawW}%,waktu.ilike.%${colonW}%,waktu.ilike.%${dotW}%`);
+          }
+          if (filters.logUpdateUser) batchQuery = batchQuery.ilike('log_update_user', `%${filters.logUpdateUser}%`);
           if (filters.tanggal) batchQuery = batchQuery.eq('tgl', filters.tanggal);
           if (filters.tglScan) batchQuery = batchQuery.eq('tgl_scan', filters.tglScan);
           if (filters.isAdjustment) batchQuery = batchQuery.eq('is_adjustment', filters.isAdjustment === 'true');
@@ -1323,7 +2010,27 @@ export function DatabaseLog() {
       setExportProgress(prev => ({ ...prev, message: 'Menyimpan file...', progress: 100 }));
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      saveAs(blob, `database-log-${new Date().toISOString().split('T')[0]}.xlsx`);
+
+      let exportDateStr = '';
+      if (filters.tanggal) {
+        exportDateStr = filters.tanggal;
+      } else if (filters.tglScan) {
+        exportDateStr = filters.tglScan;
+      } else {
+        exportDateStr = new Date().toISOString().split('T')[0];
+      }
+
+      const fileName = `database-log-${exportDateStr}.xlsx`;
+      saveAs(blob, fileName);
+
+      // Async background task for history
+      saveExportHistory(
+        blob,
+        userName || 'Unknown',
+        exportDateStr,
+        new Date().toLocaleTimeString('id-ID', { hour12: false }).replace(/:/g, '.'),
+        fileName
+      ).catch(console.error);
 
       showToast(`Export Excel berhasil! ${allExportData.length} data telah diunduh.`, 'success');
 
@@ -1597,6 +2304,11 @@ export function DatabaseLog() {
 
   return (
     <>
+      <ExportHistoryModal 
+        isOpen={isHistoryModalOpen} 
+        onClose={() => setIsHistoryModalOpen(false)} 
+      />
+
       {isPinModalOpen && (
         <Modal isOpen={isPinModalOpen} onClose={handleClosePinModal} title="Akses Database Log" size="sm">
           <div className="flex flex-col items-center p-4">
@@ -1700,6 +2412,28 @@ export function DatabaseLog() {
                           {isRepairing ? 'Repairing...' : 'Fix Scan'}
                         </span>
                       </button>
+                      <button
+                        onClick={handleSyncAllSubRakWithRak}
+                        disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
+                        className="h-12 px-5 bg-teal-600 hover:bg-teal-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-teal-400/50 disabled:opacity-50"
+                        title="Samakan SEMUA Sub Rak = Rak di database_log"
+                      >
+                        <RefreshCw className={`h-4 w-4 ${isSyncingSubRak ? 'animate-spin' : ''}`} />
+                        <span className="uppercase text-[10px] font-black">
+                          {isSyncingSubRak ? 'Syncing...' : 'Fix Sub Rak'}
+                        </span>
+                      </button>
+                      <button
+                        onClick={handleFixAllTransferDates}
+                        disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
+                        className="h-12 px-5 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-purple-400/50 disabled:opacity-50"
+                        title="Perbaiki Tanggal Log TRANSFER (OUT & IN Berpasangan) Sesuai Tanggal Barang Masuk Asli"
+                      >
+                        <Calendar className={`h-4 w-4 ${isFixingTransferDates ? 'animate-spin' : ''}`} />
+                        <span className="uppercase text-[10px] font-black">
+                          {isFixingTransferDates ? 'Fixing...' : 'Fix Transfer Date'}
+                        </span>
+                      </button>
                     </div>
                   )}
 
@@ -1717,6 +2451,14 @@ export function DatabaseLog() {
                   >
                     <Upload className="h-4 w-4" />
                     <span className="uppercase text-[10px] font-black">Import</span>
+                  </button>
+
+                  <button
+                    onClick={() => setIsHistoryModalOpen(true)}
+                    className="h-12 px-5 bg-fuchsia-600 hover:bg-fuchsia-500 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(192,38,211,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2 border border-fuchsia-400/50"
+                  >
+                    <History className="h-4 w-4" />
+                    <span className="uppercase text-[10px] font-black">Riwayat Export</span>
                   </button>
 
                   <button
@@ -1751,7 +2493,7 @@ export function DatabaseLog() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-4">
+            <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 ${showFixDates ? 'xl:grid-cols-5' : 'xl:grid-cols-7'} gap-4`}>
               <div>
                 <div className="bg-blue-600 text-white px-3 py-2 rounded-t-md">
                   <span className="font-medium">SKU</span>
@@ -1923,6 +2665,103 @@ export function DatabaseLog() {
                 </div>
 
               </div>
+
+              {/* DEVMODE EXTRA FILTERS */}
+              {showFixDates && (
+                <>
+                  {/* FILTER WAKTU */}
+                  <div>
+                    <div className="bg-indigo-700 text-white px-3 py-2 rounded-t-md flex items-center justify-between">
+                      <span className="font-bold text-xs uppercase tracking-wider">Waktu (Jam.Menit.Detik)</span>
+                      <span className="text-[9px] bg-indigo-900/80 px-1.5 py-0.5 rounded font-mono font-bold">DEV</span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={filters.waktu}
+                        onChange={(e) => setFilters({ ...filters, waktu: e.target.value })}
+                        placeholder="HH.MM.SS (14.30.45)"
+                        className="w-full px-3 py-2 border border-indigo-200 border-t-0 rounded-b-md focus:outline-none focus:ring-2 focus:ring-indigo-500 pr-14 bg-indigo-50/20 text-gray-900 text-sm font-semibold"
+                      />
+                      <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center space-x-1">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenManualFilter('waktu');
+                          }}
+                          className="p-1 px-1.5 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded-md transition-all border border-indigo-300 shadow-sm"
+                          title="Input Manual Waktu"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                        </button>
+                        {filters.waktu && (
+                          <button
+                            type="button"
+                            onClick={() => setFilters({ ...filters, waktu: '' })}
+                            className="p-1 bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-md"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* FILTER SUB RAK */}
+                  <div>
+                    <div className="bg-indigo-700 text-white px-3 py-2 rounded-t-md flex items-center justify-between">
+                      <span className="font-bold text-xs uppercase tracking-wider">Sub Rak</span>
+                      <span className="text-[9px] bg-indigo-900/80 px-1.5 py-0.5 rounded font-mono font-bold">DEV</span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={filters.subRak}
+                        onChange={(e) => setFilters({ ...filters, subRak: e.target.value })}
+                        placeholder="Cari Sub Rak..."
+                        className="w-full px-3 py-2 border border-indigo-200 border-t-0 rounded-b-md focus:outline-none focus:ring-2 focus:ring-indigo-500 pr-8 bg-indigo-50/20 text-gray-900 text-sm font-semibold"
+                      />
+                      {filters.subRak && (
+                        <button
+                          type="button"
+                          onClick={() => setFilters({ ...filters, subRak: '' })}
+                          className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-md"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* FILTER LOG UPDATE USER */}
+                  <div>
+                    <div className="bg-indigo-700 text-white px-3 py-2 rounded-t-md flex items-center justify-between">
+                      <span className="font-bold text-xs uppercase tracking-wider">Update User</span>
+                      <span className="text-[9px] bg-indigo-900/80 px-1.5 py-0.5 rounded font-mono font-bold">DEV</span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={filters.logUpdateUser}
+                        onChange={(e) => setFilters({ ...filters, logUpdateUser: e.target.value })}
+                        placeholder="Log Update User..."
+                        className="w-full px-3 py-2 border border-indigo-200 border-t-0 rounded-b-md focus:outline-none focus:ring-2 focus:ring-indigo-500 pr-8 bg-indigo-50/20 text-gray-900 text-sm font-semibold"
+                      />
+                      {filters.logUpdateUser && (
+                        <button
+                          type="button"
+                          onClick={() => setFilters({ ...filters, logUpdateUser: '' })}
+                          className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-md"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+
               <div>
                 <div className="bg-amber-600 text-white px-3 py-2 rounded-t-md">
                   <span className="font-medium text-sm">Status Penyesuaian</span>
@@ -1939,15 +2778,36 @@ export function DatabaseLog() {
               </div>
 
               <div className="flex items-end">
-                <Button
+                <button
                   onClick={clearAllFilters}
                   disabled={!dataLoaded}
-                  className="w-full h-10 bg-white/10 hover:bg-white/20 text-slate-600 font-bold rounded-xl shadow-sm transition-all duration-300 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center border border-slate-200 backdrop-blur-xl disabled:opacity-50"
+                  className="w-full h-[42px] bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2 border border-rose-300 disabled:opacity-50"
+                  title="Bersihkan Semua Filter"
                 >
-                  <span className="tracking-wide uppercase text-xs">Clear Filters</span>
-                </Button>
+                  <RotateCcw className="w-4 h-4 text-rose-600" />
+                  <span className="tracking-wider uppercase text-xs font-black">Clear Filters</span>
+                </button>
               </div>
             </div>
+
+            {/* Spacing container between filter bar & data table */}
+            <div className="mb-6"></div>
+
+            {filters.gudang === 'TRANSFER' && (
+              <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl mb-6 flex flex-col md:flex-row justify-between items-start md:items-center shadow-sm gap-4">
+                 <div>
+                    <h3 className="font-bold text-blue-900 flex items-center gap-2">
+                      <ArrowRightLeft className="w-5 h-5"/> Mode Gudang: TRANSFER
+                    </h3>
+                    <p className="text-blue-700 text-sm mt-1 max-w-2xl">
+                      Anda sedang melihat data transfer. Gunakan tombol di samping untuk memindai otomatis seluruh riwayat dan mendeteksi data transfer ganda/sia-sia (<em>Self-Transfer</em>) yang tidak memindahkan barang ke rak berbeda.
+                    </p>
+                 </div>
+                 <Button onClick={handleSelectSelfTransfers} className="bg-blue-600 hover:bg-blue-700 text-white shadow-md flex-shrink-0 w-full md:w-auto h-11 px-5 rounded-lg border border-blue-700/50 flex items-center justify-center font-bold tracking-wide">
+                   <Search className="w-4 h-4 mr-2" /> Cari & Pilih Self-Transfer
+                 </Button>
+              </div>
+            )}
 
             {selectedIds.size > 0 && (
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 shadow-sm sticky top-0 md:relative z-20">
@@ -1980,6 +2840,26 @@ export function DatabaseLog() {
                     >
                       <Calendar className="h-3.5 w-3.5 mr-1.5" />
                       <span className="text-[10px] uppercase tracking-wider">Tgl Scan</span>
+                    </Button>
+                    {showFixDates && (
+                      <Button
+                        onClick={handleSyncTglScanWithTgl}
+                        className="h-9 px-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold rounded-lg shadow-md transition-all flex items-center justify-center border border-purple-400/30"
+                        disabled={isBulkOperationLoading}
+                        title="Samakan Tanggal Scan dengan Tanggal (per baris data)"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isBulkOperationLoading ? 'animate-spin' : ''}`} />
+                        <span className="text-[10px] uppercase tracking-wider font-extrabold">Tgl Scan = Tgl</span>
+                      </Button>
+                    )}
+                    <Button
+                      onClick={handleSyncSubRakWithRak}
+                      className="h-9 px-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold rounded-lg shadow-md transition-all flex items-center justify-center border border-emerald-400/30"
+                      disabled={isBulkOperationLoading}
+                      title="Samakan Sub Rak dengan Rak (per baris data terpilih)"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isBulkOperationLoading ? 'animate-spin' : ''}`} />
+                      <span className="text-[10px] uppercase tracking-wider font-extrabold">Sub Rak = Rak</span>
                     </Button>
                     <Button
                       onClick={() => { setBulkEditMode('gudang'); setBulkEditValue(''); }}
@@ -2803,12 +3683,16 @@ export function DatabaseLog() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Waktu</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Waktu {showFixDates && <span className="text-xs text-indigo-600 font-bold ml-1">(Edit Dev)</span>}
+                      </label>
                       <input
                         type="text"
                         value={editingEntry.waktu}
-                        readOnly
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-100 cursor-not-allowed"
+                        readOnly={!showFixDates}
+                        onChange={(e) => setEditingEntry({ ...editingEntry, waktu: e.target.value })}
+                        placeholder="HH:MM:SS"
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${!showFixDates ? 'bg-gray-100 cursor-not-allowed' : 'bg-white font-semibold text-indigo-900'}`}
                       />
                     </div>
                     <div className="md:col-span-2">
@@ -2927,31 +3811,39 @@ export function DatabaseLog() {
       ) : (
         <div className="flex-1 w-full bg-white"></div>
       )}
-      {/* Modal Manual Date Filter */}
+      {/* Modal Manual Date/Time Filter */}
       <Modal
         isOpen={isManualDateModalOpen}
         onClose={() => setIsManualDateModalOpen(false)}
-        title={`Filter Manual: ${manualDateTarget === 'tanggal' ? 'Tanggal' : 'Tgl Scan'}`}
+        title={`Filter Manual: ${manualDateTarget === 'tanggal' ? 'Tanggal' : manualDateTarget === 'tglScan' ? 'Tgl Scan' : manualDateTarget === 'waktu' ? 'Waktu' : 'Tanggal'}`}
         size="sm"
       >
         <form onSubmit={handleManualFilterSubmit} className="space-y-4">
           <div className="bg-blue-50 p-3 rounded-lg border border-blue-200 text-xs text-blue-700 mb-2">
             <p className="font-semibold mb-1 italic">Format yang didukung:</p>
-            <ul className="list-disc list-inside space-y-0.5">
-              <li>YYYY-MM-DD (Contoh: 2026-03-06)</li>
-              <li>DD-MM-YYYY (Contoh: 06-03-2026)</li>
-              <li>DD/MM/YYYY (Contoh: 06/03/2026)</li>
-            </ul>
+            {manualDateTarget === 'waktu' ? (
+              <ul className="list-disc list-inside space-y-0.5">
+                <li>HH:MM (Contoh: 14:30)</li>
+                <li>HH:MM:SS (Contoh: 14:30:45)</li>
+                <li>Ketik sebagian jam/menit (Contoh: 14: atau 30)</li>
+              </ul>
+            ) : (
+              <ul className="list-disc list-inside space-y-0.5">
+                <li>YYYY-MM-DD (Contoh: 2026-03-06)</li>
+                <li>DD-MM-YYYY (Contoh: 06-03-2026)</li>
+                <li>DD/MM/YYYY (Contoh: 06/03/2026)</li>
+              </ul>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Masukkan Tanggal:
+              {manualDateTarget === 'waktu' ? 'Masukkan Waktu:' : 'Masukkan Tanggal:'}
             </label>
             <input
               type="text"
               value={manualDateValue}
               onChange={(e) => setManualDateValue(e.target.value)}
-              placeholder="Ketik atau paste tanggal..."
+              placeholder={manualDateTarget === 'waktu' ? "Ketik jam/waktu (HH:MM)..." : "Ketik atau paste tanggal..."}
               className="w-full px-4 py-2 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:outline-none transition-all shadow-sm"
               autoFocus
             />

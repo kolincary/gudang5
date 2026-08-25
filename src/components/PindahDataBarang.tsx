@@ -4,6 +4,8 @@ import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { ArrowRightLeft, X, Send, RefreshCw, AlertCircle, CheckCircle, Loader, Wrench, Hammer } from 'lucide-react';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
+import { DatabaseService } from '../lib/DatabaseService';
+import { useDatabaseConfig } from '../lib/DatabaseContext';
 
 interface StockItem {
   id: string;
@@ -26,6 +28,7 @@ interface RackLocation {
 const RESTRICTED_RACKS = ['LANTAI 2', 'LANTAI 4', 'ECER-M', 'ECER-N', 'ECER-O', 'BLOK-I'];
 
 export function PindahDataBarang() {
+  const { writeMode } = useDatabaseConfig();
   const [stockItems, setStockItems] = useState<StockItem[]>([]);
   const [rackLocations, setRackLocations] = useState<RackLocation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,9 +42,12 @@ export function PindahDataBarang() {
   const [highlightedItemIndex, setHighlightedItemIndex] = useState(0);
   const [highlightedRakIndex, setHighlightedRakIndex] = useState(0);
 
-  const [moveData, setMoveData] = useState({
+  const [moveData, setMoveData] = useState<{
+    rak_tujuan: string;
+    jumlah_pindah: number | '';
+  }>({
     rak_tujuan: '',
-    jumlah_pindah: 1
+    jumlah_pindah: ''
   });
 
   const [operationProgress, setOperationProgress] = useState<{
@@ -86,7 +92,6 @@ export function PindahDataBarang() {
   const loadInitialData = async () => {
     try {
       setLoading(true);
-      showToast('Memuat data barang...', 'info');
 
       // Load stock items only
       const stockResult = await fetchAllStockItems();
@@ -98,18 +103,28 @@ export function PindahDataBarang() {
       // Filter active items
       const activeStockItems = stockResult.data.filter(item => item.status === 'Aktif');
 
-      // Use stock items directly without recalculating from logs
-      // This significantly improves performance
-      const allStockItems: StockItem[] = activeStockItems.map(item => ({
-        id: item.id,
-        nama_produk: item.nama_produk,
-        packing: item.packing,
-        rak: item.rak,
-        sub_rak: item.sub_rak || item.rak,
-        satuan: item.satuan,
-        tersedia: item.tersedia, // Trust the database value
-        status: item.status
-      }));
+      // Aggregate duplicate items if they exist in the database
+      const aggregatedMap = new Map<string, StockItem>();
+      activeStockItems.forEach(item => {
+        const key = `${item.nama_produk}-${item.rak}`;
+        if (aggregatedMap.has(key)) {
+            const existing = aggregatedMap.get(key)!;
+            existing.tersedia += item.tersedia;
+        } else {
+            aggregatedMap.set(key, {
+                id: item.id,
+                nama_produk: item.nama_produk,
+                packing: item.packing,
+                rak: item.rak,
+                sub_rak: item.sub_rak || item.rak,
+                satuan: item.satuan,
+                tersedia: item.tersedia, // Trust the database value
+                status: item.status
+            });
+        }
+      });
+
+      const allStockItems: StockItem[] = Array.from(aggregatedMap.values());
 
       // Set all stock items
       setStockItems(allStockItems);
@@ -128,8 +143,6 @@ export function PindahDataBarang() {
       } else {
         setRackLocations(rackData || []);
       }
-
-      showToast(`Data berhasil dimuat! ${allStockItems.length} total item`, 'success');
 
     } catch (error) {
       console.error('Error loading initial data:', error);
@@ -164,7 +177,7 @@ export function PindahDataBarang() {
     setShowItemDropdown(false);
     setMoveData({
       rak_tujuan: '',
-      jumlah_pindah: 1
+      jumlah_pindah: ''
     });
     // Pindahkan fokus ke input rak tujuan
     setTimeout(() => rakTujuanInputRef.current?.focus(), 0);
@@ -190,7 +203,7 @@ export function PindahDataBarang() {
     setSearchTerm('');
     setMoveData({
       rak_tujuan: '',
-      jumlah_pindah: 1
+      jumlah_pindah: ''
     });
     setIsRakTujuanValidated(false);
   };
@@ -204,7 +217,7 @@ export function PindahDataBarang() {
   };
 
   const handleSubmit = async () => {
-    if (!selectedItem || !moveData.rak_tujuan || moveData.jumlah_pindah <= 0) {
+    if (!selectedItem || !moveData.rak_tujuan || moveData.jumlah_pindah === '' || moveData.jumlah_pindah <= 0) {
       showToast('Mohon lengkapi semua data yang diperlukan', 'warning');
       return;
     }
@@ -245,11 +258,7 @@ export function PindahDataBarang() {
 
       const rakTujuanFinal = moveData.rak_tujuan.toUpperCase().trim();
       const now = new Date();
-      const tgl = now.toLocaleDateString('id-ID', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric'
-      }).replace(/\//g, '/');
+      const tgl = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
       const waktu = now.toLocaleTimeString('id-ID', {
         hour: '2-digit',
@@ -258,36 +267,98 @@ export function PindahDataBarang() {
 
       updateProgress(operationSteps[1], 1);
 
+      // Fetch original IN log for this item to inherit its tgl, tgl_scan & waktu
+      const { data: logData, error: originalLogError } = await supabase
+          .from('database_log')
+          .select('tgl, tgl_scan, created_at, waktu, rak')
+          .ilike('sku', `%${selectedItem.nama_produk.trim()}%`)
+          .or('type.ilike.%IN%,type.ilike.%MOVE%,type.ilike.%TRANSFER%');
+      
+      let originalLog = null;
+      if (logData && logData.length > 0) {
+          // Prioritize matching rack, then sort descending by created_at (newest active batch first)
+          const rackMatched = logData.filter(l => l.rak && l.rak.trim().toLowerCase() === selectedItem.rak.trim().toLowerCase());
+          const targetList = rackMatched.length > 0 ? rackMatched : logData;
+          originalLog = targetList.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+      }
+
+      if (originalLogError) {
+          console.error('Error fetching original log:', originalLogError);
+          showToast(`Gagal mengambil data tgl masuk asli: ${originalLogError.message || 'unknown error'}`, 'error');
+      }
+
+      const tglAsli = originalLog?.tgl || tgl;
+      const tglScanAsli = originalLog?.tgl_scan || originalLog?.tgl || tgl;
+      const waktuAsli = originalLog?.waktu || waktu;
+      
+      // Helper to add +1 minute to waktu string
+      const addOneMinuteToWaktu = (waktuStr: string): string => {
+        if (!waktuStr) return waktuStr;
+        const separator = waktuStr.includes('.') ? '.' : ':';
+        const parts = waktuStr.split(separator).map(p => parseInt(p, 10));
+        
+        if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          let hours = parts[0];
+          let minutes = parts[1] + 1;
+          let seconds = parts[2] || 0;
+
+          if (minutes >= 60) {
+            minutes = 0;
+            hours = (hours + 1) % 24;
+          }
+
+          const h = String(hours).padStart(2, '0');
+          const m = String(minutes).padStart(2, '0');
+          const s = parts.length >= 3 ? separator + String(seconds).padStart(2, '0') : '';
+          return h + separator + m + s;
+        }
+        return waktuStr;
+      };
+
+      // Use current timestamp for created_at so transaction logs sort properly to the top
+      const createdAtOut = new Date(now.getTime() + 1000).toISOString();
+      const createdAtIn = new Date(now.getTime() + 2000).toISOString();
+      const waktuOut = addOneMinuteToWaktu(waktuAsli);
+      const waktuIn = addOneMinuteToWaktu(waktuAsli);
+
       const logEntries = [
         {
-          tgl,
-          waktu,
+          tgl: tglAsli,
+          waktu: waktuOut,
           sku: selectedItem.nama_produk,
           jumlah: moveData.jumlah_pindah,
           type: 'OUT',
           gudang: 'TRANSFER',
           rak: selectedItem.rak,
-          tgl_scan: tgl,
+          tgl_scan: tglScanAsli,
           user_name: 'System',
-          sub_rak: selectedItem.sub_rak || selectedItem.rak
+          sub_rak: selectedItem.sub_rak || selectedItem.rak,
+          created_at: createdAtOut
         },
         {
-          tgl,
-          waktu,
+          tgl: tglAsli,
+          waktu: waktuIn,
           sku: selectedItem.nama_produk,
           jumlah: moveData.jumlah_pindah,
           type: 'IN',
           gudang: 'TRANSFER',
           rak: rakTujuanFinal,
-          tgl_scan: tgl,
+          tgl_scan: tglScanAsli,
           user_name: 'System',
-          sub_rak: rakTujuanFinal
+          sub_rak: rakTujuanFinal,
+          created_at: createdAtIn
         }
       ];
 
-      const { error: logError } = await supabase
-        .from('database_log')
-        .insert(logEntries);
+      const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
+
+      if (insertedData) {
+        // Workaround for Supabase Trigger bug overwriting IN tgl_scan to today's date
+        const inLog = insertedData.find((l: any) => l.type === 'IN');
+        if (inLog && inLog.id) {
+           await DatabaseService.updateLog(inLog.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
+        }
+      }
 
       if (logError) {
         console.error('Error creating log entries:', logError);
@@ -315,17 +386,15 @@ export function PindahDataBarang() {
       if (!existingStock) {
         updateProgress(operationSteps[4], 4);
 
-        const { error: insertError } = await supabase
-          .from('stock_items')
-          .insert([{
-            nama_produk: selectedItem.nama_produk,
-            packing: selectedItem.packing,
-            rak: rakTujuanFinal,
-            sub_rak: rakTujuanFinal,
-            satuan: selectedItem.satuan,
-            stok_awal: 0,
-            status: 'Aktif'
-          }]);
+        const { error: insertError } = await DatabaseService.insertStockItems([{
+          nama_produk: selectedItem.nama_produk,
+          packing: selectedItem.packing,
+          rak: rakTujuanFinal,
+          sub_rak: rakTujuanFinal,
+          satuan: selectedItem.satuan,
+          stok_awal: 0,
+          status: 'Aktif'
+        }], writeMode);
 
         if (insertError) {
           console.error('Error creating destination stock item:', insertError);
@@ -543,7 +612,7 @@ export function PindahDataBarang() {
       <div className="space-y-6">
         {/* PREMIUM IMMERSIVE HEADER (310px) */}
         <div className="flex flex-col mb-8 lg:mb-12 uppercase">
-          <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+          <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
             {/* Decorative Background Icon */}
             <div className="absolute -top-12 -right-12 text-white opacity-5">
@@ -800,7 +869,15 @@ export function PindahDataBarang() {
                         min="1"
                         max={selectedItem.tersedia}
                         value={moveData.jumlah_pindah}
-                        onChange={(e) => setMoveData({ ...moveData, jumlah_pindah: parseInt(e.target.value) || 1 })}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '') {
+                            setMoveData({ ...moveData, jumlah_pindah: '' });
+                          } else {
+                            const parsed = parseInt(val);
+                            setMoveData({ ...moveData, jumlah_pindah: isNaN(parsed) ? '' : parsed });
+                          }
+                        }}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                         placeholder="Masukkan jumlah..."
                       />
@@ -822,7 +899,7 @@ export function PindahDataBarang() {
                     </Button>
                     <Button
                       onClick={handleSubmit}
-                      disabled={submitting || !selectedItem || !moveData.rak_tujuan || !isRakTujuanValidated || moveData.jumlah_pindah <= 0}
+                      disabled={submitting || !selectedItem || !moveData.rak_tujuan || !isRakTujuanValidated || moveData.jumlah_pindah === '' || moveData.jumlah_pindah <= 0}
                       className="flex-[2] h-11 bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(37,99,235,0.4)] hover:shadow-blue-500/50 transition-all duration-300 transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2 border border-white/20 backdrop-blur-md disabled:opacity-50"
                     >
                       {submitting ? (
@@ -868,13 +945,13 @@ export function PindahDataBarang() {
                       <div className="flex justify-between">
                         <span className="text-gray-600">Jumlah Pindah:</span>
                         <span className="font-medium text-green-600">
-                          {moveData.jumlah_pindah} {selectedItem.satuan}
+                          {moveData.jumlah_pindah !== '' ? `${moveData.jumlah_pindah} ${selectedItem.satuan}` : '-'}
                         </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-600">Sisa di Rak Asal:</span>
                         <span className="font-medium">
-                          {selectedItem.tersedia - moveData.jumlah_pindah} {selectedItem.satuan}
+                          {selectedItem.tersedia - (typeof moveData.jumlah_pindah === 'number' ? moveData.jumlah_pindah : 0)} {selectedItem.satuan}
                         </span>
                       </div>
                     </div>

@@ -1,20 +1,25 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
-import { X, RefreshCw } from 'lucide-react';
+import { X, RefreshCw, ScanLine, Zap } from 'lucide-react';
 
 interface BarcodeScannerProps {
     onScan: (decodedText: string) => void;
     onClose: () => void;
+    title?: string;
 }
 
-export function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps) {
+export function BarcodeScanner({ onScan, onClose, title }: BarcodeScannerProps) {
     const scannerRef = useRef<Html5Qrcode | null>(null);
     const [error, setError] = useState<string>('');
     const [errorDetail, setErrorDetail] = useState<string>('');
     const [scanLineY, setScanLineY] = useState(0);
     const [isRetrying, setIsRetrying] = useState(false);
+    const [lastScanned, setLastScanned] = useState<string>('');
     const mountedRef = useRef(true);
     const startAttemptedRef = useRef(false);
+    // Use a ref to always have the latest onScan callback
+    const onScanRef = useRef(onScan);
+    onScanRef.current = onScan;
 
     // Animated scan line
     useEffect(() => {
@@ -39,6 +44,12 @@ export function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps) {
             scannerRef.current = null;
         }
     };
+
+    const handleScanSuccess = useCallback((text: string) => {
+        console.log('[BarcodeScanner] Decoded:', text);
+        setLastScanned(text);
+        onScanRef.current(text);
+    }, []);
 
     const startScanner = async () => {
         if (!mountedRef.current) return;
@@ -70,19 +81,19 @@ export function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps) {
             scannerRef.current = scanner;
 
             const scanConfig: any = {
-                fps: 10,
+                fps: 15,
                 qrbox: function (viewfinderWidth: number, viewfinderHeight: number) {
-                    // Make qrbox adaptive to screen size to prevent Overconstrained errors on small screens
-                    const minEdgePercentage = 0.7; // 70% of min dimension
-                    const minEdgeSize = Math.min(viewfinderWidth, viewfinderHeight);
-                    const qrboxSize = Math.floor(minEdgeSize * minEdgePercentage);
+                    const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+                    // Use a wider rectangle for better barcode detection
+                    const boxWidth = Math.max(250, Math.floor(minEdge * 0.85));
+                    const boxHeight = Math.max(150, Math.floor(minEdge * 0.55));
                     return {
-                        width: Math.max(200, qrboxSize),
-                        height: Math.max(200, qrboxSize)
+                        width: boxWidth,
+                        height: boxHeight
                     };
                 },
                 disableFlip: false,
-                aspectRatio: undefined // Remove forced ratio to prevent crashing on odd screen sizes
+                aspectRatio: undefined
             };
 
             let started = false;
@@ -129,13 +140,30 @@ export function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps) {
                     if (!mountedRef.current) return;
                     try {
                         console.log(`[BarcodeScanner] Attempting explicit ID: ${cam.label || cam.id}`);
-                        await scanner.start(cam.id, scanConfig, (text) => onScan(text), () => { });
+                        await scanner.start(cam.id, scanConfig, handleScanSuccess, () => { });
                         console.log("[BarcodeScanner] Success with explicit ID!");
                         started = true;
                         break;
                     } catch (e) {
                         console.warn(`[BarcodeScanner] Failed explicit ID ${cam.id}:`, e);
                         await stopAndCleanScanner();
+                        // Re-create scanner for next attempt
+                        if (mountedRef.current) {
+                            const newScanner = new Html5Qrcode('reader-fullscreen', {
+                                verbose: false,
+                                formatsToSupport: [
+                                    Html5QrcodeSupportedFormats.QR_CODE,
+                                    Html5QrcodeSupportedFormats.CODE_128,
+                                    Html5QrcodeSupportedFormats.EAN_13,
+                                    Html5QrcodeSupportedFormats.EAN_8,
+                                    Html5QrcodeSupportedFormats.CODE_39,
+                                    Html5QrcodeSupportedFormats.UPC_A,
+                                    Html5QrcodeSupportedFormats.UPC_E,
+                                    Html5QrcodeSupportedFormats.CODABAR
+                                ]
+                            });
+                            scannerRef.current = newScanner;
+                        }
                     }
                 }
             }
@@ -156,7 +184,7 @@ export function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps) {
                         scannerRef.current = fallbackScanner;
 
                         console.log(`[BarcodeScanner] Attempting fallback strategy: ${JSON.stringify(strategy)}`);
-                        await fallbackScanner.start(strategy, scanConfig, (text) => onScan(text), () => { });
+                        await fallbackScanner.start(strategy, scanConfig, handleScanSuccess, () => { });
                         console.log("[BarcodeScanner] Success with fallback strategy!");
                         started = true;
                         break;
@@ -217,55 +245,117 @@ export function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps) {
         }, 600);
     };
 
+    const displayTitle = title || 'Arahkan barcode ke area scan';
+
     return (
         <div className="fixed inset-0 z-[10001] bg-black">
             {/* Camera feed - fills entire screen */}
-            <div id="reader-fullscreen" className="absolute inset-0 w-full h-full [&>video]:object-cover [&>video]:w-full [&>video]:h-full" />
+            {/* Hide all html5-qrcode library built-in UI elements (ugly gray borders) */}
+            <div
+                id="reader-fullscreen"
+                className="absolute inset-0 w-full h-full [&>video]:object-cover [&>video]:w-full [&>video]:h-full"
+                style={{
+                    // Hide library's built-in scan region border
+                }}
+            />
 
-            {/* Top bar - translucent */}
-            <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-3 safe-area-top" style={{ paddingTop: 'max(12px, env(safe-area-inset-top))' }}>
-                <p className="text-white/70 text-sm font-medium tracking-wide">
-                    Arahkan QR code atau barcode ke bingkai tengah
-                </p>
-                <button
-                    onClick={onClose}
-                    className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 transition-all active:scale-90 shadow-lg border border-white/10"
-                >
-                    <X className="h-6 w-6" />
-                </button>
+            {/* CSS to hide the library's ugly default UI */}
+            <style>{`
+                #reader-fullscreen > div:not(:first-child) { display: none !important; }
+                #reader-fullscreen img { display: none !important; }
+                #reader-fullscreen__scan_region { border: none !important; }
+                #reader-fullscreen__scan_region > br { display: none !important; }
+                #reader-fullscreen__scan_region > img { display: none !important; }
+                #reader-fullscreen__dashboard_section { display: none !important; }
+                #reader-fullscreen video {
+                    object-fit: cover !important;
+                    width: 100% !important;
+                    height: 100% !important;
+                }
+                /* Hide shaded region borders from library */
+                #qr-shaded-region { border: none !important; }
+                [id*="qr-shaded"] { border: none !important; }
+            `}</style>
+
+            {/* Top bar with title */}
+            <div
+                className="absolute top-0 left-0 right-0 z-10 bg-gradient-to-b from-black/80 via-black/40 to-transparent"
+                style={{ paddingTop: 'max(12px, env(safe-area-inset-top))' }}
+            >
+                <div className="flex items-center justify-between px-4 py-3">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div className="p-1.5 bg-cyan-500/20 rounded-lg border border-cyan-400/30">
+                            <ScanLine className="h-4 w-4 text-cyan-400" />
+                        </div>
+                        <p className="text-white text-sm font-semibold tracking-wide truncate">
+                            {displayTitle}
+                        </p>
+                    </div>
+                    <button
+                        onClick={onClose}
+                        className="ml-3 w-10 h-10 rounded-full bg-white/10 backdrop-blur-xl flex items-center justify-center text-white hover:bg-white/20 transition-all active:scale-90 shadow-lg border border-white/20"
+                    >
+                        <X className="h-5 w-5" />
+                    </button>
+                </div>
             </div>
 
             {/* Scan Region Overlay */}
             <div className="absolute inset-0 z-[5] pointer-events-none flex items-center justify-center">
                 {/* Darkened edges */}
-                <div className="absolute inset-0 bg-black/45 backdrop-blur-[1px]" />
+                <div className="absolute inset-0 bg-black/50" />
 
-                {/* Clear center box */}
-                <div className="relative w-64 h-64 sm:w-80 sm:h-80 mx-auto">
+                {/* Clear center box — wider for barcode scan */}
+                <div className="relative w-[85vw] max-w-[380px] h-[55vw] max-h-[240px] mx-auto">
                     {/* Cut out the center - using box-shadow trick */}
                     <div
                         className="absolute inset-0"
                         style={{
-                            boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.45)',
-                            borderRadius: '24px'
+                            boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.50)',
+                            borderRadius: '20px'
                         }}
                     />
 
-                    {/* Corner brackets - More modern looking */}
-                    <div className="absolute -top-1 -left-1 w-12 h-12 border-t-4 border-l-4 border-white/90 rounded-tl-xl shadow-[0_0_15px_rgba(255,255,255,0.4)]" />
-                    <div className="absolute -top-1 -right-1 w-12 h-12 border-t-4 border-r-4 border-white/90 rounded-tr-xl shadow-[0_0_15px_rgba(255,255,255,0.4)]" />
-                    <div className="absolute -bottom-1 -left-1 w-12 h-12 border-b-4 border-l-4 border-white/90 rounded-bl-xl shadow-[0_0_15px_rgba(255,255,255,0.4)]" />
-                    <div className="absolute -bottom-1 -right-1 w-12 h-12 border-b-4 border-r-4 border-white/90 rounded-br-xl shadow-[0_0_15px_rgba(255,255,255,0.4)]" />
+                    {/* Glow behind frame */}
+                    <div
+                        className="absolute -inset-1 rounded-[22px] opacity-40"
+                        style={{
+                            boxShadow: '0 0 30px 8px rgba(34, 211, 238, 0.35), inset 0 0 30px 8px rgba(34, 211, 238, 0.15)'
+                        }}
+                    />
+
+                    {/* Corner brackets — premium style */}
+                    <div className="absolute -top-[2px] -left-[2px] w-10 h-10 border-t-[3px] border-l-[3px] border-cyan-400 rounded-tl-2xl" style={{ filter: 'drop-shadow(0 0 6px rgba(34,211,238,0.6))' }} />
+                    <div className="absolute -top-[2px] -right-[2px] w-10 h-10 border-t-[3px] border-r-[3px] border-cyan-400 rounded-tr-2xl" style={{ filter: 'drop-shadow(0 0 6px rgba(34,211,238,0.6))' }} />
+                    <div className="absolute -bottom-[2px] -left-[2px] w-10 h-10 border-b-[3px] border-l-[3px] border-cyan-400 rounded-bl-2xl" style={{ filter: 'drop-shadow(0 0 6px rgba(34,211,238,0.6))' }} />
+                    <div className="absolute -bottom-[2px] -right-[2px] w-10 h-10 border-b-[3px] border-r-[3px] border-cyan-400 rounded-br-2xl" style={{ filter: 'drop-shadow(0 0 6px rgba(34,211,238,0.6))' }} />
 
                     {/* Animated scan line with glowing effect */}
                     <div
-                        className="absolute left-2 right-2 h-[3px] bg-gradient-to-r from-transparent via-cyan-400 to-transparent transition-none"
+                        className="absolute left-3 right-3 h-[2px] bg-gradient-to-r from-transparent via-cyan-400 to-transparent transition-none"
                         style={{
                             top: `${scanLineY}%`,
-                            opacity: scanLineY > 5 && scanLineY < 95 ? 1 : 0,
-                            boxShadow: '0 0 16px 4px rgba(34, 211, 238, 0.5)'
+                            opacity: scanLineY > 5 && scanLineY < 95 ? 0.9 : 0,
+                            boxShadow: '0 0 20px 6px rgba(34, 211, 238, 0.45)'
                         }}
                     />
+                </div>
+            </div>
+
+            {/* Bottom hint bar */}
+            <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 via-black/40 to-transparent pb-8 pt-16">
+                <div className="flex flex-col items-center gap-3 px-6">
+                    {lastScanned && (
+                        <div className="flex items-center gap-2 bg-emerald-500/20 border border-emerald-400/30 rounded-xl px-4 py-2 backdrop-blur-md">
+                            <Zap className="h-4 w-4 text-emerald-400" />
+                            <span className="text-emerald-300 text-xs font-medium truncate max-w-[200px]">
+                                Terakhir: {lastScanned}
+                            </span>
+                        </div>
+                    )}
+                    <p className="text-white/50 text-xs font-medium tracking-wider text-center">
+                        Posisikan barcode di dalam bingkai cyan
+                    </p>
                 </div>
             </div>
 

@@ -1,0 +1,1 @@
+const projectId = 'pro-pulsar-476713-s9'; const db = 'stock-lt3'; fetch('https://firestore.googleapis.com/v1/projects/' + projectId + '/databases/' + db + '/documents/transaksi_lantai3').then(r => r.json()).then(d => console.log(JSON.stringify(d.documents.slice(0,5), null, 2))).catch(console.error);

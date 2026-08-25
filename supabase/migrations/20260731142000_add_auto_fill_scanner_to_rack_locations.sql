@@ -1,0 +1,1 @@
+ALTER TABLE rack_locations ADD COLUMN IF NOT EXISTS auto_fill_scanner BOOLEAN DEFAULT true;

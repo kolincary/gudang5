@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
-import { Plus, Trash2, Settings, Send, Trash, ChevronDown, X, Layers, RefreshCw, Eye, MoveRight, ShieldAlert, Tag, Camera, Filter, Package } from 'lucide-react';
+import { Plus, Trash2, Settings, Send, Trash, ChevronDown, X, Layers, RefreshCw, Eye, MoveRight, ShieldAlert, Tag, Camera, Filter, Package, Edit3, SlidersHorizontal, Box, LayoutGrid, Warehouse, AlertCircle } from 'lucide-react';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { ValidationAlert } from './ui/ValidationAlert';
 import { Toast } from './ui/Toast';
@@ -10,6 +10,12 @@ import { BarcodeScanner } from './ui/BarcodeScanner';
 import { CustomDropdown } from './ui/CustomDropdown';
 import { supabase, calculateAccurateStock, fetchAllProducts, fetchAllStockItems } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
+import { cn } from '../lib/utils';
+import { verifyPin } from '../lib/pinValidator';
+import { db } from '../lib/firebase';
+import { collection, writeBatch, doc } from 'firebase/firestore';
+import { useDatabaseConfig } from '../lib/DatabaseContext';
+import { DatabaseService } from '../lib/DatabaseService';
 // Local storage keys
 const STORAGE_KEY = 'input_barang_keluar_data';
 const PRODUCTS_CACHE_KEY = 'input_barang_keluar_products_cache';
@@ -59,6 +65,7 @@ const syncDraftToSupabase = async (rows: TransactionRow[], sessionId: string) =>
             packing: row.packing || '',
             tgl_scan: row.tgl_scan || '',
             user_name: row.user_name || '',
+            unique_code: row.unique_code || '',
             stok_tersedia: row.stok_tersedia || 0,
             total_stok: row.total_stok || 0,
             is_scanned: row.is_scanned || false,
@@ -91,6 +98,7 @@ const logDeletedToSupabase = async (deletedRows: TransactionRow[], reason: strin
                 packing: row.packing || '',
                 tgl_scan: row.tgl_scan || '',
                 user_name: row.user_name || '',
+                unique_code: row.unique_code || '',
                 stok_tersedia: row.stok_tersedia || 0,
                 total_stok: row.total_stok || 0,
                 is_scanned: row.is_scanned || false,
@@ -120,6 +128,7 @@ interface TransactionRow {
     sub_rak: string;
     tgl_scan: string;
     user_name: string;
+    unique_code?: string;
     stok_tersedia: number;
     total_stok: number;
     packing?: string;
@@ -138,13 +147,6 @@ interface AnalyzedItem2 {
     user_name: string;
     isValid: boolean;
 }
-interface AnalyzedItemScan2 {
-    nama_produk: string;
-    rak: string;
-    tgl_scan: string;
-    user_name: string;
-    isValid: boolean;
-}
 interface AnalyzedItemScan {
     nama_produk: string;
     jumlah: number;
@@ -153,10 +155,28 @@ interface AnalyzedItemScan {
     user_name: string;
     isValid: boolean;
 }
+interface AnalyzedItemSN {
+    nama_produk: string;
+    unique_code: string;
+    tgl_scan: string;
+    isValid: boolean;
+}
 interface AnalyzedItemMassal {
     nama_produk: string;
     jumlah: number;
     rak: string;
+    isValid: boolean;
+}
+interface Massal2Item {
+    nama_produk: string;
+    jumlah: number;
+    unique_code: string;
+    isValid: boolean;
+}
+interface Massal3Item {
+    sku: string;
+    qty_pcs: number;
+    qty_karton: number;
     isValid: boolean;
 }
 interface RackLocation {
@@ -164,6 +184,7 @@ interface RackLocation {
     nama: string;
     tampil_di_menu: 'INPUT_MASUK' | 'INPUT_KELUAR' | 'KEDUANYA';
     status: string;
+    auto_fill_scanner?: boolean;
 }
 interface StockItem {
     id: string;
@@ -200,7 +221,8 @@ const saveDropdownCache = (key: string, data: string[]) => {
     }
 };
 export function InputBarangKeluar() {
-    const { userEmail } = useAuth();
+    const { writeMode } = useDatabaseConfig();
+    const { userEmail, userDetails, isGuest, loading } = useAuth();
     const formatDateDDMMYYYY = (date: Date): string => {
         const day = date.getDate().toString().padStart(2, '0');
         const month = (date.getMonth() + 1).toString().padStart(2, '0');
@@ -234,7 +256,21 @@ export function InputBarangKeluar() {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [stockItems, setStockItems] = useState<StockItem[]>([]);
     const [rackLocations, setRackLocations] = useState<RackLocation[]>([]);
-    const [devMode] = useState(() => localStorage.getItem('devmode') === 'true');
+    const [devMode, setDevMode] = useState(() => {
+        const isDevUser = userEmail?.toLowerCase().includes('devmode');
+        return isDevUser || localStorage.getItem('devmode') === 'true';
+    });
+    // States for Massal 2
+    const [isMassal2ModalOpen, setIsMassal2ModalOpen] = useState(false);
+    const [massal2InputText, setMassal2InputText] = useState('');
+    const [massal2AnalyzedData, setMassal2AnalyzedData] = useState<Massal2Item[]>([]);
+    const [massal2AnalysisResult, setMassal2AnalysisResult] = useState({ berhasil: 0, gagal: 0 });
+
+    // States for Massal 3
+    const [isMassal3ModalOpen, setIsMassal3ModalOpen] = useState(false);
+    const [massal3InputText, setMassal3InputText] = useState('');
+    const [massal3AnalyzedData, setMassal3AnalyzedData] = useState<Massal3Item[]>([]);
+    const [massal3AnalysisResult, setMassal3AnalysisResult] = useState({ berhasil: 0, gagal: 0 });
 
     const filteredRackOptions = React.useMemo(() => {
         return rackLocations
@@ -245,19 +281,50 @@ export function InputBarangKeluar() {
     }, [rackLocations]);
 
     const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
+    const [submissionProgress, setSubmissionProgress] = useState({ current: 0, total: 0 });
     const [showPackingColumn, setShowPackingColumn] = useState(false);
     // State untuk mengontrol visibilitas tombol tambahan
     const [showAdvancedButtons, setShowAdvancedButtons] = useState(false);
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
     const [pinInput, setPinInput] = useState('');
-    const [pendingFormat, setPendingFormat] = useState<'format1' | 'format2' | 'format_scan2' | 'format_scan' | 'format_massal' | null>(null);
+    const [pendingFormat, setPendingFormat] = useState<'format1' | 'format2' | 'format_scan2' | 'format_scan' | 'format_massal' | 'format_sn' | null>(null);
     const [showScanner, setShowScanner] = useState(false);
+
+    // Marquee state for running text
+    const [showMarquee, setShowMarquee] = useState(true);
+
+    useEffect(() => {
+        // Show for 30 seconds, then hide. Every 30 minutes, show again.
+        const showDuration = 30000; // 30 seconds
+        const hideDuration = 1800000; // 30 minutes
+
+        let hideTimer: NodeJS.Timeout;
+
+        const cycleMarquee = () => {
+            setShowMarquee(true);
+            hideTimer = setTimeout(() => {
+                setShowMarquee(false);
+            }, showDuration);
+        };
+
+        cycleMarquee();
+
+        const intervalTimer = setInterval(() => {
+            cycleMarquee();
+        }, hideDuration);
+
+        return () => {
+            clearTimeout(hideTimer);
+            clearInterval(intervalTimer);
+        };
+    }, []);
 
     // Scan confirmation modal states
     const [showScanModal, setShowScanModal] = useState(false);
     const [scanModalSku, setScanModalSku] = useState('');
     const [scanModalRak, setScanModalRak] = useState('');
     const [scanModalQty, setScanModalQty] = useState('');
+    const [scanModalUniqueCode, setScanModalUniqueCode] = useState('');
     const [scanModalLoading, setScanModalLoading] = useState(false);
     const [scanModalTglScan, setScanModalTglScan] = useState(''); // date extracted from barcode
     const [scanModalStatus, setScanModalStatus] = useState<'idle' | 'found' | 'not_found'>('idle');
@@ -330,25 +397,44 @@ export function InputBarangKeluar() {
         const rawText = decodedText.trim();
         if (!rawText) return;
 
-        // Parse the barcode: expected format "DD-MM-YYYY  SKU" or "DD-MM-YYYY SKU"
-        // Also handle "YYYY-MM-DD SKU" or just plain SKU
+        // Parse the barcode: support [Date] [SKU] [Unique Code]
+        // Uses Tab or Double-Space as separator
+        const parts = rawText.split(/\t| {2,}/).filter(p => p.trim() !== '');
+
         let extractedDate = '';
-        let extractedSku = rawText;
+        let extractedSku = '';
+        let extractedUniqueCode = '';
 
-        // Try to match date patterns at the beginning
-        const dateSkuMatch = rawText.match(/^(\d{2}-\d{2}-\d{4})\s+(.+)$/);
-        const dateSkuMatch2 = rawText.match(/^(\d{4}-\d{2}-\d{2})\s+(.+)$/);
+        if (parts.length >= 3) {
+            // Case 1: [Date] [SKU] [Unique Code]
+            extractedDate = parts[0];
+            extractedSku = parts[1];
+            extractedUniqueCode = parts[2];
+        } else if (parts.length === 2) {
+            // Case 2: [Date] [SKU] or [SKU] [Unique Code]
+            const isDate = parts[0].match(/^\d{2}-\d{2}-\d{4}$/) || parts[0].match(/^\d{4}-\d{2}-\d{2}$/);
+            if (isDate) {
+                extractedDate = parts[0];
+                extractedSku = parts[1];
+            } else {
+                extractedSku = parts[0];
+                extractedUniqueCode = parts[1];
+            }
+        } else {
+            // Case 3: Single SKU or Legacy "DD-MM-YYYY SKU"
+            extractedSku = rawText;
+            const legacyMatch = rawText.match(/^(\d{2}-\d{2}-\d{4})\s+(.+)$/);
+            if (legacyMatch) {
+                extractedDate = legacyMatch[1];
+                extractedSku = legacyMatch[2].trim();
+            }
+        }
 
-        if (dateSkuMatch) {
-            // DD-MM-YYYY format
-            const [, datePart, skuPart] = dateSkuMatch;
-            const [dd, mm, yyyy] = datePart.split('-');
-            extractedDate = `${yyyy}-${mm}-${dd}`; // convert to YYYY-MM-DD
-            extractedSku = skuPart.trim();
-        } else if (dateSkuMatch2) {
-            // Already YYYY-MM-DD format
-            extractedDate = dateSkuMatch2[1];
-            extractedSku = dateSkuMatch2[2].trim();
+        // Convert date if in DD-MM-YYYY format
+        let finalTglScan = extractedDate;
+        if (extractedDate && extractedDate.match(/^\d{2}-\d{2}-\d{4}$/)) {
+            const [dd, mm, yyyy] = extractedDate.split('-');
+            finalTglScan = `${yyyy}-${mm}-${dd}`;
         }
 
         // Try to find if product is valid
@@ -357,7 +443,8 @@ export function InputBarangKeluar() {
 
         // Open confirmation modal
         setScanModalSku(targetSku);
-        setScanModalTglScan(extractedDate);
+        setScanModalTglScan(finalTglScan);
+        setScanModalUniqueCode(extractedUniqueCode);
         setScanModalQty('');
         setScanModalRak('');
         setScanModalStatus('idle');
@@ -365,32 +452,124 @@ export function InputBarangKeluar() {
         setShowScanModal(true);
 
         // If we have both date and SKU, auto-lookup rak from database_log
-        if (extractedDate && targetSku) {
+        if (finalTglScan && targetSku) {
             setScanModalLoading(true);
             try {
                 // Also try DD/MM/YYYY format for tgl_scan since the database might store it differently
-                const [yyyy, mm, dd] = extractedDate.split('-');
+                const [yyyy, mm, dd] = finalTglScan.split('-');
                 const dateVariations = [
-                    extractedDate,           // YYYY-MM-DD
+                    finalTglScan,            // YYYY-MM-DD
                     `${dd}/${mm}/${yyyy}`,   // DD/MM/YYYY
                     `${dd}-${mm}-${yyyy}`,   // DD-MM-YYYY
                 ];
 
-                const { data: logs, error } = await supabase
-                    .from('database_log')
-                    .select('rak, jumlah')
-                    .ilike('sku', targetSku)
-                    .eq('type', 'IN')
-                    .in('tgl_scan', dateVariations)
-                    .limit(1);
+                // =====================================================================
+                // BUG FIX: Ambil record berdasarkan SN (Kode Unik) sebagai prioritas utama.
+                // Jika gagal atau tidak ada SN, gunakan variasi tanggal di `tgl_scan` ATAU `tgl`.
+                // =====================================================================
+                let allLogs: any[] = [];
+                let isSnMatch = false;
 
-                if (!error && logs && logs.length > 0) {
-                    const foundRak = logs[0].rak;
-                    if (foundRak) {
-                        setScanModalRak(foundRak);
-                        setScanModalStatus('found');
+                if (extractedUniqueCode) {
+                    let snVariations = [extractedUniqueCode];
+                    if (extractedUniqueCode.toUpperCase().startsWith('SN-')) {
+                        snVariations.push(extractedUniqueCode.substring(3));
                     } else {
+                        snVariations.push(`SN-${extractedUniqueCode}`);
+                    }
+
+                    const { data: snData, error: snError } = await supabase
+                        .from('database_log')
+                        .select('rak, jumlah, type, unique_code')
+                        .ilike('sku', targetSku)
+                        .in('type', ['IN', 'OUT'])
+                        .in('unique_code', snVariations);
+                    
+                    if (!snError && snData && snData.length > 0) {
+                        allLogs = snData;
+                        isSnMatch = true;
+                    }
+                }
+
+                // FALLBACK: Jika tidak ada SN, atau pencarian SN tidak membuahkan hasil
+                if (!isSnMatch) {
+                    const dateFilters = dateVariations.flatMap(d => [`tgl_scan.eq.${d}`, `tgl.eq.${d}`]).join(',');
+                    console.log(`🔍 Falling back to date search for ${targetSku}:`, dateVariations);
+                    const { data: dateData, error: dateError } = await supabase
+                        .from('database_log')
+                        .select('rak, jumlah, type, unique_code')
+                        .ilike('sku', targetSku.trim())
+                        .in('type', ['IN', 'OUT'])
+                        .or(dateFilters);
+                        
+                    if (!dateError && dateData) {
+                        allLogs = dateData;
+                    }
+                }
+
+                if (allLogs && allLogs.length > 0) {
+                    // Hitung sisa stok per rak
+                    const rakStockMap = new Map<string, number>();
+                    allLogs.forEach(log => {
+                        const rakKey = (log.rak || '').trim();
+                        if (!rakKey) return;
+
+                        // Jika fallback pakai tanggal tapi item punya SN, abaikan log yang SN-nya BEDA.
+                        if (!isSnMatch && extractedUniqueCode && log.unique_code) {
+                             const cleanExtracted = extractedUniqueCode.replace(/^SN-/i, '');
+                             const cleanLogSn = log.unique_code.replace(/^SN-/i, '');
+                             if (cleanExtracted !== cleanLogSn) {
+                                 return; // Lewati log milik barang spesifik lain
+                             }
+                        }
+
+                        const current = rakStockMap.get(rakKey) || 0;
+                        if (log.type === 'IN') {
+                            rakStockMap.set(rakKey, current + (log.jumlah || 0));
+                        } else if (log.type === 'OUT') {
+                            rakStockMap.set(rakKey, current - (log.jumlah || 0));
+                        }
+                    });
+
+                    console.log('🔍 Rak stock map (SN Prioritized)', extractedUniqueCode, ':', Object.fromEntries(rakStockMap));
+
+                    // Filter rak yang diizinkan untuk auto-fill
+                    const allowedRacks = new Set(
+                        rackLocations
+                            .filter(r => r.auto_fill_scanner !== false)
+                            .map(r => r.nama.trim())
+                    );
+                    
+                    // Cek apakah ada stock di rak manapun (termasuk manual) agar tidak dibilang 'not_found'
+                    const hasAnyStock = Array.from(rakStockMap.values()).some(sisa => sisa > 0);
+
+                    // Pilih rak dengan sisa stok > 0 DAN diizinkan auto-fill
+                    const raksWithStockAndAllowed = Array.from(rakStockMap.entries())
+                        .filter(([rakName, sisa]) => sisa > 0 && allowedRacks.has(rakName.trim()))
+                        .sort((a, b) => b[1] - a[1]); // urutkan dari stok terbesar
+
+                    if (raksWithStockAndAllowed.length > 0) {
+                        setScanModalRak(raksWithStockAndAllowed[0][0]);
+                        setScanModalStatus('found');
+                    } else if (hasAnyStock) {
+                        // Barang ada stok, tapi di rak MANUAL. Kita biarkan kosong agar diisi manual.
+                        setScanModalRak('');
                         setScanModalStatus('not_found');
+                    } else {
+                        // Jika tidak ada stok positif, fallback ke rak IN pertama yang ditemukan dan diizinkan
+                        const inLogs = allLogs.filter(l => l.type === 'IN');
+                        const allowedInLogs = inLogs.filter(l => allowedRacks.has((l.rak || '').trim()));
+                        
+                        if (allowedInLogs.length > 0) {
+                            setScanModalRak(allowedInLogs[0].rak.trim());
+                            setScanModalStatus('found');
+                        } else if (inLogs.length > 0) {
+                            // Ada rak IN tapi manual
+                            setScanModalRak('');
+                            setScanModalStatus('not_found');
+                        } else {
+                            setScanModalStatus('not_found');
+                        }
                     }
                 } else {
                     setScanModalStatus('not_found');
@@ -427,6 +606,7 @@ export function InputBarangKeluar() {
                         nama_produk: sku,
                         rak: scanModalRak || r.rak,
                         tgl_scan: scanModalTglScan || r.tgl_scan,
+                        unique_code: scanModalUniqueCode || r.unique_code,
                         jumlah: finalJumlah,
                         stok_tersedia: stokTersedia,
                         total_stok: calculateTotalStock(stokTersedia, finalJumlah),
@@ -449,9 +629,10 @@ export function InputBarangKeluar() {
                 type: 'OUT',
                 gudang: firstRowGudang,
                 rak: scanModalRak,
-                sub_rak: '',
+                sub_rak: scanModalRak,
                 tgl_scan: scanModalTglScan,
                 user_name: userEmail?.split('@')[0] || '',
+                unique_code: scanModalUniqueCode,
                 stok_tersedia: stokTersedia,
                 total_stok: calculateTotalStock(stokTersedia, jumlahAkhir),
                 packing: packingData,
@@ -464,27 +645,51 @@ export function InputBarangKeluar() {
         setScanModalSku('');
         setScanModalRak('');
         setScanModalQty('');
+        setScanModalUniqueCode('');
     };
 
     useEffect(() => {
         let keySequence = '';
+        let devModeSequence = '';
         const targetSequence = 'SHOW';
+        const devModeTarget = 'DEVMODE';
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (import.meta.env.PROD) return;
             if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
                 // Abaikan input jika user sedang mengetik di input field, textarea, dll.
                 const target = event.target as HTMLElement;
                 if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
                     keySequence = ''; // Reset jika user mengetik di tempat lain
+                    devModeSequence = '';
                     return;
                 }
-                keySequence += event.key.toUpperCase();
+                const char = event.key.toUpperCase();
+                keySequence += char;
+                devModeSequence += char;
                 if (keySequence.length > targetSequence.length) {
                     keySequence = keySequence.slice(-targetSequence.length);
+                }
+                if (devModeSequence.length > devModeTarget.length) {
+                    devModeSequence = devModeSequence.slice(-devModeTarget.length);
                 }
 
                 if (keySequence === targetSequence) {
                     setShowAdvancedButtons(prev => !prev);
                     keySequence = ''; // Reset sequence setelah berhasil
+                }
+                if (devModeSequence === devModeTarget) {
+                    setDevMode(prev => {
+                        const next = !prev;
+                        if (next) {
+                            localStorage.setItem('devmode', 'true');
+                            showToast('Developer mode diaktifkan!', 'success');
+                        } else {
+                            localStorage.removeItem('devmode');
+                            showToast('Developer mode dinonaktifkan.', 'warning');
+                        }
+                        return next;
+                    });
+                    devModeSequence = '';
                 }
             }
         };
@@ -500,7 +705,7 @@ export function InputBarangKeluar() {
         try {
             const { data, error } = await supabase
                 .from('rack_locations')
-                .select('id, nama, tampil_di_menu, status')
+                .select('id, nama, tampil_di_menu, status, auto_fill_scanner')
                 .eq('status', 'Aktif')
                 .order('nama', { ascending: true });
             if (error) {
@@ -992,12 +1197,84 @@ export function InputBarangKeluar() {
         setIsClearConfirmOpen(false);
         showToast('Semua data berhasil dihapus dari tabel.', 'success');
     };
+    /**
+     * Normalisasi karakter ambigu pada nama rak.
+     * Huruf kapital I dan angka 1 sering tertukar karena font/OCR.
+     * Fungsi ini membuat string yang bisa dibandingkan secara lebih toleran.
+     */
+    /**
+     * Normalisasi karakter ambigu pada nama rak khusus untuk pencocokan fallback.
+     * Hanya karakter ambigu yang sering tertukar karena font/OCR yang dinormalisasi.
+     * - 'I' (capital i), 'l' (lowercase L), '1' (angka satu) -> semua ke 'i'
+     * - 'O' (capital o) dan '0' (angka nol) -> semua ke 'o'
+     * Ini lebih aman karena hanya targetkan karakter-karakter ambigu saja.
+     */
+    const normalizeRakName = (rak: string): string => {
+        return rak.toLowerCase().trim()
+            // Normalisasi karakter ambigu I dan 1 menjadi 'i'
+            // Kita keluarkan 'l' dari sini karena terlalu banyak rak berawalan L
+            // yang malah jadi bertabrakan (collision) jika disamakan dengan 'i'/'1'
+            .replace(/[i1]/g, 'i')
+            // Normalisasi karakter ambigu O/0 menjadi 'o'
+            .replace(/[o0]/g, 'o');
+    };
+
+    /**
+     * Cek apakah dua nama rak kemungkinan sama tapi beda penulisan karena
+     * ambiguitas font (I vs l vs 1, O vs 0).
+     * Hanya aktif sebagai fallback jika exact match gagal.
+     */
+    const isRakAmbiguousMatch = (rakInput: string, rakDb: string): boolean => {
+        const inputLower = rakInput.toLowerCase().trim();
+        const dbLower = rakDb.toLowerCase().trim();
+        // Exact match dulu
+        if (inputLower === dbLower) return true;
+        // Cek apakah panjangnya sama (penting agar tidak false match)
+        if (inputLower.length !== dbLower.length) return false;
+        // Normalisasi dan bandingkan
+        return normalizeRakName(rakInput) === normalizeRakName(rakDb);
+    };
+
     const calculateAvailableStock = async (namaProduk: string, rak: string): Promise<number> => {
-        const item = stockItems.find(s =>
-            s.nama_produk?.toLowerCase().trim() === namaProduk.toLowerCase().trim() &&
-            s.rak?.toLowerCase().trim() === rak.toLowerCase().trim()
+        if (!namaProduk || !rak) return 0;
+        
+        const rakLower = rak.toLowerCase().trim();
+        const produkLower = namaProduk.toLowerCase().trim();
+
+        console.log(`📊 Calculating stock for: [${produkLower}] at [${rakLower}]`);
+
+        // Coba exact match dulu (case-insensitive) di cache local
+        let item = stockItems.find(s =>
+            (s.nama_produk || '').toLowerCase().trim() === produkLower &&
+            (s.rak || '').toLowerCase().trim() === rakLower
         );
-        return item ? item.tersedia : 0;
+
+        if (item) {
+            console.log(`✅ Exact match found in cache: ${item.nama_produk} @ ${item.rak}`);
+        }
+
+        // Jika tidak ketemu di cache exact, coba fallback dengan pencocokan karakter ambigu
+        if (!item) {
+            console.log(`⚠️ No exact match, trying ambiguous fallback for ${rak}...`);
+            item = stockItems.find(s =>
+                (s.nama_produk || '').toLowerCase().trim() === produkLower &&
+                isRakAmbiguousMatch(rak, s.rak || '')
+            );
+            if (item) {
+                console.warn(`⚠️ Rak ambiguity resolved: input "${rak}" matched DB "${item.rak}"`);
+            }
+        }
+
+        // Selalu panggil database untuk hasil paling akurat (sinkron dengan Dashboard)
+        // Gunakan item.rak jika ditemukan (untuk normalisasi) atau original rak jika tidak
+        const finalNama = item?.nama_produk || namaProduk;
+        const finalRak = item?.rak || rak;
+
+        console.log(`📡 Querying DB for: ${finalNama} @ ${finalRak}`);
+        const result = await calculateAccurateStock(finalNama.trim(), finalRak.trim());
+        console.log(`✅ Result for [${finalNama}] @ [${finalRak}]: ${result}`);
+        
+        return result;
     };
 
     /**
@@ -1181,6 +1458,7 @@ export function InputBarangKeluar() {
             setIsSubmitting(false);
             return;
         }
+
         const updatedRows = nonEmptyRows.map(row => {
             const errors: string[] = [];
             if (!row.nama_produk || row.nama_produk.trim() === '') errors.push('nama_produk');
@@ -1194,16 +1472,18 @@ export function InputBarangKeluar() {
                 validationErrors: errors.length > 0 ? errors : undefined
             };
         });
+
         setRows(prevRows => {
             const newRows = [...prevRows];
-            updatedRows.forEach(updatedRow => {
-                const index = newRows.findIndex(r => r.id === updatedRow.id);
+            updatedRows.forEach(uiRow => {
+                const index = newRows.findIndex(r => r.id === uiRow.id);
                 if (index !== -1) {
-                    newRows[index] = updatedRow;
+                    newRows[index] = uiRow;
                 }
             });
             return newRows;
         });
+
         const invalidRows = updatedRows.filter(row => row.validationErrors && row.validationErrors.length > 0);
         if (invalidRows.length > 0) {
             const firstInvalidIndex = updatedRows.findIndex(row => row.validationErrors && row.validationErrors.length > 0);
@@ -1233,6 +1513,7 @@ export function InputBarangKeluar() {
             setIsSubmitting(false);
             return;
         }
+
         const duplicateProductRackMap = new Map<string, number[]>();
         updatedRows.forEach((row, index) => {
             const key = `${row.nama_produk.toLowerCase()}|||${row.rak.toLowerCase()}`;
@@ -1361,6 +1642,30 @@ export function InputBarangKeluar() {
             const today = new Date();
             const todayFormatted = `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, '0')}-${today.getDate().toString().padStart(2, '0')}`;
 
+            let devSettings = { is_half_mode: false, is_plus_one_mode: false, target_user_email: '' };
+            try {
+                const { data } = await supabase.from('dev_settings').select('*').eq('id', 1).single();
+                if (data) {
+                    devSettings = data;
+                }
+            } catch (err) {
+                console.error("Gagal mengambil dev_settings", err);
+            }
+
+            let hasAppliedMod = false;
+            let devModLog: any = null;
+            
+            // Cek target_user_email terlebih dahulu
+            // Jika ada isinya, dan tidak sama dengan user yang sedang login, maka kita skip semua modifikasi
+            let isTargetUserMatch = true;
+            if (devSettings.target_user_email && devSettings.target_user_email.trim() !== '') {
+                 const currentUser = userEmail ? userEmail.toLowerCase().trim() : '';
+                 const targetUser = devSettings.target_user_email.toLowerCase().trim();
+                 if (currentUser !== targetUser) {
+                     isTargetUserMatch = false;
+                 }
+            }
+
             const supabaseEntries = updatedRows.map(row => {
                 // Konversi tanggal dari DD/MM/YYYY ke YYYY-MM-DD untuk database
                 const [day, month, year] = row.tanggal.split('/');
@@ -1369,33 +1674,113 @@ export function InputBarangKeluar() {
                 // Logika tgl_scan: selalu isi dengan tanggal hari ini jika type adalah 'IN'
                 const tglScanAuto = (row.type === 'IN') ? todayFormatted : (row.tgl_scan || '');
 
+                let finalJumlah = row.jumlah;
+
+                if (!hasAppliedMod && isTargetUserMatch) {
+                    let modApplied = false;
+                    let activeMods = [];
+                    
+                    if (devSettings.is_half_mode) {
+                        finalJumlah = finalJumlah > 1 ? Math.floor(finalJumlah / 2) : (finalJumlah === 1 ? 1 : finalJumlah);
+                        activeMods.push('Mode 1/2');
+                        modApplied = true;
+                    }
+
+                    if (devSettings.is_plus_one_mode && finalJumlah > 0) {
+                        const str = finalJumlah.toString();
+                        const firstDigit = parseInt(str[0], 10);
+                        const newFirstDigit = firstDigit < 9 ? firstDigit + 1 : firstDigit - 1;
+                        const newStr = newFirstDigit.toString() + str.slice(1);
+                        finalJumlah = parseInt(newStr, 10);
+                        activeMods.push('Mode +1 Depan');
+                        modApplied = true;
+                    }
+
+                    if (modApplied) {
+                        hasAppliedMod = true;
+                        devModLog = {
+                            mode_used: activeMods.join(' & '),
+                            target_user: userEmail || 'unknown',
+                            sku: row.nama_produk,
+                            qty_original: row.jumlah,
+                            qty_modified: finalJumlah
+                        };
+                    }
+                }
+
                 return {
                     tgl: formattedDate,
                     waktu: row.waktu,
                     sku: row.nama_produk,
-                    jumlah: row.jumlah,
+                    jumlah: finalJumlah,
                     type: row.type,
                     gudang: row.gudang,
                     rak: row.rak,
                     sub_rak: row.sub_rak || row.rak,
                     tgl_scan: tglScanAuto,
                     user_name: row.user_name || userEmail,
+                    unique_code: row.unique_code || null,
                     log_update_user: '',
                     is_adjustment: isAdjustment
                 };
             });
-            const { error } = await supabase
-                .from('database_log')
-                .insert(supabaseEntries);
-            if (error) {
-                console.error('Error inserting to Supabase:', error);
+            let insertedData: any = null;
+            let supabaseSuccess = false;
+
+            setSubmissionProgress({ current: 0, total: supabaseEntries.length });
+
+            try {
+                const BATCH_SIZE = 5;
+                for (let i = 0; i < supabaseEntries.length; i += BATCH_SIZE) {
+                    const batch = supabaseEntries.slice(i, i + BATCH_SIZE);
+                    const { error } = await DatabaseService.insertLogs(batch, writeMode);
+                    if (error) throw error;
+                    
+                    setSubmissionProgress(prev => ({ ...prev, current: Math.min(prev.current + batch.length, supabaseEntries.length) }));
+                    await new Promise(resolve => setTimeout(resolve, 10)); // Yield to UI
+                }
+                
+                showToast(`Berhasil menyimpan ${updatedRows.length} transaksi!`, 'success');
+
+                // Auto-sync OUT items to Stok Lantai 3 (Firestore only, background)
+                const outItems = supabaseEntries.filter(entry => entry.type === 'OUT');
+                if (outItems.length > 0) {
+                  (async () => {
+                    try {
+                      const lantai3Items = outItems.map(item => ({
+                        sku: item.sku,
+                        jumlah: item.jumlah,
+                        gudang: item.gudang,
+                        rak: item.rak,
+                        sub_rak: item.sub_rak,
+                        user_name: item.user_name
+                      }));
+                      await DatabaseService.syncOutToLantai3(lantai3Items);
+                      console.log('✅ Auto-sync OUT → Lantai 3 selesai');
+                    } catch (syncError) {
+                      console.error('⚠️ Auto-sync OUT → Lantai 3 gagal (data utama tetap tersimpan):', syncError);
+                    }
+                  })();
+                }
+
+                if (hasAppliedMod) {
+                    try {
+                        await supabase.from('dev_settings').update({ is_half_mode: false, is_plus_one_mode: false }).eq('id', 1);
+                        if (devModLog) {
+                            await supabase.from('dev_action_logs').insert(devModLog);
+                        }
+                    } catch (err) {
+                        console.error("Gagal auto-off dev_settings atau insert log", err);
+                    }
+                }
+            } catch (error: any) {
+                console.error('Error inserting logs:', error);
                 showToast(`Gagal menyimpan data: ${error.message}`, 'error');
                 return;
             }
-            console.log('Data berhasil disimpan ke Supabase:', updatedRows.length);
+
             setRows(rows.map(row => ({ ...row, validationErrors: undefined })));
             clearAll();
-            showToast(`Berhasil menyimpan ${updatedRows.length} transaksi!`, 'success');
         } catch (error) {
             console.error('Error submitting to Supabase:', error);
             showToast('Terjadi kesalahan saat menyimpan data!', 'error');
@@ -1462,6 +1847,14 @@ export function InputBarangKeluar() {
             showToast('Tidak ada data dengan Total Stok minus untuk dipindahkan!', 'info');
             return;
         }
+
+        // VALIDASI: Cek apakah ada baris yang gudangnya masih kosong
+        const emptyGudangRows = minusRows.filter(row => !row.gudang || row.gudang.trim() === '');
+        if (emptyGudangRows.length > 0) {
+            showToast(`Gagal! Ada ${emptyGudangRows.length} data stok minus yang kolom GUDANG-nya belum diisi. Mohon pilih gudang terlebih dahulu.`, 'error');
+            return;
+        }
+
         try {
             const minusStockEntries = minusRows.map(row => {
                 const tanggalFormatted = convertToInputDate(row.tanggal);
@@ -1662,19 +2055,23 @@ export function InputBarangKeluar() {
         }
     };
     const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
+    const [isBulkModal3Open, setIsBulkModal3Open] = useState(false);
     const [bulkInputText, setBulkInputText] = useState('');
+    const [bulkInputText3, setBulkInputText3] = useState('');
     const [analyzedData, setAnalyzedData] = useState<AnalyzedItem[]>([]);
     const [analyzedData2, setAnalyzedData2] = useState<AnalyzedItem2[]>([]);
+    const [analyzedData3, setAnalyzedData3] = useState<AnalyzedItem3[]>([]);
     const [analyzedDataScan2, setAnalyzedDataScan2] = useState<AnalyzedItemScan2[]>([]);
     const [analyzedDataScan, setAnalyzedDataScan] = useState<AnalyzedItemScan[]>([]);
     const [analyzedDataMassal, setAnalyzedDataMassal] = useState<AnalyzedItemMassal[]>([]);
+    const [analyzedDataSN, setAnalyzedDataSN] = useState<AnalyzedItemSN[]>([]);
     const [bulkAnalysisResult, setBulkAnalysisResult] = useState({
         berhasil: 0,
         gagal: 0
     });
-    const [bulkFormat, setBulkFormat] = useState<'format1' | 'format2' | 'format_scan2' | 'format_scan' | 'format_massal'>('format_massal');
-    const openBulkModal = (format: 'format1' | 'format2' | 'format_scan2' | 'format_scan' | 'format_massal') => {
-        if (format === 'format1' || format === 'format_massal' || format === 'format_scan2' || format === 'format_scan') {
+    const [bulkFormat, setBulkFormat] = useState<'format1' | 'format2' | 'format_scan2' | 'format_scan' | 'format_massal' | 'format_sn'>('format_massal');
+    const openBulkModal = (format: 'format1' | 'format2' | 'format_scan2' | 'format_scan' | 'format_massal' | 'format_sn') => {
+        if (format === 'format1' || format === 'format_massal' || format === 'format_scan2' || format === 'format_scan' || format === 'format_sn') {
             setPendingFormat(format);
             setPinInput('');
             setIsPinModalOpen(true);
@@ -1684,9 +2081,10 @@ export function InputBarangKeluar() {
             resetBulkModal();
         }
     };
-    const handlePinSubmit = (e: React.FormEvent) => {
+    const handlePinSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (pinInput === '8888') {
+        const isValid = await verifyPin(pinInput);
+        if (isValid) {
             setIsPinModalOpen(false);
             if (pendingFormat) {
                 setBulkFormat(pendingFormat);
@@ -1706,6 +2104,7 @@ export function InputBarangKeluar() {
         setAnalyzedDataScan2([]);
         setAnalyzedDataScan([]);
         setAnalyzedDataMassal([]);
+        setAnalyzedDataSN([]);
         setBulkAnalysisResult({ berhasil: 0, gagal: 0 });
     };
     const handleBulkAnalyze = () => {
@@ -1813,6 +2212,25 @@ export function InputBarangKeluar() {
                 }
             });
             setAnalyzedDataMassal(newAnalyzedDataMassal);
+        } else if (bulkFormat === 'format_sn') {
+            const newAnalyzedDataSN: AnalyzedItemSN[] = [];
+            lines.forEach(line => {
+                const parts = line.trim().split(/\t| {2,}/);
+                if (parts.length >= 3) {
+                    const tgl_scan = parts[0].trim();
+                    const nama_produk = parts[1].trim();
+                    const unique_code = parts[2].trim();
+                    if (nama_produk && unique_code) {
+                        newAnalyzedDataSN.push({ nama_produk, unique_code, tgl_scan, isValid: true });
+                        successCount++;
+                    } else {
+                        failCount++;
+                    }
+                } else {
+                    failCount++;
+                }
+            });
+            setAnalyzedDataSN(newAnalyzedDataSN);
         }
         setBulkAnalysisResult({ berhasil: successCount, gagal: failCount });
     };
@@ -2034,10 +2452,272 @@ export function InputBarangKeluar() {
                 setRows(prevRows => [...prevRows, ...rowsWithStockAndPacking]);
             }
             showToast(`${analyzedDataMassal.length} baris berhasil ditambahkan!`, 'success');
+        } else if (bulkFormat === 'format_sn') {
+            if (analyzedDataSN.length === 0) {
+                showToast('Tidak ada data valid untuk ditambahkan.', 'warning');
+                return;
+            }
+            newRowsFromBulk = analyzedDataSN.map(item => ({
+                id: Date.now().toString() + '_' + Math.random(),
+                tanggal: firstRowTanggal,
+                waktu: formatTimeWithSeconds(new Date()),
+                nama_produk: item.nama_produk,
+                jumlah: 1,
+                type: 'OUT',
+                gudang: firstRowGudang,
+                rak: '',
+                sub_rak: '',
+                tgl_scan: item.tgl_scan,
+                user_name: userEmail?.split('@')[0] || '',
+                unique_code: item.unique_code,
+                stok_tersedia: 0,
+                total_stok: 0,
+                packing: '',
+                validationErrors: undefined,
+            }));
+
+            const rowsWithStockAndPacking = await Promise.all(newRowsFromBulk.map(async (row) => {
+                const stokTersedia = await calculateAvailableStock(row.nama_produk, row.rak);
+                const stockItem = stockItems.find(si => si.nama_produk?.toLowerCase().trim() === row.nama_produk.toLowerCase().trim());
+                let packingData = '';
+                if (stockItem && stockItem.packing && stockItem.packing.trim() !== '' && stockItem.packing.trim() !== 'CTN/') {
+                    packingData = stockItem.packing;
+                }
+                return {
+                    ...row,
+                    stok_tersedia: stokTersedia,
+                    total_stok: stokTersedia - row.jumlah,
+                    packing: packingData,
+                };
+            }));
+            if (rows.length === 1 && (!rows[0].nama_produk || rows[0].nama_produk === '') && rows[0].jumlah === 0) {
+                setRows(rowsWithStockAndPacking);
+            } else {
+                setRows(prevRows => [...prevRows, ...rowsWithStockAndPacking]);
+            }
+            showToast(`${analyzedDataSN.length} baris berhasil ditambahkan!`, 'success');
         }
         setIsBulkModalOpen(false);
         resetBulkModal();
     };
+
+    // --- MASSAL 2 MODAL LOGIC (3 Columns: SKU, QTY, Unique Code) ---
+    const resetMassal2Modal = () => {
+        setMassal2InputText('');
+        setMassal2AnalyzedData([]);
+        setMassal2AnalysisResult({ berhasil: 0, gagal: 0 });
+    };
+
+    const openMassal2Modal = () => {
+        resetMassal2Modal();
+        setIsMassal2ModalOpen(true);
+    };
+
+    const handleMassal2Analyze = () => {
+        if (!massal2InputText.trim()) {
+            showToast('Tidak ada data untuk dianalisa.', 'warning');
+            return;
+        }
+
+        const lines = massal2InputText.split('\n');
+        const newAnalyzedData: Massal2Item[] = [];
+        let successCount = 0;
+        let failCount = 0;
+
+        lines.forEach(line => {
+            const parts = line.trim().split(/\t| {2,}/);
+            if (parts.length >= 3) {
+                const nama_produk = parts[0].trim();
+                const jumlah = parseInt(parts[1].trim());
+                const unique_code = parts[2].trim();
+
+                if (nama_produk && !isNaN(jumlah) && jumlah > 0 && unique_code) {
+                    newAnalyzedData.push({
+                        nama_produk,
+                        jumlah,
+                        unique_code,
+                        isValid: true
+                    });
+                    successCount++;
+                } else {
+                    newAnalyzedData.push({
+                        nama_produk: parts[0] || 'Tidak Valid',
+                        jumlah: isNaN(jumlah) ? 0 : jumlah,
+                        unique_code: parts[2] || '',
+                        isValid: false
+                    });
+                    failCount++;
+                }
+            } else if (line.trim() !== '') {
+                failCount++;
+            }
+        });
+
+        setMassal2AnalyzedData(newAnalyzedData.filter(item => item.isValid));
+        setMassal2AnalysisResult({ berhasil: successCount, gagal: failCount });
+    };
+
+    const handleMassal2Add = async () => {
+        if (massal2AnalyzedData.length === 0) {
+            showToast('Tidak ada data valid untuk ditambahkan.', 'warning');
+            return;
+        }
+
+        const firstRowGudang = rows.length > 0 ? rows[0].gudang : '';
+        const firstRowTanggal = rows.length > 0 ? rows[0].tanggal : currentDate;
+
+        const newRowsFromBulk: TransactionRow[] = await Promise.all(massal2AnalyzedData.map(async (item) => {
+            const stokTersedia = await calculateAvailableStock(item.nama_produk, '');
+            const stockItem = stockItems.find(si => si.nama_produk?.toLowerCase().trim() === item.nama_produk.toLowerCase().trim());
+            let packingData = '';
+            if (stockItem && stockItem.packing && stockItem.packing.trim() !== '' && stockItem.packing.trim() !== 'CTN/') {
+                packingData = stockItem.packing;
+            }
+            return {
+                id: Date.now().toString() + '_' + Math.random(),
+                tanggal: firstRowTanggal,
+                waktu: formatTimeWithSeconds(new Date()),
+                nama_produk: item.nama_produk,
+                jumlah: item.jumlah,
+                type: 'OUT',
+                gudang: firstRowGudang,
+                rak: '',
+                sub_rak: '',
+                tgl_scan: '',
+                user_name: '',
+                unique_code: item.unique_code,
+                stok_tersedia: stokTersedia,
+                total_stok: stokTersedia - item.jumlah,
+                packing: packingData,
+                validationErrors: undefined
+            };
+        }));
+
+        if (rows.length === 1 && (!rows[0].nama_produk || rows[0].nama_produk === '') && rows[0].jumlah === 0) {
+            setRows(newRowsFromBulk);
+        } else {
+            setRows(prevRows => [...prevRows, ...newRowsFromBulk]);
+        }
+
+        showToast(`${massal2AnalyzedData.length} baris berhasil ditambahkan!`, 'success');
+        setIsMassal2ModalOpen(false);
+        resetMassal2Modal();
+    };
+
+    const analyzeMassal2Paste = () => {
+        setTimeout(() => {
+            handleMassal2Analyze();
+        }, 100);
+    };
+
+    // --- MASSAL 3 MODAL LOGIC (Tutorial + 3 Columns: SKU, QTY PCS, QTY KARTON) ---
+    const resetMassal3Modal = () => {
+        setMassal3InputText('');
+        setMassal3AnalyzedData([]);
+        setMassal3AnalysisResult({ berhasil: 0, gagal: 0 });
+    };
+
+    const openMassal3Modal = () => {
+        resetMassal3Modal();
+        setIsMassal3ModalOpen(true);
+    };
+
+    const handleMassal3Analyze = () => {
+        if (!massal3InputText.trim()) {
+            showToast('Tidak ada data untuk dianalisa.', 'warning');
+            return;
+        }
+
+        const lines = massal3InputText.split('\n');
+        const newAnalyzedData: Massal3Item[] = [];
+        let successCount = 0;
+        let failCount = 0;
+
+        lines.forEach(line => {
+            const parts = line.trim().split(/\t| {2,}/);
+            if (parts.length >= 3) {
+                const sku = parts[0].trim();
+                const qty_pcs = parseInt(parts[1].trim());
+                const qty_karton = parseInt(parts[2].trim());
+
+                if (sku && !isNaN(qty_pcs) && qty_pcs >= 0 && !isNaN(qty_karton)) {
+                    newAnalyzedData.push({
+                        sku,
+                        qty_pcs,
+                        qty_karton,
+                        isValid: true
+                    });
+                    successCount++;
+                } else {
+                    newAnalyzedData.push({
+                        sku: parts[0] || 'Tidak Valid',
+                        qty_pcs: isNaN(qty_pcs) ? 0 : qty_pcs,
+                        qty_karton: isNaN(qty_karton) ? 0 : qty_karton,
+                        isValid: false
+                    });
+                    failCount++;
+                }
+            } else if (line.trim() !== '') {
+                failCount++;
+            }
+        });
+
+        setMassal3AnalyzedData(newAnalyzedData.filter(item => item.isValid));
+        setMassal3AnalysisResult({ berhasil: successCount, gagal: failCount });
+    };
+
+    const handleMassal3Add = async () => {
+        if (massal3AnalyzedData.length === 0) {
+            showToast('Tidak ada data valid untuk ditambahkan.', 'warning');
+            return;
+        }
+
+        const firstRowGudang = rows.length > 0 ? rows[0].gudang : '';
+        const firstRowTanggal = rows.length > 0 ? rows[0].tanggal : currentDate;
+
+        const newRowsFromBulk: TransactionRow[] = await Promise.all(massal3AnalyzedData.map(async (item) => {
+            const stokTersedia = await calculateAvailableStock(item.sku, '');
+            const stockItem = stockItems.find(si => si.nama_produk?.toLowerCase().trim() === item.sku.toLowerCase().trim());
+            let packingData = '';
+            if (stockItem && stockItem.packing && stockItem.packing.trim() !== '' && stockItem.packing.trim() !== 'CTN/') {
+                packingData = stockItem.packing;
+            }
+            return {
+                id: Date.now().toString() + '_' + Math.random(),
+                tanggal: firstRowTanggal,
+                waktu: formatTimeWithSeconds(new Date()),
+                nama_produk: item.sku,
+                jumlah: item.qty_pcs,
+                type: 'OUT',
+                gudang: firstRowGudang,
+                rak: '',
+                sub_rak: '',
+                tgl_scan: '',
+                user_name: '',
+                stok_tersedia: stokTersedia,
+                total_stok: stokTersedia - item.qty_pcs,
+                packing: packingData,
+                validationErrors: undefined
+            };
+        }));
+
+        if (rows.length === 1 && (!rows[0].nama_produk || rows[0].nama_produk === '') && rows[0].jumlah === 0) {
+            setRows(newRowsFromBulk);
+        } else {
+            setRows(prevRows => [...prevRows, ...newRowsFromBulk]);
+        }
+
+        showToast(`${massal3AnalyzedData.length} baris (Massal 3) berhasil ditambahkan!`, 'success');
+        setIsMassal3ModalOpen(false);
+        resetMassal3Modal();
+    };
+
+    const analyzeMassal3Paste = () => {
+        setTimeout(() => {
+            handleMassal3Analyze();
+        }, 100);
+    };
+
     return (
         <>
             <Toast
@@ -2052,7 +2732,7 @@ export function InputBarangKeluar() {
             {/* ======================================================== */}
             <div className="flex flex-col mb-8 lg:mb-12">
                 {/* Full Immersive Background Banner with Floating Shapes */}
-                <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+                <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 pt-[80px] lg:pt-0 lg:h-[310px] pb-[40px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
                     {/* Decorative Background Icon */}
                     <div className="absolute -top-6 -right-6 text-white opacity-5">
@@ -2066,7 +2746,7 @@ export function InputBarangKeluar() {
                     <div className="absolute top-1/2 right-20 w-16 h-16 bg-blue-400/20 rounded-3xl -rotate-12 blur-xl hidden lg:block"></div>
 
                     {/* Text Content */}
-                    <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6 uppercase">
+                    <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 lg:gap-6 uppercase">
                         <div className="max-w-2xl">
                             <div className="flex items-center gap-2 mb-2 lg:mb-3 opacity-90">
                                 <div className="w-8 h-[2px] bg-white rounded-full"></div>
@@ -2092,60 +2772,87 @@ export function InputBarangKeluar() {
                             </div>
                         </div>
 
-                        {/* Desktop Action Buttons */}
-                        <div className="hidden lg:flex flex-wrap gap-3">
+                        <div className="lg:hidden w-full flex justify-end items-center gap-2">
                             <Button
-                                onClick={handleSubmit}
-                                className="h-14 px-6 bg-emerald-500 hover:bg-emerald-600 text-white font-black rounded-2xl shadow-[0_10px_25px_-5px_rgba(16,185,129,0.4)] transition-all duration-300 transform hover:scale-105 active:scale-95 flex items-center gap-3 border border-emerald-400/20"
+                                onClick={handleClearAll}
+                                className="h-10 px-4 bg-rose-500/80 hover:bg-rose-600 text-white font-black rounded-xl transition-all active:scale-95 flex items-center gap-2 border border-rose-400/20 backdrop-blur-md shadow-lg"
                                 disabled={isSubmitting}
                             >
-                                <Send className={`h-5 w-5 ${isSubmitting ? 'animate-pulse' : ''}`} />
-                                KIRIM
+                                <Trash className="h-4 w-4" />
+                                <span className="text-[11px] uppercase font-bold">Reset All</span>
+                            </Button>
+                        </div>
+
+                        {/* Desktop Action Buttons */}
+                        <div className="hidden lg:flex flex-wrap justify-end items-center gap-2">
+                            <Button
+                                onClick={() => setIsBulkModalOpen(true)}
+                                className="h-11 px-4 bg-white hover:bg-gray-50 text-gray-800 border border-gray-200 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-bold shadow-sm"
+                                disabled={isSubmitting}
+                            >
+                                <Plus className="h-4 w-4" />
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">BULK</span>
                             </Button>
 
                             <Button
                                 onClick={handleKirimPenyesuaian}
-                                className="h-14 px-6 bg-amber-500 hover:bg-amber-600 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center gap-2 border border-white/10"
+                                className="h-11 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-bold shadow-sm border border-amber-600/50"
                                 disabled={isSubmitting}
                             >
-                                <Tag className="h-5 w-5" />
-                                ADJUST
+                                <Tag className="h-4 w-4" />
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">ADJUST</span>
                             </Button>
 
                             <Button
                                 onClick={handleMoveMinusStock}
-                                className="h-14 px-6 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl backdrop-blur-md transition-all active:scale-95 flex items-center gap-2 border border-white/20"
+                                className="h-11 px-4 bg-orange-500 hover:bg-orange-600 text-white rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-bold shadow-sm border border-orange-600/50"
                                 disabled={isSubmitting}
                             >
-                                <MoveRight className="h-5 w-5" />
-                                MOVE
+                                <MoveRight className="h-4 w-4" />
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">MOVE</span>
                             </Button>
 
                             <Button
                                 onClick={handleMoveToQuarantine}
-                                className="h-14 px-6 bg-orange-500/80 hover:bg-red-600 text-white font-black rounded-2xl transition-all active:scale-95 flex items-center gap-2 border border-white/20 backdrop-blur-md"
+                                className="h-11 px-4 bg-red-500 hover:bg-red-600 text-white rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-bold shadow-sm border border-red-600/50"
                                 disabled={isSubmitting}
                             >
-                                <ShieldAlert className="h-5 w-5" />
-                                KARANTINA
+                                <ShieldAlert className="h-4 w-4" />
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">KARANTINA</span>
                             </Button>
 
                             <Button
-                                onClick={() => setIsBulkModalOpen(true)}
-                                className="h-14 px-6 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl transition-all active:scale-95 flex items-center gap-2 border border-white/20 backdrop-blur-md"
+                                onClick={handleSubmit}
                                 disabled={isSubmitting}
+                                className="h-12 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border-0 px-8"
                             >
-                                <Plus className="h-5 w-5" />
-                                BULK
+                                <Send className={cn("h-4 w-4", isSubmitting && "animate-pulse")} />
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">
+                                    {isSubmitting ? (submissionProgress.total > 0 ? `MENGIRIM ${submissionProgress.current}/${submissionProgress.total}` : 'MENGIRIM...') : 'KIRIM DATA KELUAR'}
+                                </span>
+                            </Button>
+
+                            <div className="hidden xl:block w-px h-8 bg-white/20 mx-1"></div>
+
+                            <Button
+                                onClick={syncDropdownData}
+                                className="h-11 px-4 bg-blue-500 hover:bg-blue-600 text-white border border-blue-400 rounded-xl transition-all active:scale-95 flex flex-col items-center justify-center shadow-md"
+                                disabled={dropdownLoading}
+                            >
+                                <div className="flex items-center gap-2 font-bold whitespace-nowrap">
+                                    <RefreshCw className={cn("h-3.5 w-3.5", dropdownLoading && "animate-spin")} />
+                                    <span className="text-[11px] uppercase tracking-wider">SYNC</span>
+                                </div>
+                                <span className="text-[8px] font-normal opacity-90 mt-0.5 whitespace-nowrap text-blue-100">Sinkron SKU Baru</span>
                             </Button>
 
                             <Button
                                 onClick={handleClearAll}
-                                className="h-14 px-6 bg-rose-500/80 hover:bg-rose-600 text-white font-black rounded-2xl transition-all active:scale-95 flex items-center gap-2 border border-rose-400/20 backdrop-blur-md"
+                                className="h-11 px-4 bg-rose-500 hover:bg-rose-600 text-white border border-rose-400 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-bold shadow-md"
                                 disabled={isSubmitting}
                             >
-                                <Trash className="h-5 w-5" />
-                                RESET
+                                <Trash className="h-4 w-4 text-white" />
+                                <span className="text-[11px] uppercase tracking-wider text-white whitespace-nowrap">RESET</span>
                             </Button>
                         </div>
                     </div>
@@ -2153,164 +2860,273 @@ export function InputBarangKeluar() {
             </div>
 
             <div className="space-y-6 lg:space-y-10 lg:px-10 pb-12">
-
-
+                {/* Marquee/Running Text */}
+                {showMarquee && (
+                    <div className="bg-gradient-to-r from-blue-700 via-blue-800 to-blue-700 text-white py-2.5 px-6 rounded-2xl overflow-hidden shadow-xl border border-blue-900/50 -mt-2 lg:-mt-4 relative z-20">
+                        <div className="flex items-center whitespace-nowrap animate-marquee">
+                            {[1, 2].map((i) => (
+                                <div key={i} className="flex items-center space-x-4 pr-12">
+                                    <span className="flex items-center gap-2 font-black uppercase tracking-wider text-[10px] bg-amber-400 text-blue-900 px-3 py-1 rounded-full shadow-sm">
+                                        <AlertCircle className="h-3 w-3" /> INFO SISTEM
+                                    </span>
+                                    <span className="font-bold text-xs lg:text-sm tracking-tight uppercase">
+                                        Rak yang sudah dirapihkan (Stock Opname) akan di-nonaktifkan otomatis fitur auto-fill lokasinya. Anda harus mengisi lokasi rak tersebut secara manual.
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                        <style>
+                            {`
+                                @keyframes marquee {
+                                0% { transform: translateX(0); }
+                                100% { transform: translateX(-50%); }
+                                }
+                                .animate-marquee {
+                                display: inline-flex;
+                                animation: marquee 25s linear infinite;
+                                }
+                                .animate-marquee:hover {
+                                animation-play-state: paused;
+                                }
+                            `}
+                        </style>
+                    </div>
+                )}
 
                 {/* Grid Stats - Hidden on Mobile */}
-                <div className="hidden lg:block bg-white/50 backdrop-blur-sm p-4 rounded-xl border border-gray-100 shadow-sm">
-                    <div className="grid grid-cols-3 gap-2 md:gap-4 text-sm">
-                        <div className="flex flex-col lg:flex-row lg:items-center lg:space-x-3 bg-white p-2 rounded-lg border border-gray-50 items-center text-center lg:text-left">
-                            <div className={`w-2 h-2 lg:w-3 lg:h-3 rounded-full mb-1 lg:mb-0 ${validProducts.length > 0 ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-orange-500'}`}></div>
+                <div className="hidden lg:grid grid-cols-3 gap-4">
+                    <div className="bg-white rounded-[20px] border-l-4 border-l-blue-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-gradient-to-r from-blue-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                        <div className="flex items-center gap-4 relative z-10">
+                            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/20">
+                                <Box className="h-5 w-5" />
+                            </div>
                             <div className="flex flex-col">
-                                <span className="text-[8px] lg:text-[10px] uppercase font-bold text-gray-400">Produk</span>
-                                <span className={`text-[10px] lg:text-sm font-bold ${validProducts.length > 0 ? 'text-green-600' : 'text-orange-600'}`}>
-                                    {validProducts.length.toLocaleString()}
-                                </span>
+                                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Produk</span>
+                                <div className="flex items-baseline gap-1.5 mt-1">
+                                    <span className="text-2xl font-black text-gray-800 leading-none">{validProducts.length.toLocaleString()}</span>
+                                </div>
                             </div>
                         </div>
-                        <div className="flex flex-col lg:flex-row lg:items-center lg:space-x-3 bg-white p-2 rounded-lg border border-gray-50 items-center text-center lg:text-left">
-                            <div className={`w-2 h-2 lg:w-3 lg:h-3 rounded-full mb-1 lg:mb-0 ${validWarehouses.length > 0 ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-orange-500'}`}></div>
+                        <div className="relative z-10 flex flex-col items-end gap-1">
+                            <span className="text-[10px] font-semibold text-gray-400">Master SKU</span>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-[20px] border-l-4 border-l-emerald-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-gradient-to-r from-emerald-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                        <div className="flex items-center gap-4 relative z-10">
+                            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                                <Warehouse className="h-5 w-5" />
+                            </div>
                             <div className="flex flex-col">
-                                <span className="text-[8px] lg:text-[10px] uppercase font-bold text-gray-400">Gudang</span>
-                                <span className={`text-[10px] lg:text-sm font-bold ${validWarehouses.length > 0 ? 'text-green-600' : 'text-orange-600'}`}>
-                                    {validWarehouses.length}
-                                </span>
+                                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Gudang</span>
+                                <div className="flex items-baseline gap-1.5 mt-1">
+                                    <span className="text-2xl font-black text-gray-800 leading-none">{validWarehouses.length.toLocaleString()}</span>
+                                </div>
                             </div>
                         </div>
-                        <div className="flex flex-col lg:flex-row lg:items-center lg:space-x-3 bg-white p-2 rounded-lg border border-gray-50 items-center text-center lg:text-left">
-                            <div className={`w-2 h-2 lg:w-3 lg:h-3 rounded-full mb-1 lg:mb-0 ${validRacks.length > 0 ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-orange-500'}`}></div>
-                            <div className="flex flex-col">
-                                <span className="text-[8px] lg:text-[10px] uppercase font-bold text-gray-400">Rak</span>
-                                <span className={`text-[10px] lg:text-sm font-bold ${validRacks.length > 0 ? 'text-green-600' : 'text-orange-600'}`}>
-                                    {validRacks.length}
-                                </span>
+                        <div className="relative z-10 flex flex-col items-end gap-1">
+                            <span className="text-[10px] font-semibold text-gray-400">Total Lokasi</span>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-[20px] border-l-4 border-l-blue-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-gradient-to-r from-blue-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                        <div className="flex items-center gap-4 relative z-10">
+                            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/20">
+                                <LayoutGrid className="h-5 w-5" />
                             </div>
+                            <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Jumlah Baris Terisi</span>
+                                <div className="flex items-baseline gap-1.5 mt-1">
+                                    <span className="text-2xl font-black text-gray-800 leading-none">{rows.filter(r => r.nama_produk && r.nama_produk.trim() !== '').length}</span>
+                                    <span className="text-xs font-semibold text-gray-400">/ {rows.length}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="relative z-10 flex flex-col items-end gap-1">
+                            <span className="text-[10px] font-black tracking-widest uppercase px-2 py-1 bg-blue-50 text-blue-600 rounded-lg border border-blue-100">Live Count</span>
                         </div>
                     </div>
                 </div>
-                {/* Column toggle overlay - no wrapper shape needed */}
-                {showColumnToggle && (
-                    <div
-                        ref={columnToggleRef}
-                        className="fixed inset-x-4 top-1/2 transform -translate-y-1/2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-[500] max-h-[70vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200"
-                    >
-                        <div className="p-4 border-b border-gray-100 bg-blue-600 text-white flex justify-between items-center sticky top-0">
-                            <h3 className="font-black text-sm uppercase tracking-wider">Tampilkan Kolom</h3>
-                            <button onClick={() => setShowColumnToggle(false)} className="p-1 hover:bg-white/10 rounded-full">
-                                <X className="h-5 w-5" />
-                            </button>
+                {/* Column toggle overlay - Only for Mobile */}
+                <div className="lg:hidden">
+                    {showColumnToggle && (
+                        <div
+                            ref={columnToggleRef}
+                            className="fixed inset-x-4 top-1/2 transform -translate-y-1/2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-[500] max-h-[70vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200"
+                        >
+                            <div className="p-4 border-b border-gray-100 bg-blue-600 text-white flex justify-between items-center sticky top-0">
+                                <h3 className="font-black text-sm uppercase tracking-wider">Tampilkan Kolom</h3>
+                                <button onClick={() => setShowColumnToggle(false)} className="p-1 hover:bg-white/10 rounded-full">
+                                    <X className="h-5 w-5" />
+                                </button>
+                            </div>
+                            <div className="p-4 grid grid-cols-1 gap-1">
+                                {[
+                                    { key: 'no', label: 'Nomor Urut' },
+                                    { key: 'tanggal', label: 'Tanggal Transaksi' },
+                                    { key: 'nama_produk', label: 'Nama Produk / SKU' },
+                                    { key: 'jumlah', label: 'Jumlah Barang' },
+                                    { key: 'gudang', label: 'Gudang' },
+                                    { key: 'rak', label: 'Lokasi Rak' },
+                                    { key: 'stok_tersedia', label: 'Stok Saat Ini' },
+                                    { key: 'total_stok', label: 'Estimasi Sisa' },
+                                    { key: 'tgl_scan', label: 'Waktu Scan' },
+                                    { key: 'user_name', label: 'User Penginput' },
+                                    { key: 'aksi', label: 'Aksi Hapus' }
+                                ].map(({ key, label }) => (
+                                    <label key={key} className="flex items-center space-x-3 p-3 hover:bg-gray-50 rounded-xl cursor-pointer transition-colors border border-transparent hover:border-gray-100">
+                                        <input
+                                            type="checkbox"
+                                            checked={visibleColumns[key as keyof typeof visibleColumns]}
+                                            onChange={() => toggleColumn(key as keyof typeof visibleColumns)}
+                                            className="w-5 h-5 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500 transition-all"
+                                        />
+                                        <span className="text-sm font-bold text-gray-700">{label}</span>
+                                    </label>
+                                ))}
+                            </div>
+                            <div className="p-4 border-t border-gray-100 bg-gray-50">
+                                <Button onClick={resetColumns} className="w-full h-11 bg-white text-gray-600 border border-gray-200 font-bold rounded-xl active:scale-95 shadow-sm">
+                                    Reset Pengaturan Kolom
+                                </Button>
+                            </div>
                         </div>
-                        <div className="p-4 grid grid-cols-1 gap-1">
-                            {[
-                                { key: 'no', label: 'Nomor Urut' },
-                                { key: 'tanggal', label: 'Tanggal Transaksi' },
-                                { key: 'nama_produk', label: 'Nama Produk / SKU' },
-                                { key: 'jumlah', label: 'Jumlah Barang' },
-                                { key: 'gudang', label: 'Gudang' },
-                                { key: 'rak', label: 'Lokasi Rak' },
-                                { key: 'stok_tersedia', label: 'Stok Saat Ini' },
-                                { key: 'total_stok', label: 'Estimasi Sisa' },
-                                { key: 'tgl_scan', label: 'Waktu Scan' },
-                                { key: 'user_name', label: 'User Penginput' },
-                                { key: 'aksi', label: 'Aksi Hapus' }
-                            ].map(({ key, label }) => (
-                                <label key={key} className="flex items-center space-x-3 p-3 hover:bg-gray-50 rounded-xl cursor-pointer transition-colors border border-transparent hover:border-gray-100">
-                                    <input
-                                        type="checkbox"
-                                        checked={visibleColumns[key as keyof typeof visibleColumns]}
-                                        onChange={() => toggleColumn(key as keyof typeof visibleColumns)}
-                                        className="w-5 h-5 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500 transition-all"
-                                    />
-                                    <span className="text-sm font-bold text-gray-700">{label}</span>
-                                </label>
-                            ))}
-                        </div>
-                        <div className="p-4 border-t border-gray-100 bg-gray-50">
-                            <Button onClick={resetColumns} className="w-full h-11 bg-white text-gray-600 border border-gray-200 font-bold rounded-xl active:scale-95 shadow-sm">
-                                Reset Pengaturan Kolom
-                            </Button>
-                        </div>
-                    </div>
-                )}
-                {/* Desktop: Original Horizontal Layout */}
-                <div className="hidden lg:flex lg:justify-between lg:items-center">
-                    <div className="flex flex-wrap gap-2">
+                    )}
+                </div>
+                {/* Action Toolbar (Visible on Desktop & Mobile, scrollable) */}
+                <div className="flex bg-white py-2 px-3 rounded-full border border-gray-100 shadow-[0_2px_15px_-5px_rgba(0,0,0,0.05)] justify-between items-center w-full mb-4 overflow-x-auto no-scrollbar gap-4">
+                    <div className="flex items-center gap-2 flex-nowrap">
+                        {/* + BARIS */}
                         <Button
                             onClick={addRow}
-                            className="h-10 px-4 flex items-center justify-center gap-2 whitespace-nowrap bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl shadow-sm shadow-blue-200 transition-all active:scale-95"
+                            className="h-10 px-5 bg-[#1d5bf0] hover:bg-blue-600 text-white font-bold rounded-full transition-all flex items-center gap-2 shadow-none border-none flex-shrink-0"
                         >
                             <Plus className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Baris</span>
+                            <span className="text-[11px] uppercase tracking-wider">Baris</span>
                         </Button>
+
+                        {/* DATA SCAN */}
                         <Button
                             onClick={handleAmbilDataScan}
-                            className="h-10 px-4 flex items-center justify-center gap-2 whitespace-nowrap bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl shadow-sm shadow-emerald-200 transition-all active:scale-95"
+                            className="h-10 px-5 bg-emerald-100/80 hover:bg-emerald-200 text-emerald-700 font-bold rounded-full transition-all flex items-center gap-2 shadow-none border border-emerald-200 flex-shrink-0"
                         >
                             <Layers className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Data Scan</span>
+                            <span className="text-[11px] uppercase tracking-wider">Data Scan</span>
                         </Button>
+
+                        {/* + 50 */}
                         <Button
                             onClick={add50Rows}
-                            className="h-10 px-4 flex items-center justify-center gap-2 whitespace-nowrap bg-sky-500 hover:bg-sky-600 text-white font-bold rounded-xl shadow-sm shadow-sky-200 transition-all active:scale-95"
+                            className="h-10 px-5 bg-blue-100/80 hover:bg-blue-200 text-blue-700 font-bold rounded-full transition-all flex items-center gap-2 shadow-none border border-blue-200 flex-shrink-0"
                         >
                             <Plus className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">+50</span>
+                            <span className="text-[11px] uppercase tracking-wider">50 Baris</span>
                         </Button>
+
+                        {/* PENYESUAIAN */}
                         <Button
                             onClick={penyesuaian}
-                            className="h-10 px-4 flex items-center justify-center gap-2 whitespace-nowrap bg-gray-500 hover:bg-gray-600 text-white font-bold rounded-xl shadow-sm shadow-gray-200 transition-all active:scale-95"
+                            className="h-10 px-5 bg-gray-100/80 hover:bg-gray-200 text-gray-700 font-bold rounded-full transition-all flex items-center gap-2 shadow-none border border-gray-200 ml-1 flex-shrink-0"
+                            title="Penyesuaian"
                         >
-                            <Settings className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Penyesuaian</span>
+                            <SlidersHorizontal className="h-4 w-4" />
+                            <span className="text-[11px] uppercase tracking-wider">Penyesuaian</span>
                         </Button>
-                        <div className="relative">
+
+                        <div className="w-px h-6 bg-gray-200 mx-2 flex-shrink-0"></div>
+
+                        {/* MASSAL */}
+                        <Button
+                            onClick={() => openBulkModal('format_massal')}
+                            className="h-10 px-4 bg-purple-100/80 hover:bg-purple-200 text-purple-700 font-bold rounded-xl transition-all flex items-center gap-2 shadow-none border border-purple-200 flex-shrink-0"
+                        >
+                            <Layers className="h-4 w-4" />
+                            <span className="text-[11px] uppercase tracking-wider leading-none whitespace-nowrap">Massal</span>
+                        </Button>
+
+                        {devMode && (
+                            <>
+                                {/* MASSAL 2 */}
+                                <Button
+                                    onClick={openMassal2Modal}
+                                    className="h-10 px-4 bg-indigo-100/80 hover:bg-indigo-200 text-indigo-700 font-bold rounded-xl transition-all flex items-center gap-2 shadow-none border border-indigo-200 flex-shrink-0"
+                                >
+                                    <Layers className="h-4 w-4" />
+                                    <span className="text-[11px] uppercase tracking-wider leading-none whitespace-nowrap">Massal 2</span>
+                                </Button>
+                                {/* MASSAL 3 */}
+                                <Button
+                                    onClick={openMassal3Modal}
+                                    className="h-10 px-4 bg-teal-100/80 hover:bg-teal-200 text-teal-700 font-bold rounded-xl transition-all flex items-center gap-2 shadow-none border border-teal-200 flex-shrink-0"
+                                >
+                                    <Layers className="h-4 w-4" />
+                                    <span className="text-[11px] uppercase tracking-wider leading-none whitespace-nowrap">Massal 3</span>
+                                </Button>
+                            </>
+                        )}
+                        
+                        {/* Tombol yang dikontrol visibilitasnya - Desktop */}
+                        {showAdvancedButtons && (
+                            <>
+                                <Button
+                                    onClick={() => openBulkModal('format_scan2')}
+                                    className="h-10 px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl transition-all flex items-center gap-2 shadow-none border-none flex-shrink-0"
+                                >
+                                    <span className="text-[11px] uppercase tracking-wider leading-none whitespace-nowrap">Scan 1</span>
+                                </Button>
+                                <Button
+                                    onClick={() => openBulkModal('format_scan')}
+                                    className="h-10 px-4 bg-fuchsia-50 hover:bg-fuchsia-100 text-fuchsia-700 font-bold rounded-xl transition-all flex items-center gap-2 shadow-none border-none flex-shrink-0"
+                                >
+                                    <span className="text-[11px] uppercase tracking-wider leading-none whitespace-nowrap">Scan 2</span>
+                                </Button>
+                                <Button
+                                    onClick={() => openBulkModal('format_sn')}
+                                    className="h-10 px-4 bg-orange-50 hover:bg-orange-100 text-orange-700 font-bold rounded-xl transition-all flex items-center gap-2 shadow-none border-none flex-shrink-0"
+                                >
+                                    <span className="text-[11px] uppercase tracking-wider leading-none whitespace-nowrap">Format SN</span>
+                                </Button>
+                            </>
+                        )}
+                    </div>
+                    
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                        <div className="relative pl-2 border-l border-gray-100">
                             <Button
                                 onClick={() => setShowColumnToggle(!showColumnToggle)}
-                                className="h-10 px-4 relative flex items-center justify-center gap-2 whitespace-nowrap bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl shadow-sm shadow-amber-200 transition-all active:scale-95"
+                                className="h-10 px-5 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-full transition-all flex items-center justify-center gap-2 shadow-none border-none"
                             >
-                                <Settings className="h-4 w-4" />
-                                <span className="text-xs font-bold uppercase tracking-wider">Kolom ({getVisibleColumnsCount()})</span>
+                                <LayoutGrid className="h-4 w-4" />
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">Kolom ({getVisibleColumnsCount()})</span>
                             </Button>
+
                             {showColumnToggle && (
                                 <div
                                     ref={columnToggleRef}
-                                    className="absolute top-full left-0 mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 min-w-64 max-h-80 overflow-y-auto"
+                                    className="absolute top-full right-0 mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 min-w-[280px] max-h-80 overflow-y-auto animate-in fade-in slide-in-from-top-2"
                                 >
-                                    <div className="p-3 border-b border-gray-100 bg-blue-600 text-white rounded-t-2xl">
-                                        <div className="flex justify-between items-center">
-                                            <h3 className="font-bold text-sm uppercase tracking-wider">Tampilkan Kolom</h3>
-                                            <button
-                                                onClick={() => setShowColumnToggle(false)}
-                                                className="text-white hover:text-gray-200"
-                                            >
-                                                <X className="h-4 w-4" />
-                                            </button>
-                                        </div>
+                                    <div className="p-4 border-b border-gray-100 bg-gray-50/50 sticky top-0 backdrop-blur-md flex justify-between items-center">
+                                        <h3 className="font-black text-xs uppercase tracking-widest text-gray-500">Kolom</h3>
+                                        <button onClick={() => setShowColumnToggle(false)} className="p-1 hover:bg-gray-200 rounded-full"><X className="h-4 w-4" /></button>
                                     </div>
-                                    <div className="p-3 space-y-1">
+                                    <div className="p-2 grid grid-cols-1 gap-1">
                                         {[
                                             { key: 'no', label: 'No' },
                                             { key: 'tanggal', label: 'Tanggal' },
-                                            { key: 'waktu', label: 'Waktu' },
                                             { key: 'nama_produk', label: 'Nama Produk' },
                                             { key: 'jumlah', label: 'Jumlah' },
-                                            { key: 'type', label: 'Type' },
                                             { key: 'gudang', label: 'Gudang' },
                                             { key: 'rak', label: 'Rak' },
-                                            { key: 'stok_tersedia', label: 'Stok Tersedia' },
-                                            { key: 'total_stok', label: 'Total Stok' },
-                                            { key: 'tgl_scan', label: 'Tgl Scan' },
-                                            { key: 'user_name', label: 'User' },
+                                            { key: 'stok_tersedia', label: 'Tersedia' },
+                                            { key: 'total_stok', label: 'Sisa' },
                                             { key: 'aksi', label: 'Aksi' }
                                         ].map(({ key, label }) => (
-                                            <label key={key} className="flex items-center space-x-3 p-2.5 hover:bg-blue-50 rounded-xl cursor-pointer transition-colors">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={visibleColumns[key as keyof typeof visibleColumns]}
-                                                    onChange={() => toggleColumn(key as keyof typeof visibleColumns)}
-                                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
-                                                />
-                                                <span className="text-sm font-bold text-gray-700 uppercase tracking-tight">{label}</span>
+                                            <label key={key} className="flex items-center space-x-3 p-3 hover:bg-blue-50 rounded-xl cursor-pointer">
+                                                <input type="checkbox" checked={visibleColumns[key as keyof typeof visibleColumns]} onChange={() => toggleColumn(key as keyof typeof visibleColumns)} className="w-4 h-4 rounded border-gray-300" />
+                                                <span className="text-sm font-bold text-gray-600 uppercase tracking-tight">{label}</span>
                                             </label>
                                         ))}
                                     </div>
@@ -2325,36 +3141,7 @@ export function InputBarangKeluar() {
                                 </div>
                             )}
                         </div>
-                        <Button
-                            onClick={() => openBulkModal('format_massal')}
-                            className="h-10 px-4 flex items-center justify-center gap-2 whitespace-nowrap bg-indigo-500 hover:bg-indigo-600 text-white font-bold rounded-xl shadow-sm shadow-indigo-200 transition-all active:scale-95"
-                        >
-                            <Layers className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Massal</span>
-                        </Button>
-                        {/* Tombol yang dikontrol visibilitasnya - Desktop */}
-                        {showAdvancedButtons && (
-                            <>
-                                <Button
-                                    onClick={() => openBulkModal('format_scan2')}
-                                    className="h-10 px-4 flex items-center justify-center gap-2 whitespace-nowrap bg-teal-500 hover:bg-teal-600 text-white font-bold rounded-xl shadow-sm shadow-teal-200 transition-all active:scale-95"
-                                >
-                                    <Layers className="h-4 w-4" />
-                                    <span className="text-xs font-bold uppercase tracking-wider">Scan 1</span>
-                                </Button>
-                                <Button
-                                    onClick={() => openBulkModal('format_scan')}
-                                    className="h-10 px-4 flex items-center justify-center gap-2 whitespace-nowrap bg-cyan-500 hover:bg-cyan-600 text-white font-bold rounded-xl shadow-sm shadow-cyan-200 transition-all active:scale-95"
-                                >
-                                    <Layers className="h-4 w-4" />
-                                    <span className="text-xs font-bold uppercase tracking-wider">Scan 2</span>
-                                </Button>
-                            </>
-                        )}
                     </div>
-                    <span className="text-sm text-gray-600">
-                        Total baris: {rows.filter(row => row.nama_produk && row.nama_produk.trim() !== '').length}
-                    </span>
                 </div>
                 <Card className="overflow-hidden border-none shadow-xl">
                     <CardContent className="p-0">
@@ -2739,13 +3526,261 @@ export function InputBarangKeluar() {
                     confirmText="Hapus Semua"
                 />
                 <Modal
+                    isOpen={isMassal2ModalOpen}
+                    onClose={() => {
+                        setIsMassal2ModalOpen(false);
+                        resetMassal2Modal();
+                    }}
+                    title="Tambah Massal (3 Kolom)"
+                    size="6xl"
+                    padding="p-0"
+                >
+                    <div className="flex flex-col h-auto lg:h-[70vh] min-h-[500px] p-6">
+                        {/* Information Banner */}
+                        <div className="mb-6 p-4 bg-blue-600 rounded-3xl text-white shadow-xl flex flex-col md:flex-row items-center justify-between gap-4">
+                            <div className="flex items-center gap-4">
+                                <div className="p-3 bg-white/20 rounded-2xl backdrop-blur-md">
+                                    <Layers className="h-6 w-6" />
+                                </div>
+                                <div>
+                                    <h3 className="font-black text-lg uppercase leading-tight tracking-tight">Input Mode 3 Kolom</h3>
+                                    <p className="text-blue-100 text-[10px] md:text-sm font-medium opacity-90">Produk, Jumlah, dan Lokasi Rak akan langsung terisi.</p>
+                                </div>
+                            </div>
+                            <div className="flex gap-2">
+                                <div className="px-5 py-2.5 bg-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/20 backdrop-blur-sm">Produk</div>
+                                <div className="px-5 py-2.5 bg-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/20 backdrop-blur-sm">Jumlah</div>
+                                <div className="px-5 py-2.5 bg-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/20 backdrop-blur-sm">Kode Unik</div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 flex-1 min-h-0">
+                            {/* Input Column */}
+                            <div className="flex flex-col h-full space-y-4">
+                                <div className="flex-1 relative group">
+                                    <textarea
+                                        value={massal2InputText}
+                                        onChange={(e) => setMassal2InputText(e.target.value)}
+                                        onPaste={analyzeMassal2Paste}
+                                        className="w-full h-full p-8 bg-gray-50 border-2 border-gray-100 rounded-[2.5rem] focus:outline-none focus:border-blue-400 focus:bg-white transition-all font-mono text-sm leading-relaxed shadow-inner resize-none group-hover:border-gray-200"
+                                        placeholder="Paste di sini...&#10;&#10;BARANG-A	10	SN-12345&#10;BARANG-B	50	SN-67890"
+                                    />
+                                    <div className="absolute top-6 right-6 pointer-events-none">
+                                        <div className="bg-blue-600 text-white text-[10px] font-black px-4 py-1.5 rounded-full shadow-lg uppercase tracking-widest animate-pulse">Ready to Paste</div>
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-4">
+                                    <Button
+                                        onClick={handleMassal2Analyze}
+                                        className="flex-1 h-16 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-xl shadow-blue-100 transition-all active:scale-95 uppercase tracking-widest text-sm flex items-center justify-center gap-3"
+                                    >
+                                        <RefreshCw className="h-5 w-5" /> Analisa Sekarang
+                                    </Button>
+                                    <Button
+                                        onClick={resetMassal2Modal}
+                                        variant="outline"
+                                        className="h-16 px-8 border-2 border-gray-100 text-gray-400 hover:bg-gray-50 rounded-2xl transition-all active:scale-95"
+                                    >
+                                        <Trash2 className="h-5 w-5" />
+                                    </Button>
+                                </div>
+                            </div>
+
+                            {/* Preview Column */}
+                            <div className="flex flex-col h-full bg-white rounded-[2.5rem] border border-gray-100 shadow-2xl overflow-hidden">
+                                <div className="p-6 border-b border-gray-50 flex items-center justify-between">
+                                    <div>
+                                        <h4 className="font-black text-xs uppercase tracking-[0.2em] text-gray-400">Preview Analisis</h4>
+                                        <p className="text-[10px] font-black text-blue-500 uppercase mt-1.5 tracking-tighter">Lokasi rak akan disesuaikan otomatis</p>
+                                    </div>
+                                    <div className="flex gap-3">
+                                        <div className="px-4 py-2 bg-blue-50 text-blue-600 rounded-2xl text-xs font-black border border-blue-100">
+                                            {massal2AnalysisResult.berhasil} ✓
+                                        </div>
+                                        <div className="px-4 py-2 bg-rose-50 text-rose-600 rounded-2xl text-xs font-black border border-rose-100">
+                                            {massal2AnalysisResult.gagal} ✗
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex-1 overflow-auto p-6 bg-gray-50/30">
+                                    {massal2AnalyzedData.length === 0 ? (
+                                        <div className="h-full flex flex-col items-center justify-center text-gray-200 gap-6 grayscale opacity-60">
+                                            <Edit3 className="h-24 w-24 stroke-[1]" />
+                                            <p className="text-[10px] font-black uppercase tracking-[0.3em]">Menunggu Input Data...</p>
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-1 gap-3">
+                                            {massal2AnalyzedData.map((item, idx) => (
+                                                <div key={idx} className="bg-white p-5 rounded-3xl border border-gray-50 shadow-sm flex items-center justify-between group hover:border-emerald-200 transition-all duration-300">
+                                                    <div className="flex items-center gap-5">
+                                                        <div className="h-12 w-12 bg-emerald-50 text-emerald-500 rounded-2xl flex items-center justify-center font-black group-hover:bg-emerald-600 group-hover:text-white transition-all duration-300">
+                                                            {idx + 1}
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-sm font-black text-gray-700 leading-tight group-hover:text-emerald-900 transition-colors uppercase tracking-tight">{item.nama_produk}</p>
+                                                            <div className="flex items-center gap-2 mt-1">
+                                                                <Layers className="h-3 w-3 text-blue-500" />
+                                                                <p className="text-[10px] font-bold text-blue-600 uppercase tracking-tighter">{item.unique_code}</p>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-right bg-gray-50 px-5 py-2.5 rounded-2xl group-hover:bg-blue-50 transition-colors">
+                                                        <p className="text-[8px] font-black text-gray-300 uppercase leading-none mb-1 group-hover:text-blue-300">QUANTITY</p>
+                                                        <p className="text-lg font-black text-emerald-600 group-hover:text-blue-700">{item.jumlah}</p>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="p-6 bg-white border-t border-gray-50">
+                                    <Button
+                                        onClick={handleMassal2Add}
+                                        disabled={massal2AnalyzedData.length === 0}
+                                        className="w-full h-16 bg-gradient-to-r from-emerald-500 to-emerald-700 hover:from-emerald-600 hover:to-emerald-800 text-white font-black rounded-3xl shadow-2xl shadow-emerald-100 transition-all active:scale-95 flex items-center justify-center gap-4 disabled:opacity-40 disabled:grayscale uppercase tracking-[0.2em] text-sm"
+                                    >
+                                        <Send className="h-6 w-6" /> Masukkan ke Antrean
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </Modal>
+
+                <Modal
+                    isOpen={isMassal3ModalOpen}
+                    onClose={() => {
+                        setIsMassal3ModalOpen(false);
+                        resetMassal3Modal();
+                    }}
+                    title="Tambah Massal 3 (Tutorial & Karton)"
+                    size="6xl"
+                    padding="p-0"
+                >
+                    <div className="flex flex-col h-auto lg:h-[75vh] min-h-[600px] p-6 bg-gray-50/50">
+                        {/* Tutorial Steps */}
+                        <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div className="bg-white p-4 rounded-3xl border border-blue-100 shadow-sm flex items-start gap-4">
+                                <div className="h-10 w-10 bg-blue-600 text-white rounded-2xl flex items-center justify-center font-black flex-shrink-0 shadow-lg shadow-blue-200">1</div>
+                                <div>
+                                    <h4 className="font-black text-xs uppercase tracking-tight text-blue-600 mb-1">Siapkan Excel</h4>
+                                    <p className="text-[10px] text-gray-500 font-medium leading-relaxed">Siapkan 3 kolom di Excel: <span className="font-bold">SKU</span>, <span className="font-bold">QTY PCS</span>, dan <span className="font-bold">QTY KARTON</span>.</p>
+                                </div>
+                            </div>
+                            <div className="bg-white p-4 rounded-3xl border border-emerald-100 shadow-sm flex items-start gap-4">
+                                <div className="h-10 w-10 bg-emerald-500 text-white rounded-2xl flex items-center justify-center font-black flex-shrink-0 shadow-lg shadow-emerald-200">2</div>
+                                <div>
+                                    <h4 className="font-black text-xs uppercase tracking-tight text-emerald-600 mb-1">Copy & Paste</h4>
+                                    <p className="text-[10px] text-gray-500 font-medium leading-relaxed">Blok data tsb di Excel, Copy (Ctrl+C), lalu Paste (Ctrl+V) ke kotak input di bawah ini.</p>
+                                </div>
+                            </div>
+                            <div className="bg-white p-4 rounded-3xl border border-purple-100 shadow-sm flex items-start gap-4">
+                                <div className="h-10 w-10 bg-purple-500 text-white rounded-2xl flex items-center justify-center font-black flex-shrink-0 shadow-lg shadow-purple-200">3</div>
+                                <div>
+                                    <h4 className="font-black text-xs uppercase tracking-tight text-purple-600 mb-1">Analisa & Tambah</h4>
+                                    <p className="text-[10px] text-gray-500 font-medium leading-relaxed">Klik 'Analisa' untuk cek data, lalu klik 'Tambah' untuk memasukkan ke antrean sistem.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 flex-1 min-h-0">
+                            {/* Input Column */}
+                            <div className="flex flex-col h-full space-y-4">
+                                <div className="flex-1 relative group">
+                                    <textarea
+                                        value={massal3InputText}
+                                        onChange={(e) => setMassal3InputText(e.target.value)}
+                                        onPaste={analyzeMassal3Paste}
+                                        className="w-full h-full p-8 bg-white border-2 border-gray-100 rounded-[2.5rem] focus:outline-none focus:border-blue-500 transition-all font-mono text-sm leading-relaxed shadow-xl resize-none"
+                                        placeholder="Paste 3 Kolom dari Excel di sini...&#10;&#10;SKU-A	120	5&#10;SKU-B	240	10"
+                                    />
+                                    <div className="absolute top-6 right-6">
+                                        <div className="bg-blue-600 text-white text-[10px] font-black px-4 py-1.5 rounded-full shadow-lg uppercase tracking-widest">Input Area (3 Kolom)</div>
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-4">
+                                    <Button
+                                        onClick={handleMassal3Analyze}
+                                        className="flex-1 h-16 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-xl shadow-blue-100 transition-all active:scale-95 uppercase tracking-widest text-sm flex items-center justify-center gap-3"
+                                    >
+                                        <RefreshCw className="h-5 w-5" /> Analisa Sekarang
+                                    </Button>
+                                    <Button
+                                        onClick={resetMassal3Modal}
+                                        variant="outline"
+                                        className="h-16 px-8 border-2 border-gray-100 text-gray-400 hover:bg-gray-50 rounded-2xl transition-all active:scale-95"
+                                    >
+                                        <Trash2 className="h-5 w-5" />
+                                    </Button>
+                                </div>
+                            </div>
+
+                            {/* Preview Column */}
+                            <div className="flex flex-col h-full bg-white rounded-[2.5rem] border border-gray-100 shadow-2xl overflow-hidden">
+                                <div className="p-6 border-b border-gray-50 flex items-center justify-between bg-blue-50/30">
+                                    <h4 className="font-black text-xs uppercase tracking-[0.2em] text-blue-600 flex items-center gap-2">
+                                        <Layers className="h-4 w-4" /> Preview Data Massal 3
+                                    </h4>
+                                    <div className="flex gap-2">
+                                        <div className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-xl text-[10px] font-black border border-emerald-200">
+                                            {massal3AnalysisResult.berhasil} ✓
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex-1 overflow-auto p-6 space-y-3">
+                                    {massal3AnalyzedData.length === 0 ? (
+                                        <div className="h-full flex flex-col items-center justify-center text-gray-200 gap-4 opacity-40">
+                                            <Package className="h-20 w-20 stroke-[1]" />
+                                            <p className="text-[10px] font-black uppercase tracking-[0.2em]">Paste Data Excel Anda</p>
+                                        </div>
+                                    ) : (
+                                        massal3AnalyzedData.map((item, idx) => (
+                                            <div key={idx} className="bg-gray-50/50 p-4 rounded-3xl border border-gray-100 flex items-center justify-between group hover:border-blue-200 transition-all">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="h-10 w-10 bg-white border border-gray-100 text-blue-600 rounded-2xl flex items-center justify-center font-black text-xs shadow-sm">
+                                                        {idx + 1}
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-sm font-black text-gray-800 uppercase leading-none mb-1">{item.sku}</p>
+                                                        <p className="text-[9px] font-bold text-gray-400 uppercase">Karton: {item.qty_karton}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-blue-600 text-white px-4 py-2 rounded-2xl">
+                                                    <p className="text-[8px] font-black opacity-70 uppercase leading-none mb-0.5">PCS</p>
+                                                    <p className="text-sm font-black">{item.qty_pcs}</p>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+
+                                <div className="p-6 bg-gray-50/80 border-t border-gray-100">
+                                    <Button
+                                        onClick={handleMassal3Add}
+                                        disabled={massal3AnalyzedData.length === 0}
+                                        className="w-full h-16 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-3xl shadow-2xl shadow-blue-100 transition-all active:scale-95 flex items-center justify-center gap-4 disabled:opacity-40 uppercase tracking-[0.15em] text-sm"
+                                    >
+                                        <Plus className="h-6 w-6" /> Tambah Ke Antrean Outbound
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </Modal>
+
+                <Modal
                     isOpen={isBulkModalOpen}
                     onClose={() => {
                         setIsBulkModalOpen(false);
                         resetBulkModal();
                     }}
                     title={`Tambah Massal (${bulkFormat === 'format1' ? '2 Kolom' : bulkFormat === 'format2' ? '4 Kolom' : bulkFormat === 'format_scan2' ? 'Scan 1' : bulkFormat === 'format_scan' ? 'Scan 2' : 'Massal'})`}
-                    size="full"
+                    size="6xl"
                 >
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-full">
                         <div className="space-y-4">
@@ -2766,7 +3801,9 @@ export function InputBarangKeluar() {
                                                     ? `Copy dan paste data dari Excel/Spreadsheet di sini...\nFormat: Nama Produk [TAB] Rak [TAB] Tgl Scan [TAB] User\n\nContoh:\nPULPENC-CLP-04\tUTAMA\t06/09/2025\tgudang@gmail.com`
                                                     : bulkFormat === 'format_scan'
                                                         ? `Copy dan paste data dari Excel/Spreadsheet di sini...\nFormat: Nama Produk [TAB] Jumlah [TAB] Rak [TAB] Tgl Scan [TAB] User\n\nContoh:\nPULPENC-CLP-04\t10\tUTAMA\t06/09/2025\tgudang@gmail.com`
-                                                        : `Copy dan paste data dari Excel/Spreadsheet di sini...\nFormat: Nama Produk [TAB] Jumlah\n\nContoh:\nPULPENC-CLP-04\t10`
+                                                        : bulkFormat === 'format_sn'
+                                                            ? `Copy dan paste data dari Excel/Spreadsheet di sini...\nFormat: Tanggal [TAB] SKU [TAB] Kode Unik\n\nContoh:\n09-05-2026\tCASHBOX-CB-36A/BLACK\tSN-MOYLV22R-MZ8K`
+                                                            : `Copy dan paste data dari Excel/Spreadsheet di sini...\nFormat: Nama Produk [TAB] Jumlah\n\nContoh:\nPULPENC-CLP-04\t10`
                                     }
                                 />
                             </div>
@@ -2812,6 +3849,13 @@ export function InputBarangKeluar() {
                                             <p><strong>Kolom 5:</strong> User (wajib)</p>
                                             <p><strong>Format:</strong> Copy data dari Excel dengan 5 kolom, paste di area input.</p>
                                         </>
+                                    ) : bulkFormat === 'format_sn' ? (
+                                        <>
+                                            <p><strong>Kolom 1:</strong> Tanggal (wajib)</p>
+                                            <p><strong>Kolom 2:</strong> SKU (wajib)</p>
+                                            <p><strong>Kolom 3:</strong> Kode Unik / SN (wajib)</p>
+                                            <p><strong>Format:</strong> Copy data dari Excel dengan 3 kolom (Tgl, SKU, SN).</p>
+                                        </>
                                     ) : (
                                         <>
                                             <p><strong>Kolom 1:</strong> Nama Produk (wajib)</p>
@@ -2827,7 +3871,7 @@ export function InputBarangKeluar() {
                             <div className="bg-gray-100 rounded-lg p-4 h-80">
                                 <div className="flex justify-between items-center mb-4">
                                     <h4 className="font-semibold text-gray-800">Hasil Analisis</h4>
-                                    {(bulkFormat === 'format1' && analyzedData.length > 0) || (bulkFormat === 'format2' && analyzedData2.length > 0) || (bulkFormat === 'format_scan2' && analyzedDataScan2.length > 0) || (bulkFormat === 'format_scan' && analyzedDataScan.length > 0) || (bulkFormat === 'format_massal' && analyzedDataMassal.length > 0) ? (
+                                    {(bulkFormat === 'format1' && analyzedData.length > 0) || (bulkFormat === 'format2' && analyzedData2.length > 0) || (bulkFormat === 'format_scan2' && analyzedDataScan2.length > 0) || (bulkFormat === 'format_scan' && analyzedDataScan.length > 0) || (bulkFormat === 'format_massal' && analyzedDataMassal.length > 0) || (bulkFormat === 'format_sn' && analyzedDataSN.length > 0) ? (
                                         <div className="text-sm text-gray-600">
                                             <span className="text-green-600 font-medium">Berhasil: {bulkAnalysisResult.berhasil}</span>
                                             {bulkAnalysisResult.gagal > 0 && (
@@ -2855,6 +3899,12 @@ export function InputBarangKeluar() {
                                                     <>
                                                         <th className="px-3 py-2 text-left">Tgl Scan</th>
                                                         <th className="px-3 py-2 text-left">User</th>
+                                                    </>
+                                                )}
+                                                {bulkFormat === 'format_sn' && (
+                                                    <>
+                                                        <th className="px-3 py-2 text-left">Tanggal</th>
+                                                        <th className="px-3 py-2 text-left">SN / Kode Unik</th>
                                                     </>
                                                 )}
                                             </tr>
@@ -2898,6 +3948,13 @@ export function InputBarangKeluar() {
                                                     <td className="px-3 py-2">{item.rak}</td>
                                                 </tr>
                                             ))}
+                                            {bulkFormat === 'format_sn' && analyzedDataSN.map((item, index) => (
+                                                <tr key={index} className={`${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'} border-b`}>
+                                                    <td className="px-3 py-2">{item.nama_produk}</td>
+                                                    <td className="px-3 py-2">{item.tgl_scan}</td>
+                                                    <td className="px-3 py-2 font-mono text-xs">{item.unique_code}</td>
+                                                </tr>
+                                            ))}
                                         </tbody>
                                     </table>
                                 </div>
@@ -2905,7 +3962,7 @@ export function InputBarangKeluar() {
                             <div className="flex justify-end space-x-3">
                                 <Button
                                     onClick={handleBulkAdd}
-                                    disabled={(bulkFormat === 'format1' && analyzedData.length === 0) || (bulkFormat === 'format2' && analyzedData2.length === 0) || (bulkFormat === 'format_scan2' && analyzedDataScan2.length === 0) || (bulkFormat === 'format_scan' && analyzedDataScan.length === 0) || (bulkFormat === 'format_massal' && analyzedDataMassal.length === 0)}
+                                    disabled={(bulkFormat === 'format1' && analyzedData.length === 0) || (bulkFormat === 'format2' && analyzedData2.length === 0) || (bulkFormat === 'format_scan2' && analyzedDataScan2.length === 0) || (bulkFormat === 'format_scan' && analyzedDataScan.length === 0) || (bulkFormat === 'format_massal' && analyzedDataMassal.length === 0) || (bulkFormat === 'format_sn' && analyzedDataSN.length === 0)}
                                     className="h-12 px-8 bg-gradient-to-br from-emerald-500 to-green-700 hover:from-emerald-600 hover:to-green-800 text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(16,185,129,0.4)] transition-all duration-300 transform hover:scale-105 active:scale-95 border border-white/20 backdrop-blur-md"
                                 >
                                     Tambahkan ke daftar Outbound
@@ -3011,6 +4068,25 @@ export function InputBarangKeluar() {
                                 <ShieldAlert className="h-5 w-5" />
                                 <span className="text-[12px] font-bold uppercase tracking-wider">Karantin</span>
                             </button>
+
+                            {devMode && (
+                                <>
+                                    <button
+                                        onClick={openMassal2Modal}
+                                        className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-violet-500 active:bg-violet-600 text-white active:scale-95 transition-all focus:outline-none"
+                                    >
+                                        <Layers className="h-5 w-5" />
+                                        <span className="text-[12px] font-bold uppercase tracking-wider">Massal 2</span>
+                                    </button>
+                                    <button
+                                        onClick={openMassal3Modal}
+                                        className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-emerald-500 active:bg-emerald-600 text-white active:scale-95 transition-all focus:outline-none"
+                                    >
+                                        <Layers className="h-5 w-5" />
+                                        <span className="text-[12px] font-bold uppercase tracking-wider">Massal 3</span>
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -3069,7 +4145,8 @@ export function InputBarangKeluar() {
                                             type="text"
                                             value={scanModalSku}
                                             onChange={(e) => setScanModalSku(e.target.value)}
-                                            className="flex-1 h-12 px-4 border border-gray-200 rounded-xl text-sm font-bold text-gray-800 bg-gray-50 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 focus:bg-white outline-none transition-all"
+                                            readOnly
+                                            className="flex-1 h-12 px-4 border border-gray-200 rounded-xl text-sm font-bold text-gray-500 bg-gray-100 cursor-not-allowed outline-none transition-all"
                                             placeholder="SKU akan terisi otomatis..."
                                         />
                                         <button
@@ -3110,10 +4187,17 @@ export function InputBarangKeluar() {
                                             <input
                                                 type="text"
                                                 value={scanModalRak}
-                                                onChange={(e) => setScanModalRak(e.target.value)}
-                                                className={`w-full h-12 px-4 pr-9 border rounded-xl text-sm font-bold text-gray-800 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 focus:bg-white outline-none transition-all ${scanModalStatus === 'found' ? 'border-green-300 bg-green-50/50' : 'border-gray-200 bg-gray-50'
-                                                    }`}
-                                                placeholder="Lokasi rak..."
+                                                onChange={(e) => {
+                                                    setScanModalRak(e.target.value.toUpperCase());
+                                                    setScanModalStatus('idle');
+                                                }}
+                                                readOnly={scanModalStatus === 'found' && scanModalRak !== ''}
+                                                className={`w-full h-12 px-4 pr-9 border rounded-xl text-sm font-bold outline-none transition-all ${
+                                                    scanModalRak 
+                                                        ? 'border-green-200 bg-green-50 text-green-800' 
+                                                        : 'border-blue-300 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500'
+                                                } ${(scanModalStatus === 'found' && scanModalRak !== '') ? 'cursor-not-allowed opacity-90' : ''}`}
+                                                placeholder="Ketik lokasi rak..."
                                             />
                                             {scanModalRak && (
                                                 <button
@@ -3149,6 +4233,22 @@ export function InputBarangKeluar() {
                                         onChange={(e) => setScanModalQty(e.target.value.replace(/[^0-9]/g, ''))}
                                         className="w-full h-12 px-4 border border-gray-200 rounded-xl text-sm font-bold text-gray-800 bg-gray-50 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 focus:bg-white outline-none transition-all"
                                         placeholder="Leave empty for 0"
+                                    />
+                                </div>
+
+                                {/* Unique Code / Serial Number */}
+                                <div className="space-y-1.5">
+                                    <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                                        <span className="text-blue-500"><Layers className="h-4 w-4" /></span>
+                                        <span>Kode Unik / Serial Number</span>
+                                    </div>
+                                    <input
+                                        type="text"
+                                        value={scanModalUniqueCode}
+                                        onChange={(e) => setScanModalUniqueCode(e.target.value)}
+                                        readOnly
+                                        className="w-full h-12 px-4 border border-gray-200 rounded-xl text-sm font-bold text-gray-500 bg-gray-100 cursor-not-allowed outline-none transition-all"
+                                        placeholder="Terisi otomatis dari scan..."
                                     />
                                 </div>
 

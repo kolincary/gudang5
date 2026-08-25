@@ -3,6 +3,17 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL!;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY!;
 
+// Auto-cleanup if Supabase project changed
+if (typeof window !== 'undefined') {
+  const lastUrl = localStorage.getItem('last_supabase_url');
+  if (lastUrl && lastUrl !== supabaseUrl) {
+    console.log('🔄 Supabase project URL changed. Clearing obsolete local storage...');
+    localStorage.clear();
+    sessionStorage.clear();
+  }
+  localStorage.setItem('last_supabase_url', supabaseUrl);
+}
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   db: {
     schema: 'public',
@@ -259,39 +270,48 @@ export const calculateAccurateStock = async (namaProduk: string, rak: string): P
       .select('stok_awal')
       .ilike('nama_produk', namaProduk.trim())
       .ilike('rak', rak.trim())
+      .eq('status', 'Aktif')
+      .order('created_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     if (stockItem.error) {
-      console.error('Error fetching stock item:', stockItem.error);
-      return 0;
+      console.error(`❌ Error fetching stock item for ${namaProduk} @ ${rak}:`, stockItem.error);
+      // Don't return 0 yet, try to continue with log calculation
     }
 
     const stokAwal = stockItem.data?.stok_awal || 0;
 
     const { data: logData, error: logError } = await supabase
       .from('database_log')
-      .select('jumlah, type')
+      .select('jumlah, type, rak')
       .ilike('sku', namaProduk.trim())
-      .ilike('rak', rak.trim());
+      .in('type', ['IN', 'OUT']);
 
     if (logError) {
       console.error('Error fetching log data:', logError);
       return stokAwal;
     }
 
-    const logEntries: Partial<DatabaseLogEntry>[] = logData || [];
+    const logEntries = logData || [];
+    const targetRakLower = rak.trim().toLowerCase();
 
-    const masuk = logEntries
+    // Filter logs for the specific rack using the same logic as Dashboard
+    const itemLogs = logEntries.filter(log => 
+      (log.rak || '').toString().trim().toLowerCase() === targetRakLower
+    );
+
+    const masuk = itemLogs
       .filter(log => log.type === 'IN')
       .reduce((sum, log) => sum + (log.jumlah || 0), 0);
 
-    const keluar = logEntries
+    const keluar = itemLogs
       .filter(log => log.type === 'OUT')
       .reduce((sum, log) => sum + (log.jumlah || 0), 0);
 
     const tersedia = stokAwal + masuk - keluar;
 
-    console.log(`📊 Accurate stock calculation: ${namaProduk} @ ${rak} = ${stokAwal} + ${masuk} - ${keluar} = ${tersedia}`);
+    console.log(`📊 Accurate stock calculation (Dashboard Parity): ${namaProduk} @ ${rak} = ${stokAwal} + ${masuk} - ${keluar} = ${tersedia}`);
 
     return tersedia;
   } catch (error) {

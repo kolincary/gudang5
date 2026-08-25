@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /stock-lt3/{document=**} {
+      allow read, write: if true;
+    }
+    match /stock_items/{document=**} {
+      allow read, write: if true;
+    }
+    match /stok_lantai3/{document=**} {
+      allow read, write: if true;
+    }
+    match /transaksi_lantai3/{document=**} {
+      allow read, write: if true;
+    }
+    match /stok_bundling/{document=**} {
+      allow read, write: if true;
+    }
+    match /transaksi_bundling/{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

@@ -6,6 +6,7 @@ import { Settings, Play, Square, RefreshCw, Clock, CheckCircle, AlertCircle, Act
 import { supabase } from '../lib/supabase';
 import { formatDistanceToNow } from 'date-fns';
 import { id } from 'date-fns/locale';
+import { autoSyncService } from '../services/autoSyncService';
 
 interface SyncLog {
   id: number;
@@ -119,36 +120,99 @@ export function AutoSyncSettings() {
     }
   };
 
-  const manualSync = async (syncType: 'stock' | 'packing') => {
-    setLoading(true);
+  const manualSync = async (syncType: 'stock' | 'packing', isSilent = false) => {
+    if (!isSilent) setLoading(true);
+    const startTime = Date.now();
     try {
       const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/auto-sync-${syncType}`;
 
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
+      let result;
+      let usedFallback = false;
+      
+      try {
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
 
-      if (!response.ok) {
-        throw new Error('Sync failed');
+        if (!response.ok) {
+          throw new Error('Sync failed');
+        }
+
+        result = await response.json();
+      } catch (err) {
+        console.warn(`Edge function failed for ${syncType}, falling back to Client-Side Auto-Sync Daemon...`);
+        usedFallback = true;
+        
+        let clientResult;
+        if (syncType === 'stock') {
+          clientResult = await (autoSyncService as any).syncStockData();
+        } else {
+          clientResult = await (autoSyncService as any).syncPackingData();
+        }
+        
+        result = { itemsUpdated: clientResult.itemsUpdated, errors: clientResult.errors };
+        
+        // Write to log table since edge function didn't do it
+        await supabase.from('auto_sync_logs').insert({
+          sync_type: syncType,
+          status: clientResult.success ? 'success' : 'error',
+          items_updated: result.itemsUpdated,
+          errors: result.errors,
+          message: `[Client Daemon] ${clientResult.message}`,
+          duration_ms: Date.now() - startTime
+        });
       }
 
-      const result = await response.json();
-
       await loadLogs();
-      showToast(
-        `Manual sync ${syncType} berhasil: ${result.itemsUpdated} item diupdate`,
-        'success'
-      );
+      if (!isSilent) {
+        showToast(
+          `Sync ${syncType} berhasil: ${result.itemsUpdated} item diupdate ${usedFallback ? '(via Client Daemon)' : ''}`,
+          'success'
+        );
+      }
     } catch (error) {
       console.error('Error manual sync:', error);
-      showToast('Gagal melakukan manual sync', 'error');
+      if (!isSilent) showToast('Gagal melakukan sync', 'error');
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
   };
+
+  // Client-Side Daemon Logic
+  useEffect(() => {
+    const daemonInterval = setInterval(() => {
+      const now = new Date();
+      
+      // Check Stock Sync
+      if (stockSettings?.enabled) {
+        const lastStockLog = stockLogs[0];
+        const lastSyncTime = lastStockLog ? new Date(lastStockLog.created_at) : new Date(0);
+        const minutesSinceLastSync = (now.getTime() - lastSyncTime.getTime()) / 60000;
+        
+        if (minutesSinceLastSync >= (stockSettings.interval_minutes || 5)) {
+          console.log('[Daemon] Triggering scheduled stock sync...');
+          manualSync('stock', true);
+        }
+      }
+
+      // Check Packing Sync
+      if (packingSettings?.enabled) {
+        const lastPackingLog = packingLogs[0];
+        const lastSyncTime = lastPackingLog ? new Date(lastPackingLog.created_at) : new Date(0);
+        const minutesSinceLastSync = (now.getTime() - lastSyncTime.getTime()) / 60000;
+        
+        if (minutesSinceLastSync >= (packingSettings.interval_minutes || 5)) {
+          console.log('[Daemon] Triggering scheduled packing sync...');
+          manualSync('packing', true);
+        }
+      }
+    }, 30000); // Check every 30 seconds
+
+    return () => clearInterval(daemonInterval);
+  }, [stockSettings, packingSettings, stockLogs, packingLogs]);
 
   const formatLastSync = (logs: SyncLog[]) => {
     if (logs.length === 0) return 'Belum pernah';
@@ -182,7 +246,7 @@ export function AutoSyncSettings() {
       <div className="space-y-6">
       {/* PREMIUM IMMERSIVE HEADER (310px) */}
       <div className="flex flex-col mb-8 lg:mb-12 uppercase">
-        <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+        <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
           {/* Decorative Background Icon */}
           <div className="absolute -top-12 -right-12 text-white opacity-5">

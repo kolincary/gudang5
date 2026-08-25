@@ -244,7 +244,7 @@ export function UpdatePacking() {
       <div className="space-y-6">
       {/* PREMIUM IMMERSIVE HEADER (310px) */}
       <div className="flex flex-col mb-8 lg:mb-12 uppercase">
-        <div className="bg-gradient-to-br from-orange-600 via-amber-700 to-slate-900 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-orange-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+        <div className="bg-gradient-to-br from-orange-600 via-amber-700 to-slate-900 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-orange-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
           {/* Decorative Background Icon */}
           <div className="absolute -top-12 -right-12 text-white opacity-5">

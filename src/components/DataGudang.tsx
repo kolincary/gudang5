@@ -3,12 +3,21 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Search, ChevronLeft, ChevronRight, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List } from 'lucide-react';
 import { EntriDataModal } from './EntriDataModal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { performStockSync } from '../services/stockSyncService';
+import { verifyPin } from '../lib/pinValidator';
+import { useDatabaseConfig } from '../lib/DatabaseContext';
+import { DatabaseService } from '../lib/DatabaseService';
 
+
+// Global Cache for instant load & PIN Session
+let globalStockCache: any[] = [];
+let isPinVerifiedSession = false;
 
 // Debounce hook untuk search
 const useDebounce = (value: string, delay: number) => {
@@ -178,18 +187,24 @@ const FilterPopover: React.FC<{
 };
 
 export function DataGudang() {
+  const { readMode, writeMode } = useDatabaseConfig();
   // State management
+  const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' }>({ key: 'created_at', direction: 'desc' });
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRack, setSelectedRack] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(50);
   const [isEntriModalOpen, setIsEntriModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-  const [stockData, setStockData] = useState<StockReport[]>([]);
+  const [stockData, setStockData] = useState<StockReport[]>(globalStockCache);
+  const allStockItemsRef = useRef<StockReport[]>(globalStockCache);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [editingItem, setEditingItem] = useState<StockReport | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
+  const [bulkEditItems, setBulkEditItems] = useState<StockReport[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [rackSearchTerm, setRackSearchTerm] = useState('');
   const [showRackDropdown, setShowRackDropdown] = useState(false);
@@ -208,6 +223,10 @@ export function DataGudang() {
     isOpen: false,
     itemId: '',
     itemName: ''
+  });
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState({
+    isOpen: false,
+    count: 0
   });
   const [toast, setToast] = useState<{
     isOpen: boolean;
@@ -255,19 +274,27 @@ export function DataGudang() {
   const [pin, setPin] = useState('');
   const [pinMessage, setPinMessage] = useState({ text: '', type: '' });
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
-  const correctPin = '8888';
+  const [pinLoading, setPinLoading] = useState(false);
   const pinInputRef = useRef<HTMLInputElement>(null);
 
   const handleActionWithPin = (action: () => void) => {
+    if (isPinVerifiedSession) {
+      action();
+      return;
+    }
     setPendingAction(() => action);
     setIsPinModalOpen(true);
     setPin('');
     setPinMessage({ text: '', type: '' });
   };
 
-  const handlePinSubmit = (e: React.FormEvent) => {
+  const handlePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pin === correctPin) {
+    setPinLoading(true);
+    const isValid = await verifyPin(pin);
+    setPinLoading(false);
+    if (isValid) {
+      isPinVerifiedSession = true;
       setPinMessage({ text: 'PIN Benar!', type: 'success' });
       setTimeout(() => {
         setIsPinModalOpen(false);
@@ -328,6 +355,21 @@ export function DataGudang() {
     }, 4000);
   }, []);
 
+  
+  // Real-time listener untuk Master Barang (stock_items)
+  useEffect(() => {
+    if (readMode !== 'firebase') return;
+    
+    const unsub = onSnapshot(collection(db, 'stock_items'), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as StockReport[];
+      // Hanya update jika ada perubahan jumlah data atau perubahan signifikan agar tidak infinite loop
+      allStockItemsRef.current = data;
+      // Memicu re-render data saat ini
+      setSearchTerm(prev => prev); 
+    });
+    return () => unsub();
+  }, [readMode]);
+
   // Load initial data dan setup
   useEffect(() => {
     loadInitialData();
@@ -360,16 +402,12 @@ export function DataGudang() {
     if (!initialLoading) {
       loadStockData();
     }
-  }, [debouncedSearchTerm, debouncedRackFilter, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly]); // Menggunakan 'filters' tunggal
+  }, [debouncedSearchTerm, debouncedRackFilter, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly, sortConfig]); // Menggunakan 'filters' tunggal
 
   const loadInitialData = async () => {
     try {
-      setInitialLoading(true);
-      showToast('Memuat data awal...', 'info');
+      await loadStockData(globalStockCache.length === 0); // Force fetch if cache is empty, else silent background fetch
 
-      await loadStockData();
-
-      showToast('Data berhasil dimuat!', 'success');
     } catch (error) {
       console.error('Error loading initial data:', error);
       showToast('Gagal memuat data awal', 'error');
@@ -378,23 +416,26 @@ export function DataGudang() {
     }
   };
 
-  const loadStockData = async () => {
+  const loadStockData = async (showLoader = false) => {
     try {
-      setLoading(true);
+      if (showLoader && stockData.length === 0) {
+        setLoading(true);
+      } else {
+        setLoading(true); // Always set loading to show the background sync indicator
+      }
 
       let query = supabase
         .from('stock_items')
         .select('*', { count: 'exact' })
         .eq('status', 'Aktif')
-        .order('created_at', { ascending: false })
-        .order('id', { ascending: true });
+        .order(sortConfig.key === 'nama_produk' ? 'nama_produk' : 'created_at', { ascending: sortConfig.direction === 'asc' });
 
-      // Apply search filter (Original)
+      // Apply search filter
       if (debouncedSearchTerm) {
         query = query.or(`nama_produk.ilike.%${debouncedSearchTerm}%,rak.ilike.%${debouncedSearchTerm}%`);
       }
 
-      // Apply rack filter (Original)
+      // Apply rack filter
       if (debouncedRackFilter && debouncedRackFilter !== 'Semua Rak') {
         query = query.ilike('rak', `%${debouncedRackFilter}%`);
       }
@@ -407,7 +448,6 @@ export function DataGudang() {
       // Apply advanced filters untuk kolom database
       for (const key in filters) {
         const filterKey = key as FilterableColumn;
-        // Hanya terapkan filter di sini jika BUKAN kolom kalkulasi
         if (!['masuk', 'keluar', 'tersedia'].includes(filterKey)) {
           const selectedValues = filters[filterKey];
           if (selectedValues && selectedValues.size > 0) {
@@ -430,6 +470,8 @@ export function DataGudang() {
       }
 
       const items = data || [];
+
+
 
       // Calculate masuk/keluar using batch fetching
       const skus = items.map(item => item.nama_produk);
@@ -504,6 +546,7 @@ export function DataGudang() {
         stockReports = stockReports.filter(item => item.tersedia < 0);
       }
 
+      globalStockCache = [...stockReports];
       setStockData(stockReports);
 
       // Update pagination info
@@ -595,14 +638,18 @@ export function DataGudang() {
   const refreshData = useCallback(() => {
     setLogCache(new Map()); // Clear cache
     // Reset filter
-    setFilters({});
-    // Reset search
-    setSearchTerm('');
+    clearSearch();
     clearRackFilter();
-    // Reload data
-    loadStockData();
+    // Jika mode firebase, data sudah realtime, cukup pancing render ulang.
+    // Jika supabase, paksa ambil data lagi.
+    if (readMode === 'firebase') {
+      loadStockData(false);
+    } else {
+      loadStockData(true);
+    }
     loadUniqueRacks();
-  }, [clearRackFilter]);
+    showToast('Sinkronisasi selesai', 'success');
+  }, [clearSearch, clearRackFilter, readMode]);
 
   // Snapshot filter handlers
   const handleApplySnapshot = () => {
@@ -684,25 +731,27 @@ export function DataGudang() {
 
   const handleSaveNewItems = async (newItems: StockReport[]) => {
     try {
-      // Pengecekan Duplikat
-      for (const item of newItems) {
-        const { data: existing, error: checkError } = await supabase
-          .from('stock_items')
-          .select('id')
-          .eq('nama_produk', item.nama_produk)
-          .eq('rak', item.rak)
-          .eq('sub_rak', item.sub_rak || item.rak) // Handle sub_rak being same as rak if empty
-          .eq('status', 'Aktif')
-          .limit(1);
+      // Pengecekan Duplikat (Hanya jika bukan mode pure Firebase, karena Firebase belum ada index khusus duplikat)
+      if (writeMode !== 'firebase') {
+        for (const item of newItems) {
+          const { data: existing, error: checkError } = await supabase
+            .from('stock_items')
+            .select('id')
+            .eq('nama_produk', item.nama_produk)
+            .eq('rak', item.rak)
+            .eq('sub_rak', item.sub_rak || item.rak)
+            .eq('status', 'Aktif')
+            .limit(1);
 
-        if (checkError) {
-          console.error('Error checking duplicate:', checkError);
-          continue;
-        }
+          if (checkError) {
+            console.error('Error checking duplicate:', checkError);
+            continue;
+          }
 
-        if (existing && existing.length > 0) {
-          showToast(`Gagal: Produk "${item.nama_produk}" di Rak "${item.rak}" Sub Rak "${item.sub_rak || item.rak}" sudah ada di database! (Duplikat terdeteksi)`, 'error');
-          return; // Batalkan seluruh proses jika ada satu saja yang duplikat
+          if (existing && existing.length > 0) {
+            showToast(`Gagal: Produk "${item.nama_produk}" di Rak "${item.rak}" Sub Rak "${item.sub_rak || item.rak}" sudah ada di database! (Duplikat terdeteksi)`, 'error');
+            return;
+          }
         }
       }
 
@@ -716,9 +765,7 @@ export function DataGudang() {
         status: 'Aktif'
       }));
 
-      const { error } = await supabase
-        .from('stock_items')
-        .insert(supabaseItems);
+      const { data, error } = await DatabaseService.insertStockItems(supabaseItems, writeMode);
 
       if (error) {
         console.error('Error saving new items:', error);
@@ -726,8 +773,11 @@ export function DataGudang() {
         return;
       }
 
+      if (data && Array.isArray(data)) {
+        allStockItemsRef.current = [...data, ...allStockItemsRef.current];
+      }
       showToast(`${newItems.length} item berhasil ditambahkan!`, 'success');
-      refreshData();
+      loadStockData(false);
     } catch (error) {
       console.error('Error saving new items:', error);
       showToast('Terjadi kesalahan saat menyimpan data', 'error');
@@ -751,10 +801,7 @@ export function DataGudang() {
 
   const confirmDelete = async () => {
     try {
-      const { error } = await supabase
-        .from('stock_items')
-        .delete()
-        .eq('id', deleteConfirm.itemId);
+      const { error } = await DatabaseService.deleteStockItem(deleteConfirm.itemId, writeMode);
 
       if (error) {
         console.error('Error deleting item:', error);
@@ -764,10 +811,54 @@ export function DataGudang() {
 
       showToast(`Data "${deleteConfirm.itemName}" berhasil dihapus!`, 'success');
       setDeleteConfirm({ isOpen: false, itemId: '', itemName: '' });
-      refreshData();
+      allStockItemsRef.current = allStockItemsRef.current.filter(item => item.id !== deleteConfirm.itemId);
+      loadStockData(false);
     } catch (error) {
       console.error('Error deleting item:', error);
       showToast('Terjadi kesalahan saat menghapus data', 'error');
+    }
+  };
+
+  const handleDeleteBulkClick = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    handleActionWithPin(() => {
+      setBulkDeleteConfirm({
+        isOpen: true,
+        count: selectedIds.size
+      });
+    });
+  }, [selectedIds]);
+
+  const confirmBulkDelete = async () => {
+    try {
+      const idsToDelete = Array.from(selectedIds);
+      let failCount = 0;
+      let successCount = 0;
+
+      for (const id of idsToDelete) {
+        const { error } = await DatabaseService.deleteStockItem(id, writeMode);
+
+        if (error) {
+          console.error('Error deleting item:', error);
+          failCount++;
+        } else {
+          successCount++;
+        }
+      }
+
+      if (failCount > 0) {
+        showToast(`Berhasil hapus ${successCount} data, Gagal ${failCount} data`, 'warning');
+      } else {
+        showToast(`Berhasil menghapus ${successCount} data terpilih!`, 'success');
+      }
+
+      setBulkDeleteConfirm({ isOpen: false, count: 0 });
+      allStockItemsRef.current = allStockItemsRef.current.filter(item => !selectedIds.has(item.id));
+      setSelectedIds(new Set());
+      loadStockData(false);
+    } catch (error) {
+      console.error('Error bulk deleting items:', error);
+      showToast('Terjadi kesalahan saat menghapus data massal', 'error');
     }
   };
 
@@ -779,37 +870,38 @@ export function DataGudang() {
         const updatedItem = updatedItems[0];
 
         // Pengecekan Duplikat (Kecuali ID yang sedang di-edit)
-        const { data: existing, error: checkError } = await supabase
-          .from('stock_items')
-          .select('id')
-          .eq('nama_produk', updatedItem.nama_produk)
-          .eq('rak', updatedItem.rak)
-          .eq('sub_rak', updatedItem.sub_rak || updatedItem.rak)
-          .eq('status', 'Aktif')
-          .neq('id', editingItem.id)
-          .limit(1);
+        if (writeMode !== 'firebase') {
+          const { data: existing, error: checkError } = await supabase
+            .from('stock_items')
+            .select('id')
+            .eq('nama_produk', updatedItem.nama_produk)
+            .eq('rak', updatedItem.rak)
+            .eq('sub_rak', updatedItem.sub_rak || updatedItem.rak)
+            .eq('status', 'Aktif')
+            .neq('id', editingItem.id)
+            .limit(1);
 
-        if (checkError) {
-          console.error('Error checking duplicate:', checkError);
+          if (checkError) {
+            console.error('Error checking duplicate:', checkError);
+          }
+
+          if (existing && existing.length > 0) {
+            showToast(`Gagal: Kombinasi Produk "${updatedItem.nama_produk}", Rak "${updatedItem.rak}", dan Sub Rak "${updatedItem.sub_rak || updatedItem.rak}" sudah ada di database!`, 'error');
+            return;
+          }
         }
 
-        if (existing && existing.length > 0) {
-          showToast(`Gagal: Kombinasi Produk "${updatedItem.nama_produk}", Rak "${updatedItem.rak}", dan Sub Rak "${updatedItem.sub_rak || updatedItem.rak}" sudah ada di database!`, 'error');
-          return;
-        }
-
-        const { error } = await supabase
-          .from('stock_items')
-          .update({
-            nama_produk: updatedItem.nama_produk,
-            packing: updatedItem.packing,
-            rak: updatedItem.rak,
-            sub_rak: updatedItem.sub_rak,
-            satuan: updatedItem.satuan,
-            stok_awal: updatedItem.stok_awal,
-            status: 'Aktif'
-          })
-          .eq('id', editingItem.id);
+        const updates = {
+          nama_produk: updatedItem.nama_produk,
+          packing: updatedItem.packing,
+          rak: updatedItem.rak,
+          sub_rak: updatedItem.sub_rak,
+          satuan: updatedItem.satuan,
+          stok_awal: updatedItem.stok_awal,
+          status: 'Aktif'
+        };
+        
+        const { error } = await DatabaseService.updateStockItem(editingItem.id, updates, writeMode);
 
         if (error) {
           console.error('Error updating item:', error);
@@ -820,11 +912,94 @@ export function DataGudang() {
         showToast(`Data "${updatedItem.nama_produk}" berhasil diupdate!`, 'success');
         setIsEditModalOpen(false);
         setEditingItem(null);
-        refreshData();
-
+        
+        allStockItemsRef.current = allStockItemsRef.current.map(item => 
+          item.id === editingItem.id ? { ...item, ...updates } : item
+        );
+        loadStockData(false);
       } catch (error) {
         console.error('Error updating item:', error);
         showToast('Terjadi kesalahan saat mengupdate data', 'error');
+      }
+    });
+  };
+
+  const handleSelectAll = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      const allIds = new Set(stockData.map(item => item.id));
+      setSelectedIds(allIds);
+    } else {
+      setSelectedIds(new Set());
+    }
+  }, [stockData]);
+
+  const handleSelectRow = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+      } else {
+        newSet.add(id);
+      }
+      return newSet;
+    });
+  }, []);
+
+  const handleOpenBulkEdit = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    const itemsToEdit = stockData.filter(item => selectedIds.has(item.id));
+    setBulkEditItems(itemsToEdit);
+    setIsBulkEditModalOpen(true);
+  }, [selectedIds, stockData]);
+
+  const handleSaveBulkEdit = async (updatedItems: StockReport[]) => {
+    if (updatedItems.length === 0) return;
+
+    handleActionWithPin(async () => {
+      try {
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const item of updatedItems) {
+          const updates = {
+            packing: item.packing,
+            rak: item.rak,
+            sub_rak: item.sub_rak,
+            satuan: item.satuan,
+            stok_awal: item.stok_awal,
+            status: 'Aktif'
+          };
+          const { error } = await DatabaseService.updateStockItem(item.id, updates, writeMode);
+
+          if (error) {
+            console.error('Error updating item:', error);
+            failCount++;
+          } else {
+            successCount++;
+          }
+        }
+
+        if (failCount > 0) {
+          showToast(`Berhasil update ${successCount} data, Gagal ${failCount} data`, 'warning');
+        } else {
+          showToast(`Berhasil update ${successCount} data!`, 'success');
+        }
+
+        setIsBulkEditModalOpen(false);
+        setSelectedIds(new Set());
+        setBulkEditItems([]);
+        
+        // Update cache locally
+        const updatedItemsMap = new Map(updatedItems.map(item => [item.id, item]));
+        allStockItemsRef.current = allStockItemsRef.current.map(item => 
+          updatedItemsMap.has(item.id) 
+            ? { ...item, packing: updatedItemsMap.get(item.id)!.packing, rak: updatedItemsMap.get(item.id)!.rak, sub_rak: updatedItemsMap.get(item.id)!.sub_rak, satuan: updatedItemsMap.get(item.id)!.satuan, stok_awal: updatedItemsMap.get(item.id)!.stok_awal }
+            : item
+        );
+        loadStockData(false);
+      } catch (error) {
+        console.error('Error bulk updating items:', error);
+        showToast('Terjadi kesalahan saat mengupdate data massal', 'error');
       }
     });
   };
@@ -1192,7 +1367,7 @@ export function DataGudang() {
     } finally {
       setImportProgress({ isImporting: false, progress: 0, total: 0, current: 0, message: '' });
       setIsImportModalOpen(false);
-      refreshData();
+      loadStockData(true);
     }
   };
 
@@ -1263,17 +1438,7 @@ export function DataGudang() {
     }
   };
 
-  if (initialLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <div className="text-blue-600 font-medium">Memuat data gudang...</div>
-          <div className="text-sm text-gray-500 mt-2">Mohon tunggu sebentar</div>
-        </div>
-      </div>
-    );
-  }
+
 
   return (
     <>
@@ -1343,7 +1508,7 @@ export function DataGudang() {
 
       {/* PREMIUM IMMERSIVE HEADER (310px) */}
       <div className="flex flex-col mb-8 lg:mb-12 uppercase">
-        <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+        <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
           {/* Decorative Background Icon */}
           <div className="absolute -top-12 -right-12 text-white opacity-5">
@@ -1442,6 +1607,8 @@ export function DataGudang() {
                   </button>
                 </div>
 
+                {/* Edit Terpilih top button removed */}
+                
                 <button
                   onClick={() => setIsEntriModalOpen(true)}
                   className="h-11 px-5 lg:px-6 bg-blue-500 hover:bg-blue-400 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(59,130,246,0.35)] transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-blue-400/50"
@@ -1458,32 +1625,132 @@ export function DataGudang() {
       <div className="space-y-6 lg:px-10 pb-12 -mt-6 lg:-mt-10">
 
         {/* Data Summary Dashboard */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4 mb-4">
-          <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 lg:p-4 shadow-sm hover:border-blue-300 transition-all group">
-            <div className="text-blue-500 text-[10px] lg:text-sm font-bold uppercase tracking-wider mb-1">Total Database</div>
-            <div className="text-xl lg:text-2xl font-black text-blue-800 group-hover:scale-105 origin-left transition-transform">{paginationInfo.totalCount.toLocaleString()}</div>
+        <div className="hidden lg:grid grid-cols-4 gap-4 mb-4">
+          <div className="bg-white rounded-[20px] border-l-4 border-l-blue-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+            <div className="absolute inset-0 bg-gradient-to-r from-blue-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+            <div className="flex items-center gap-4 relative z-10">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/20">
+                <Database className="h-5 w-5" />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Total Database</span>
+                <div className="flex items-baseline gap-1.5 mt-1">
+                  <span className="text-2xl font-black text-gray-800 leading-none">{paginationInfo.totalCount.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+            <div className="relative z-10 flex flex-col items-end gap-1">
+              <span className="text-[10px] font-semibold text-gray-400">Master SKU</span>
+            </div>
           </div>
-          <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 lg:p-4 shadow-sm hover:border-emerald-300 transition-all group">
-            <div className="text-emerald-500 text-[10px] lg:text-sm font-bold uppercase tracking-wider mb-1">Data Dimuat</div>
-            <div className="text-xl lg:text-2xl font-black text-emerald-800 group-hover:scale-105 origin-left transition-transform">{stockData.length}</div>
+
+          <div className="bg-white rounded-[20px] border-l-4 border-l-emerald-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+            <div className="absolute inset-0 bg-gradient-to-r from-emerald-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+            <div className="flex items-center gap-4 relative z-10">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                <LayoutGrid className="h-5 w-5" />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Data Dimuat</span>
+                <div className="flex items-baseline gap-1.5 mt-1">
+                  <span className="text-2xl font-black text-gray-800 leading-none">{stockData.length}</span>
+                </div>
+              </div>
+            </div>
+            <div className="relative z-10 flex flex-col items-end gap-1">
+              <span className="text-[10px] font-semibold text-gray-400">SKU Aktif</span>
+            </div>
           </div>
-          <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 lg:p-4 shadow-sm hover:border-amber-300 transition-all group">
-            <div className="text-amber-500 text-[10px] lg:text-sm font-bold uppercase tracking-wider mb-1">Halaman</div>
-            <div className="text-xl lg:text-2xl font-black text-amber-800 group-hover:scale-105 origin-left transition-transform">{paginationInfo.currentPage} <span className="text-[10px] text-amber-400 font-medium lowercase">dari</span> {paginationInfo.totalPages}</div>
+
+          <div className="bg-white rounded-[20px] border-l-4 border-l-amber-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+            <div className="absolute inset-0 bg-gradient-to-r from-amber-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+            <div className="flex items-center gap-4 relative z-10">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 text-white flex items-center justify-center shadow-lg shadow-amber-500/20">
+                <FileText className="h-5 w-5" />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Halaman</span>
+                <div className="flex items-baseline gap-1.5 mt-1">
+                  <span className="text-2xl font-black text-gray-800 leading-none">{paginationInfo.currentPage}</span>
+                  <span className="text-xs font-semibold text-gray-400">/ {paginationInfo.totalPages}</span>
+                </div>
+              </div>
+            </div>
+            <div className="relative z-10 flex flex-col items-end gap-1">
+              <span className="text-[10px] font-semibold text-gray-400">Saat ini</span>
+            </div>
           </div>
-          <div className="bg-purple-50 border border-purple-100 rounded-xl p-3 lg:p-4 shadow-sm hover:border-purple-300 transition-all group">
-            <div className="text-purple-500 text-[10px] lg:text-sm font-bold uppercase tracking-wider mb-1">Per Halaman</div>
-            <div className="text-xl lg:text-2xl font-black text-purple-800 group-hover:scale-105 origin-left transition-transform">{itemsPerPage}</div>
+
+          <div className="bg-white rounded-[20px] border-l-4 border-l-purple-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+            <div className="absolute inset-0 bg-gradient-to-r from-purple-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+            <div className="flex items-center gap-4 relative z-10">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-purple-500 to-fuchsia-600 text-white flex items-center justify-center shadow-lg shadow-purple-500/20">
+                <List className="h-5 w-5" />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Per Halaman</span>
+                <div className="flex items-baseline gap-1.5 mt-1">
+                  <span className="text-2xl font-black text-gray-800 leading-none">{itemsPerPage}</span>
+                </div>
+              </div>
+            </div>
+            <div className="relative z-10 flex flex-col items-end gap-1">
+              <span className="text-[10px] font-semibold text-gray-400">Baris Data</span>
+            </div>
           </div>
         </div>
 
-        {/* Search Section - REFACTORED FOR MOBILE */}
-        <div className="bg-blue-700 text-white p-3 lg:p-4 rounded-xl shadow-lg border border-blue-600">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-4 items-center">
-            <div className="flex items-center space-x-3 w-full">
-              <span className="hidden lg:inline font-bold uppercase text-xs tracking-widest text-blue-200 whitespace-nowrap">Search Data</span>
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+        {/* Unified Search & Table Wrapper */}
+        <div className="bg-white shadow-[0_8px_30px_rgba(0,0,0,0.04)] rounded-[20px] border border-blue-100 flex flex-col relative overflow-hidden mb-8">
+          
+          {/* Search Toolbar */}
+          <div className="bg-blue-600 p-4 lg:p-5 relative z-10 flex flex-col gap-4">
+            
+            {/* Bulk Action Overlay (Appears when items selected) */}
+            {selectedIds.size > 0 && (
+              <div className="absolute inset-0 bg-blue-700 z-30 px-4 lg:px-6 flex items-center justify-between animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-center gap-3">
+                  <div className="bg-white text-blue-700 h-8 w-8 rounded-lg flex items-center justify-center font-black shadow-sm">
+                    {selectedIds.size}
+                  </div>
+                  <span className="text-white font-bold tracking-wide text-sm">Data Terpilih</span>
+                </div>
+                <div className="flex items-center gap-2 lg:gap-3">
+                  <button
+                    onClick={() => handleActionWithPin(handleOpenBulkEdit)}
+                    className="h-9 px-4 bg-white hover:bg-gray-50 text-blue-700 font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-2"
+                  >
+                    <Edit2 className="h-4 w-4" />
+                    <span className="text-xs lg:text-sm">Edit</span>
+                  </button>
+                  <button
+                    onClick={handleDeleteBulkClick}
+                    className="h-9 px-4 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 flex items-center gap-2 border border-rose-400"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    <span className="text-xs lg:text-sm">Hapus</span>
+                  </button>
+                  <div className="w-px h-6 bg-blue-400/50 mx-1 lg:mx-2"></div>
+                  <button 
+                    onClick={() => {
+                      const e = { target: { checked: false } } as React.ChangeEvent<HTMLInputElement>;
+                      handleSelectAll(e);
+                    }} 
+                    className="h-9 w-9 flex items-center justify-center hover:bg-white/20 rounded-full transition-colors text-white"
+                    title="Batal Pilih"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Search Inputs (Grid) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 md:gap-4 items-center">
+              
+              {/* Search Product */}
+              <div className="relative lg:col-span-3">
+                <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
                 <input
                   type="text"
                   value={searchTerm}
@@ -1491,109 +1758,134 @@ export function DataGudang() {
                     setSearchTerm(e.target.value);
                     setCurrentPage(1);
                   }}
-                  className="w-full pl-9 pr-9 py-2 text-sm text-black rounded-lg border-0 focus:outline-none focus:ring-4 focus:ring-blue-300 transition-all font-medium"
-                  placeholder="Cari produk atau rak..."
+                  className="w-full pl-10 pr-10 py-2.5 text-sm text-gray-800 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all font-medium placeholder-gray-400 shadow-sm"
+                  placeholder="Cari nama produk, sku, atau rak..."
                 />
                 {searchTerm && (
                   <button
                     onClick={clearSearch}
-                    className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 hover:bg-gray-100 rounded-full transition-colors"
+                    className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-full transition-colors text-gray-400 hover:text-gray-600"
                   >
-                    <X className="h-4 w-4 text-gray-400" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 )}
               </div>
-            </div>
 
-            <div className="grid grid-cols-2 gap-2 lg:flex lg:items-center lg:space-x-4">
-              <div className="relative flex-1">
-                <div className="relative">
-                  <Warehouse className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+              
+              {/* Sort Dropdown */}
+              <div className="lg:col-span-2">
+                <select
+                  value={sortConfig.key + '|' + sortConfig.direction}
+                  onChange={(e) => {
+                    const [key, direction] = e.target.value.split('|');
+                    setSortConfig({ key, direction: direction as 'asc' | 'desc' });
+                    setCurrentPage(1);
+                  }}
+                  className="w-full py-2.5 px-3 text-sm text-gray-800 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all shadow-sm"
+                >
+                  <option value="created_at|desc">Terbaru Ditambahkan</option>
+                  <option value="created_at|asc">Terlama Ditambahkan</option>
+                  <option value="nama_produk|asc">Nama Produk (A-Z)</option>
+                  <option value="nama_produk|desc">Nama Produk (Z-A)</option>
+                </select>
+              </div>
+
+              {/* Filters */}
+              <div className="grid grid-cols-2 lg:grid-cols-7 gap-3 lg:col-span-7">
+                
+                {/* Rack Filter */}
+                <div className="relative lg:col-span-3">
+                  <Warehouse className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
                   <input
                     type="text"
                     value={rackSearchTerm}
                     onChange={(e) => handleRackInputChange(e.target.value)}
                     onFocus={() => setShowRackDropdown(true)}
-                    className="w-full pl-9 pr-9 py-2 text-sm text-black rounded-lg border-0 focus:outline-none focus:ring-4 focus:ring-blue-300 transition-all font-medium"
+                    className="w-full pl-10 pr-10 py-2.5 text-sm text-gray-800 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all font-medium placeholder-gray-400 shadow-sm"
                     placeholder="Semua Rak"
                     disabled={uniqueRacks.length === 0}
                   />
                   {rackSearchTerm && (
                     <button
                       onClick={clearRackFilter}
-                      className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 hover:bg-gray-100 rounded-full transition-colors"
+                      className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-full transition-colors text-gray-400 hover:text-gray-600"
                     >
-                      <X className="h-4 w-4 text-gray-400" />
+                      <X className="h-3.5 w-3.5" />
                     </button>
+                  )}
+
+                  {showRackDropdown && (
+                    <div
+                      ref={rackDropdownRef}
+                      className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-100 rounded-xl shadow-xl z-50 max-h-60 overflow-y-auto animate-in fade-in slide-in-from-top-1"
+                    >
+                      <div
+                        onClick={() => {
+                          setSelectedRack('');
+                          setRackSearchTerm('');
+                          setShowRackDropdown(false);
+                          setCurrentPage(1);
+                        }}
+                        className="px-4 py-3 text-sm cursor-pointer border-b border-gray-50 text-blue-600 font-bold hover:bg-blue-50 transition-colors"
+                      >
+                        Semua Rak
+                      </div>
+                      {filteredRacks.map((rack) => (
+                        <div
+                          key={rack}
+                          onClick={() => handleRackSelect(rack)}
+                          className={`px-4 py-3 text-sm cursor-pointer border-b border-gray-50 last:border-0 transition-colors ${selectedRack === rack ? 'bg-blue-600 text-white font-bold' : 'text-gray-700 hover:bg-blue-50 hover:text-blue-700'}`}
+                        >
+                          {rack}
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
 
-                {showRackDropdown && (
-                  <div
-                    ref={rackDropdownRef}
-                    className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 max-h-60 overflow-y-auto animate-in fade-in slide-in-from-top-1"
+                {/* Items per page */}
+                <div className="lg:col-span-2 relative">
+                  <select
+                    value={itemsPerPage}
+                    onChange={(e) => handleItemsPerPageChange(Number(e.target.value))}
+                    className="w-full px-3 py-2.5 text-sm text-gray-800 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all font-bold appearance-none text-center cursor-pointer shadow-sm"
                   >
-                    <div
-                      onClick={() => {
-                        setSelectedRack('');
-                        setRackSearchTerm('');
-                        setShowRackDropdown(false);
-                        setCurrentPage(1);
-                      }}
-                      className="px-4 py-3 text-sm cursor-pointer border-b border-gray-50 text-blue-600 font-bold hover:bg-blue-50"
-                    >
-                      Semua Rak
-                    </div>
-                    {filteredRacks.map((rack) => (
-                      <div
-                        key={rack}
-                        onClick={() => handleRackSelect(rack)}
-                        className={`px-4 py-3 text-sm cursor-pointer border-b border-gray-50 last:border-0 transition-colors ${selectedRack === rack ? 'bg-blue-600 text-white font-bold' : 'text-gray-700 hover:bg-blue-50 hover:text-blue-700'}`}
-                      >
-                        {rack}
-                      </div>
-                    ))}
+                    <option value={20}>20 / Hal</option>
+                    <option value={50}>50 / Hal</option>
+                    <option value={100}>100 / Hal</option>
+                    <option value={200}>200 / Hal</option>
+                  </select>
+                  <div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none text-gray-400">
+                    <ChevronRight className="h-3 w-3 rotate-90" />
                   </div>
-                )}
-              </div>
+                </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <select
-                  value={itemsPerPage}
-                  onChange={(e) => handleItemsPerPageChange(Number(e.target.value))}
-                  className="w-full px-2 py-2 text-xs text-black rounded-lg border-0 focus:outline-none focus:ring-4 focus:ring-blue-300 transition-all font-bold appearance-none bg-white text-center"
-                >
-                  <option value={20}>20/Hal</option>
-                  <option value={50}>50/Hal</option>
-                  <option value={100}>100/Hal</option>
-                  <option value={200}>200/Hal</option>
-                </select>
-
-                <div className={`flex items-center justify-center rounded-lg border transition-all cursor-pointer active:scale-95 ${showMinusOnly ? 'bg-rose-500 border-rose-400 shadow-inner shadow-rose-900/20' : 'bg-blue-800/50 border-blue-600'}`} onClick={() => {
+                {/* Hanya Minus */}
+                <div className={`lg:col-span-2 flex items-center justify-center rounded-xl border transition-all cursor-pointer active:scale-95 py-2.5 shadow-sm ${showMinusOnly ? 'bg-rose-500 border-rose-400 text-white' : 'bg-white border-gray-200 hover:bg-gray-50 text-gray-700'}`} onClick={() => {
                   setShowMinusOnly(!showMinusOnly);
                   setCurrentPage(1);
                 }}>
-                  <span className="text-[10px] font-black uppercase tracking-tight text-white">{showMinusOnly ? 'Hanya Minus' : 'Tampil Semua'}</span>
+                  <span className="text-xs font-bold tracking-wide">{showMinusOnly ? 'Minus Saja' : 'Semua Stok'}</span>
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center justify-between lg:justify-end gap-3 text-[10px] font-bold uppercase tracking-widest text-blue-200">
-              <div className="flex items-center gap-2">
-                <div className="h-1 w-1 bg-white rounded-full"></div>
-                <span>Items: {paginationInfo.totalCount.toLocaleString()}</span>
+            {/* Bottom row of Toolbar: Item Count & Mode SO */}
+            <div className="flex items-center justify-between pt-3 mt-1 border-t border-blue-500/30">
+              <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-blue-100">
+                <div className="h-1.5 w-1.5 bg-blue-300 rounded-full animate-pulse shadow-[0_0_8px_rgba(147,197,253,0.8)]"></div>
+                <span>Total {paginationInfo.totalCount.toLocaleString()} SKU Aktif</span>
               </div>
               <Button
                 onClick={() => setShowSnapshotModal(true)}
                 variant="secondary"
-                className={`h-9 px-4 rounded-lg flex items-center justify-center gap-2 font-bold transition-all active:scale-95 border-none shadow-none ${snapshotFilter.enabled ? 'bg-amber-400 text-amber-900 animate-pulse' : 'bg-white/10 text-white'}`}
+                className={`h-8 px-4 rounded-lg flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-95 border-none shadow-sm ${snapshotFilter.enabled ? 'bg-amber-400 text-amber-900 animate-pulse hover:bg-amber-500' : 'bg-white/10 text-white hover:bg-white/20'}`}
               >
-                <Calendar className="h-4 w-4" />
+                <Calendar className="h-3.5 w-3.5" />
                 <span>Mode SO</span>
               </Button>
             </div>
           </div>
-        </div>
 
         {/* Snapshot Filter Modal (SO Mode) */}
         <Modal
@@ -1735,28 +2027,34 @@ export function DataGudang() {
             {!importProgress.isImporting ? (
               <>
                 {/* Format Instructions */}
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="flex items-center space-x-2 mb-3">
-                    <FileText className="h-5 w-5 text-blue-600" />
-                    <h4 className="font-semibold text-blue-800">Format File CSV</h4>
+                <div className="bg-white p-6 rounded-[2.5rem] border-2 border-blue-50 shadow-sm text-left">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="h-2 w-2 bg-blue-500 rounded-full animate-pulse"></div>
+                    <h4 className="font-black text-xs uppercase tracking-widest text-blue-900">Panduan Kolom (CSV)</h4>
                   </div>
-                  <div className="text-sm text-blue-700 space-y-2">
-                    <div className="bg-white p-3 rounded border border-blue-200 font-mono text-xs">
-                      <div className="font-bold text-blue-800 mb-1">Contoh format CSV:</div>
-                      <div>Nama Produk,Packing,Rak,Sub Rak,Satuan</div>
-                      <div>PULPEN-BP-001,CTN/24PCS,UTAMA,A1,PCS</div>
-                      <div>PENSIL-PC-002,BOX/12PCS,LANTAI 4,B2,PCS</div>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                    <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 text-center">
+                      <p className="text-[8px] font-black text-blue-600 uppercase">Kolom A</p>
+                      <p className="text-[10px] font-bold text-gray-700 truncate">Nama Produk</p>
                     </div>
-                    <p className="text-xs text-blue-600 mt-2">
-                      * <strong>Kolom A:</strong> Nama Produk (wajib diisi)<br />
-                      * <strong>Kolom B:</strong> Packing (opsional, default: CTN/)<br />
-                      * <strong>Kolom C:</strong> Rak (wajib diisi)<br />
-                      * <strong>Kolom D:</strong> Sub Rak (opsional)<br />
-                      * <strong>Kolom E:</strong> Satuan (opsional, default: PCS)<br />
-                      * Stok Awal akan diset ke 0<br />
-                      * Baris pertama akan diabaikan jika berisi header
-                    </p>
+                    <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 text-center">
+                      <p className="text-[8px] font-black text-blue-600 uppercase">Kolom B</p>
+                      <p className="text-[10px] font-bold text-gray-700 truncate">Packing</p>
+                    </div>
+                    <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 text-center">
+                      <p className="text-[8px] font-black text-blue-600 uppercase">Kolom C</p>
+                      <p className="text-[10px] font-bold text-gray-700 truncate">Rak</p>
+                    </div>
+                    <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 text-center">
+                      <p className="text-[8px] font-black text-blue-600 uppercase">Kolom D</p>
+                      <p className="text-[10px] font-bold text-gray-700 truncate">Sub Rak</p>
+                    </div>
+                    <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 text-center">
+                      <p className="text-[8px] font-black text-blue-600 uppercase">Kolom E</p>
+                      <p className="text-[10px] font-bold text-gray-700 truncate">Satuan</p>
+                    </div>
                   </div>
+                  <p className="mt-4 text-[9px] font-medium text-blue-500/70 italic text-center">* Baris pertama diabaikan (Header). Stok awal otomatis 0.</p>
                 </div>
 
                 {/* Drag & Drop Area */}
@@ -1784,14 +2082,32 @@ export function DataGudang() {
                     className="hidden"
                     id="csv-file-input"
                   />
-                  <div className="flex flex-col items-center">
+                  <div className="flex justify-center gap-3">
                     <Button
                       type="button"
                       onClick={() => document.getElementById('csv-file-input')?.click()}
-                      className="h-11 px-8 bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(37,99,235,0.4)] hover:shadow-blue-500/50 transition-all duration-300 transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2 border border-white/20 backdrop-blur-md"
+                      className="h-11 px-6 bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(37,99,235,0.4)] hover:shadow-blue-500/50 transition-all duration-300 transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2 border border-white/20 backdrop-blur-md"
                     >
                       <Upload className="h-5 w-5" />
                       <span className="tracking-wide uppercase text-sm">Pilih File CSV</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        const csvContent = "NAMA_PRODUK,PACKING,RAK,SUB_RAK,SATUAN\nPRODUK CONTOH A,CTN/,UTAMA,,PCS\nPRODUK CONTOH B,,LANTAI 4,SUB-A,BOX";
+                        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement("a");
+                        link.setAttribute("href", url);
+                        link.setAttribute("download", "Template_Data_Gudang.csv");
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                      }}
+                      className="h-11 px-6 bg-white hover:bg-blue-50 text-blue-700 font-black rounded-xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border-2 border-blue-100"
+                    >
+                      <Download className="h-5 w-5" />
+                      <span className="tracking-wide uppercase text-sm">Unduh Template</span>
                     </Button>
                   </div>
                 </div>
@@ -1835,75 +2151,113 @@ export function DataGudang() {
           </div>
         </Modal>
 
-        {/* Stock Report Table */}
-        <Card>
-          <CardContent className="p-0">
-            {loading && (
-              <div className="flex items-center justify-center p-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mr-3"></div>
-                <div className="text-blue-600 font-medium">Memuat data...</div>
+        {/* Table Content */}
+        <div className="relative z-0">
+            {loading && stockData.length === 0 && (
+              <div className="absolute inset-0 bg-white/50 backdrop-blur-sm z-20 flex items-center justify-center">
+                <div className="bg-white p-6 rounded-2xl shadow-xl flex items-center gap-4">
+                  <div className="animate-spin rounded-full h-8 w-8 border-4 border-blue-100 border-t-blue-600"></div>
+                  <div className="text-blue-800 font-bold tracking-wide">Memuat data...</div>
+                </div>
               </div>
             )}
-            <div className="overflow-x-auto">
+            
+            {/* Background Sync Indicator */}
+            {loading && stockData.length > 0 && (
+              <div className="absolute top-2 right-2 bg-blue-600 text-white text-[10px] px-3 py-1 rounded-full shadow-md z-30 flex items-center gap-2 animate-pulse">
+                <RefreshCw className="h-3 w-3 animate-spin" />
+                Sinkronisasi latar belakang...
+              </div>
+            )}
+
+            <div className="overflow-x-auto min-h-[400px]">
               <table className="w-full">
-                <thead className="bg-blue-600 text-white">
+                <thead className="bg-blue-50/80 backdrop-blur-md border-b border-blue-100 text-blue-900 sticky top-0 z-10">
                   <tr>
+                    <th className="px-4 py-3.5 text-center w-12">
+                      <input 
+                        type="checkbox" 
+                        onChange={handleSelectAll} 
+                        checked={stockData.length > 0 && selectedIds.size === stockData.length}
+                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer shadow-sm"
+                        title="Pilih Semua di Halaman Ini"
+                      />
+                    </th>
                     {headers_new.map((header) => {
                       const isFiltered = filters[header.key] && filters[header.key]!.size > 0;
                       return (
-                        <th key={header.key} className={header.className}>
+                        <th key={header.key} className={`${header.className} text-[10px] font-black uppercase tracking-widest px-4 py-3.5`}>
                           <div className="flex items-center justify-between gap-2">
                             <span className='truncate'>{header.name}</span>
-                            <button ref={el => filterIconRefs.current[header.key] = el} onClick={(e) => { e.stopPropagation(); activeFilterColumn === header.key ? setActiveFilterColumn(null) : handleOpenFilter(header.key) }}>
-                              <Filter className={`h-4 w-4 transition-colors ${isFiltered ? 'text-yellow-300' : 'text-blue-300 hover:text-white'}`} />
+                            <button 
+                              ref={el => filterIconRefs.current[header.key] = el} 
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                activeFilterColumn === header.key ? setActiveFilterColumn(null) : handleOpenFilter(header.key) 
+                              }}
+                              className="p-1 rounded-md hover:bg-blue-100 transition-colors"
+                            >
+                              <Filter className={`h-3.5 w-3.5 transition-colors ${isFiltered ? 'text-amber-500' : 'text-blue-400'}`} />
                             </button>
                           </div>
                         </th>
                       )
                     })}
-                    <th className="px-4 py-3 text-center text-sm font-medium">Aksi</th>
+                    <th className="px-4 py-3.5 text-center text-[10px] font-black uppercase tracking-widest w-24">Aksi</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="text-sm">
                   {stockData.map((item, index) => (
-                    <tr key={item.id} className={`${index % 2 === 0 ? 'bg-blue-50' : 'bg-white'} hover:bg-blue-100 border-b border-gray-200`}>
-                      <td className="px-4 py-2 text-sm border-r border-gray-200">{item.nama_produk}</td>
-                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200">
-                        <span className="text-red-600 font-medium">
+                    <tr key={item.id} className="bg-white hover:bg-blue-50/60 border-b border-gray-100 transition-colors group">
+                      <td className="px-4 py-3 text-center border-r border-gray-50">
+                        <input 
+                          type="checkbox"
+                          checked={selectedIds.has(item.id)}
+                          onChange={() => handleSelectRow(item.id)}
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer transition-transform group-hover:scale-110"
+                        />
+                      </td>
+                      <td className="px-4 py-3 font-medium text-gray-800 border-r border-gray-50">{item.nama_produk}</td>
+                      <td className="px-4 py-3 text-center border-r border-gray-50">
+                        <span className="text-rose-600 font-bold bg-rose-50 px-2 py-1 rounded-md text-xs border border-rose-100">
                           {item.packing && !item.packing.toUpperCase().startsWith('CTN/') ? `CTN/${item.packing}` : item.packing}
                         </span>
                       </td>
-                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200">{item.rak}</td>
-                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200">{item.sub_rak || '-'}</td>
-                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200">{item.satuan}</td>
-                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200">
-                        <span className="text-gray-400">{item.stok_awal}</span>
+                      <td className="px-4 py-3 text-center border-r border-gray-50 font-medium text-gray-600">{item.rak}</td>
+                      <td className="px-4 py-3 text-center border-r border-gray-50 text-gray-500">{item.sub_rak || '-'}</td>
+                      <td className="px-4 py-3 text-center border-r border-gray-50">
+                        <span className="bg-gray-100 text-gray-600 text-xs font-bold px-2 py-1 rounded-md">{item.satuan}</span>
                       </td>
-                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200">
-                        <span className={item.masuk > 0 ? 'text-green-600 font-medium' : 'text-gray-400'}>
+                      <td className="px-4 py-3 text-center border-r border-gray-50">
+                        <span className="text-gray-400 font-medium">{item.stok_awal}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center border-r border-gray-50">
+                        <span className={item.masuk > 0 ? 'text-emerald-600 font-bold bg-emerald-50 px-2 py-1 rounded-md' : 'text-gray-300'}>
                           {item.masuk || 0}
                         </span>
                       </td>
-                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200">
-                        <span className={item.keluar > 0 ? 'text-red-600 font-medium' : 'text-gray-400'}>
+                      <td className="px-4 py-3 text-center border-r border-gray-50">
+                        <span className={item.keluar > 0 ? 'text-rose-600 font-bold bg-rose-50 px-2 py-1 rounded-md' : 'text-gray-300'}>
                           {item.keluar || 0}
                         </span>
                       </td>
-                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200">
-                        <span className="bg-blue-500 text-white px-2 py-1 rounded font-medium">{item.tersedia}</span>
+                      <td className="px-4 py-3 text-center border-r border-gray-50">
+                        <div className={`inline-flex items-center justify-center min-w-[3rem] px-2.5 py-1 rounded-lg font-black text-white shadow-sm ${item.tersedia < 0 ? 'bg-gradient-to-r from-rose-500 to-red-600 shadow-rose-500/30' : item.tersedia === 0 ? 'bg-gradient-to-r from-gray-400 to-gray-500' : 'bg-gradient-to-r from-blue-500 to-indigo-600 shadow-blue-500/30'}`}>
+                          {item.tersedia}
+                        </div>
                       </td>
-                      <td className="px-4 py-2 text-center">
-                        <div className="flex justify-center space-x-2">
+                      <td className="px-4 py-3 text-center">
+                        <div className="flex justify-center space-x-2 opacity-60 group-hover:opacity-100 transition-opacity">
                           <Button
                             onClick={() => handleEdit(item)}
-                            className="h-8 w-8 p-0 bg-gradient-to-br from-blue-400 to-blue-600 hover:from-blue-500 hover:to-blue-700 text-white font-bold rounded-lg shadow-[0_4px_10px_rgba(37,99,235,0.3)] hover:shadow-blue-500/40 transition-all duration-300 transform hover:scale-110 active:scale-90 flex items-center justify-center border border-white/20 backdrop-blur-md"
+                            className="h-8 w-8 p-0 bg-blue-50 hover:bg-blue-600 text-blue-600 hover:text-white font-bold rounded-lg transition-all flex items-center justify-center border border-blue-100 hover:border-transparent hover:shadow-[0_4px_10px_rgba(37,99,235,0.3)] hover:scale-110 active:scale-95"
                             title="Edit Data"
                           >
                             <Edit2 className="h-4 w-4" />
                           </Button>
                           <Button
                             onClick={() => handleDeleteClick(item)}
-                            className="h-8 w-8 p-0 bg-gradient-to-br from-rose-400 to-red-600 hover:from-red-500 hover:to-rose-700 text-white font-bold rounded-lg shadow-[0_4px_10px_rgba(225,29,72,0.3)] hover:shadow-red-500/40 transition-all duration-300 transform hover:scale-110 active:scale-90 flex items-center justify-center border border-white/20 backdrop-blur-md"
+                            className="h-8 w-8 p-0 bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white font-bold rounded-lg transition-all flex items-center justify-center border border-rose-100 hover:border-transparent hover:shadow-[0_4px_10px_rgba(225,29,72,0.3)] hover:scale-110 active:scale-95"
                             title="Hapus Data"
                           >
                             <Trash2 className="h-4 w-4" />
@@ -1914,16 +2268,20 @@ export function DataGudang() {
                   ))}
                   {stockData.length === 0 && !loading && (
                     <tr>
-                      <td colSpan={10} className="px-4 py-8 text-center text-gray-500">
-                        {searchTerm || selectedRack || Object.keys(filters).length > 0 ? 'Tidak ada data yang sesuai dengan filter' : 'Belum ada data stok'}
+                      <td colSpan={11} className="px-4 py-16 text-center">
+                        <div className="flex flex-col items-center justify-center text-gray-400">
+                          <Database className="h-12 w-12 mb-3 opacity-20" />
+                          <p className="font-medium text-gray-500 text-lg">{searchTerm || selectedRack || Object.keys(filters).length > 0 ? 'Tidak ada data yang sesuai dengan filter' : 'Belum ada data stok'}</p>
+                          <p className="text-sm mt-1">Coba sesuaikan filter pencarian atau tambahkan data baru.</p>
+                        </div>
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
-          </CardContent>
-        </Card>
+        </div>
+        </div>
 
         {/* Pagination */}
         {paginationInfo.totalPages > 1 && (
@@ -2026,6 +2384,19 @@ export function DataGudang() {
           />
         )}
 
+        {/* Bulk Edit Modal */}
+        {bulkEditItems.length > 0 && (
+          <EntriDataModal
+            isOpen={isBulkEditModalOpen}
+            onClose={() => {
+              setIsBulkEditModalOpen(false);
+              setBulkEditItems([]);
+            }}
+            onSave={handleSaveBulkEdit}
+            editDataArray={bulkEditItems}
+          />
+        )}
+
         {/* Delete Confirmation */}
         <ConfirmDialog
           isOpen={deleteConfirm.isOpen}
@@ -2033,6 +2404,15 @@ export function DataGudang() {
           onConfirm={confirmDelete}
           title="Konfirmasi Hapus"
           message={`Apakah Anda yakin ingin menghapus data "${deleteConfirm.itemName}"? Tindakan ini tidak dapat dibatalkan.`}
+        />
+
+        {/* Bulk Delete Confirmation */}
+        <ConfirmDialog
+          isOpen={bulkDeleteConfirm.isOpen}
+          onClose={() => setBulkDeleteConfirm({ isOpen: false, count: 0 })}
+          onConfirm={confirmBulkDelete}
+          title="Konfirmasi Hapus Massal"
+          message={`Apakah Anda yakin ingin menghapus ${bulkDeleteConfirm.count} data yang dipilih? Tindakan ini tidak dapat dibatalkan.`}
         />
         {/* PIN Modal Protection */}
         <Modal

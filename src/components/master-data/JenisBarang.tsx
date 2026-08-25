@@ -4,6 +4,8 @@ import { Button } from '../ui/Button';
 import { Toast } from '../ui/Toast';
 import { Plus, Edit2, Trash2, Package2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { useDatabaseConfig } from '../../lib/DatabaseContext';
+import { DatabaseService } from '../../lib/DatabaseService';
 
 interface ProductType {
   id: string;
@@ -14,6 +16,7 @@ interface ProductType {
 }
 
 export function JenisBarang() {
+  const { writeMode } = useDatabaseConfig();
   const [productTypes, setProductTypes] = useState<ProductType[]>([]);
   const [loading, setLoading] = useState(true);
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -73,13 +76,10 @@ export function JenisBarang() {
     try {
       if (editingId) {
         // Update existing product type
-        const { error } = await supabase
-          .from('product_types')
-          .update({
-            nama: formData.nama,
-            status: formData.status
-          })
-          .eq('id', editingId);
+        const { error } = await DatabaseService.updateMasterData('product_types', editingId, {
+          nama: formData.nama,
+          status: formData.status
+        }, writeMode);
 
         if (error) {
           console.error('Error updating product type:', error);
@@ -90,12 +90,10 @@ export function JenisBarang() {
         showToast('Jenis barang berhasil diupdate!', 'success');
       } else {
         // Add new product type
-        const { error } = await supabase
-          .from('product_types')
-          .insert([{
-            nama: formData.nama,
-            status: formData.status
-          }]);
+        const { error } = await DatabaseService.insertMasterData('product_types', [{
+          nama: formData.nama,
+          status: formData.status
+        }], writeMode);
 
         if (error) {
           console.error('Error adding product type:', error);
@@ -132,10 +130,7 @@ export function JenisBarang() {
   const handleDelete = async (id: string, nama: string) => {
     if (confirm(`Apakah Anda yakin ingin menghapus jenis barang "${nama}"?`)) {
       try {
-        const { error } = await supabase
-          .from('product_types')
-          .delete()
-          .eq('id', id);
+        const { error } = await DatabaseService.deleteMasterData('product_types', id, writeMode);
 
         if (error) {
           console.error('Error deleting product type:', error);
@@ -164,7 +159,7 @@ export function JenisBarang() {
       <div className="space-y-6">
         {/* PREMIUM IMMERSIVE HEADER (310px) */}
         <div className="flex flex-col mb-8 lg:mb-12 uppercase">
-          <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+          <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
             <div className="absolute -top-12 -right-12 text-white opacity-5">
               <Package2 className="w-72 h-72 lg:w-[480px] lg:h-[480px]" />
             </div>

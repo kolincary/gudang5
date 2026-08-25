@@ -8,7 +8,7 @@ import { Button } from './ui/Button';
 // ⚠️ PENTING: UBAH ANGKA INI SETIAP KALI ANDA AKAN DEPLOY KE NETLIFY
 // Contoh: Jika saat ini 1.0.0, berikutnya jadikan 1.0.1 sebelum git commit.
 // ----------------------------------------------------------------------------
-export const APP_VERSION = '1.0.3';
+export const APP_VERSION = '1.2.8';
 
 export const AppUpdateListener: React.FC = () => {
     const [needsUpdate, setNeedsUpdate] = useState(false);

@@ -1,14 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
-import { Plus, Warehouse, RefreshCw, X, ChevronDown, Send, Trash, Settings, Layers, Trash2, Calendar, Clock, Edit3, Box, LayoutGrid, Package } from 'lucide-react';
+import { Plus, Warehouse, RefreshCw, X, ChevronDown, Send, Trash, Settings, Layers, Trash2, Calendar, Clock, Edit3, Box, LayoutGrid, Package, ExternalLink, SlidersHorizontal } from 'lucide-react';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { ValidationAlert } from './ui/ValidationAlert';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
 import { supabase, fetchAllProducts, fetchAllStockItems } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
+import { cn } from '../lib/utils';
 
+import { db } from '../lib/firebase';
+import { collection, writeBatch, doc, setDoc, updateDoc } from 'firebase/firestore';
+import { useDatabaseConfig } from '../lib/DatabaseContext';
+import { DatabaseService } from '../lib/DatabaseService';
 // Local storage keys
 const STORAGE_KEY = 'input_barang_masuk_data';
 const LAST_CLEAR_DATE_KEY = 'input_barang_masuk_last_clear_date';
@@ -24,12 +29,14 @@ interface TransactionRow {
     waktu: string;
     nama_produk: string;
     jumlah: number;
+    jumlah_karton: number; // Tambahkan kolom jumlah_karton (tersembunyi)
     type: string;
     gudang: string;
     rak: string;
     tgl_scan?: string;
     stok_tersedia: number;
     total_stok: number;
+    unique_code: string;
     validationErrors?: string[];
 }
 
@@ -37,6 +44,7 @@ interface AnalyzedItem {
     nama_produk: string;
     jumlah: number;
     rak?: string;
+    unique_code?: string;
     isValid: boolean;
 }
 
@@ -66,6 +74,13 @@ const loadFromStorage = (): TransactionRow[] => {
         console.error('Error loading from localStorage:', error);
     }
     return [];
+};
+
+// Helper to generate unique code SN-XXXXXXXX-XXXX
+const generateUniqueCode = (): string => {
+    const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const gen = (len: number) => Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    return `SN-${gen(8)}-${gen(4)}`;
 };
 
 // Save data to localStorage
@@ -100,6 +115,7 @@ const saveDropdownCache = (key: string, data: string[]) => {
 };
 
 export function InputBarangMasuk() {
+    const { writeMode } = useDatabaseConfig();
     const { userEmail } = useAuth();
     // Format date as dd/mm/yyyy
     const formatDateDDMMYYYY = (date: Date): string => {
@@ -189,11 +205,13 @@ export function InputBarangMasuk() {
             waktu: formatTimeWithSeconds(new Date()),
             nama_produk: '',
             jumlah: 0,
+            jumlah_karton: 0,
             type: 'IN',
             gudang: firstRowGudang,
             rak: '',
             stok_tersedia: 0,
             total_stok: 0,
+            unique_code: generateUniqueCode(),
             validationErrors: undefined
         }]);
 
@@ -239,12 +257,12 @@ export function InputBarangMasuk() {
             const today = formatDateDDMMYYYY(new Date());
             const now = formatTimeWithSeconds(new Date());
 
-            // --- FIX: Overwrite date and time on load ---
-            // This keeps user's product and quantity data but ensures the date is always current.
+            // --- FIX: Overwrite date and time on load, and ENSURE unique_code exists ---
             return savedRows.map(row => ({
                 ...row,           // Keep all old data from local storage
                 tanggal: today, // Overwrite the saved date with today's date
                 waktu: now,     // Overwrite the saved time with the current time
+                unique_code: row.unique_code && row.unique_code.trim() !== '' ? row.unique_code : generateUniqueCode()
             }));
         }
         // This part runs only if localStorage is empty (first time use)
@@ -254,11 +272,13 @@ export function InputBarangMasuk() {
             waktu: currentTime,
             nama_produk: '',
             jumlah: 0,
+            jumlah_karton: 0,
             type: 'IN',
             gudang: '',
             rak: '',
             stok_tersedia: 0,
             total_stok: 0,
+            unique_code: generateUniqueCode(),
             validationErrors: undefined
         }];
     };
@@ -330,6 +350,7 @@ export function InputBarangMasuk() {
         rak: true,
         stok_tersedia: true,
         total_stok: true,
+        unique_code: true,
         aksi: true
     });
 
@@ -347,6 +368,18 @@ export function InputBarangMasuk() {
     const [analyzedData2, setAnalyzedData2] = useState<AnalyzedItem[]>([]);
     const [bulkAnalysisResult2, setBulkAnalysisResult2] = useState({ berhasil: 0, gagal: 0 });
 
+    const [isBulkModal3Open, setIsBulkModal3Open] = useState(false);
+    const [bulkInputText3, setBulkInputText3] = useState('');
+    const [analyzedData3, setAnalyzedData3] = useState<{sku: string, qty_pcs: number, qty_karton: number}[]>([]);
+    const [bulkAnalysisResult3, setBulkAnalysisResult3] = useState({ berhasil: 0, gagal: 0 });
+
+    const [isCopyModalOpen, setIsCopyModalOpen] = useState(false);
+    // Check devmode status from localStorage
+    const isDevMode = useMemo(() => {
+        const isDevUser = userEmail?.toLowerCase().includes('devmode');
+        return isDevUser || localStorage.getItem('devmode') === 'true';
+    }, [userEmail]);
+
     const [validationAlert, setValidationAlert] = useState<{
         isOpen: boolean;
         invalidCount: number;
@@ -356,6 +389,7 @@ export function InputBarangMasuk() {
         invalidCount: 0,
         errors: []
     });
+    const [submissionProgress, setSubmissionProgress] = useState({ current: 0, total: 0 });
     // --- END RESTORED STATES ---
 
     const showToast = (message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
@@ -595,11 +629,13 @@ export function InputBarangMasuk() {
             waktu: formatTimeWithSeconds(new Date()),
             nama_produk: '',
             jumlah: 0,
+            jumlah_karton: 0,
             type: 'IN',
             gudang: firstRowGudang, // Use gudang from first row
             rak: '',
             stok_tersedia: 0,
             total_stok: 0,
+            unique_code: generateUniqueCode(),
             validationErrors: undefined
         };
         setRows([...rows, newRow]);
@@ -618,11 +654,13 @@ export function InputBarangMasuk() {
                 waktu: formatTimeWithSeconds(new Date()),
                 nama_produk: '',
                 jumlah: 0,
+                jumlah_karton: 0,
                 type: 'IN',
                 gudang: firstRowGudang, // Use gudang from first row
                 rak: '',
                 stok_tersedia: 0,
                 total_stok: 0,
+                unique_code: generateUniqueCode(),
                 validationErrors: undefined
             });
         }
@@ -765,8 +803,7 @@ export function InputBarangMasuk() {
 
         const validRows = rows.filter(row =>
             row.nama_produk.trim() !== '' &&
-            row.jumlah > 0 &&
-            row.rak.trim() !== ''
+            row.jumlah > 0
         );
 
         const updatedRows = rows.map(row => {
@@ -783,8 +820,7 @@ export function InputBarangMasuk() {
             if (row.nama_produk.trim() === '') errors.push('nama_produk');
             else if (!validateDropdownValue('nama_produk', row.nama_produk)) errors.push('nama_produk_invalid');
             if (row.jumlah <= 0) errors.push('jumlah');
-            if (row.rak.trim() === '') errors.push('rak');
-            else if (!validateDropdownValue('rak', row.rak)) errors.push('rak_invalid');
+            if (row.rak.trim() !== '' && !validateDropdownValue('rak', row.rak)) errors.push('rak_invalid');
             if (row.gudang.trim() === '') errors.push('gudang');
             else if (!validateDropdownValue('gudang', row.gudang)) errors.push('gudang_invalid');
 
@@ -804,10 +840,9 @@ export function InputBarangMasuk() {
         ).filter(row =>
             row.nama_produk.trim() === '' ||
             row.jumlah <= 0 ||
-            row.rak.trim() === '' ||
             row.gudang.trim() === '' ||
             !validateDropdownValue('nama_produk', row.nama_produk) ||
-            !validateDropdownValue('rak', row.rak) ||
+            (row.rak.trim() !== '' && !validateDropdownValue('rak', row.rak)) ||
             (row.gudang.trim() !== '' && !validateDropdownValue('gudang', row.gudang))
         );
 
@@ -840,7 +875,7 @@ export function InputBarangMasuk() {
             const today = new Date();
             const todayFormatted = `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, '0')}-${today.getDate().toString().padStart(2, '0')}`;
 
-            const supabaseEntries = validRows.map(row => {
+            const dbLogs = validRows.map(row => {
                 // Konversi tanggal dari DD/MM/YYYY ke YYYY-MM-DD untuk database
                 const [day, month, year] = row.tanggal.split('/');
                 const formattedDate = `${year}-${month}-${day}`;
@@ -856,26 +891,111 @@ export function InputBarangMasuk() {
                     type: row.type,
                     gudang: row.gudang,
                     rak: row.rak,
-                    sub_rak: '',
+                    sub_rak: row.rak,
                     tgl_scan: tglScanAuto,
-                    user_name: userEmail
+                    user_name: userEmail,
+                    unique_code: row.unique_code,
+                    status: row.rak ? 'COMPLETED' : 'PENDING'
                 };
             });
 
-            const { error } = await supabase
-                .from('database_log')
-                .insert(supabaseEntries);
+            setSubmissionProgress({ current: 0, total: dbLogs.length });
+            
+            let hasError = false;
+            let errorMessage = '';
+            let savedCount = 0;
 
-            if (error) {
-                console.error('Error inserting to Supabase:', error);
-                showToast(`Gagal menyimpan data: ${error.message}`, 'error');
+            // Use batching for parallel processing (5 at a time to be safe and fast)
+            const BATCH_SIZE = 5;
+            for (let i = 0; i < dbLogs.length; i += BATCH_SIZE) {
+                const batch = dbLogs.slice(i, i + BATCH_SIZE);
+                
+                await Promise.all(batch.map(async (entry) => {
+                    try {
+                        // Check if staff has already scanned this (UNVERIFIED)
+                        let unverifiedData: any = null;
+                        // Unverified check only on Supabase for now (as Firebase is fallback)
+                        if (writeMode === 'supabase' || writeMode === 'both') {
+                            const { data } = await supabase
+                                .from('database_log')
+                                .select('id, rak')
+                                .eq('sku', entry.sku)
+                                .eq('type', 'IN')
+                                .eq('status', 'UNVERIFIED')
+                                .order('created_at', { ascending: true })
+                                .limit(1);
+                            unverifiedData = data;
+                        }
+                        
+                        let targetId = null;
+                        let finalRak = entry.rak;
+
+                        if (unverifiedData && unverifiedData.length > 0) {
+                            targetId = unverifiedData[0].id;
+                            const rakFromStaff = unverifiedData[0].rak;
+                            finalRak = entry.rak || rakFromStaff;
+
+                            await DatabaseService.updateLog(targetId, {
+                                tgl: entry.tgl,
+                                waktu: entry.waktu,
+                                jumlah: entry.jumlah,
+                                gudang: entry.gudang,
+                                rak: finalRak,
+                                sub_rak: finalRak,
+                                status: 'COMPLETED',
+                                user_name: entry.user_name,
+                                tgl_scan: entry.tgl_scan
+                            }, writeMode);
+                        } else {
+                            const insertEntry = {
+                                ...entry,
+                                status: 'COMPLETED',
+                                created_at: new Date().toISOString(),
+                                is_adjustment: false
+                            };
+                            // Use insertLogs which handles dual write correctly
+                            await DatabaseService.insertLogs([insertEntry], writeMode);
+                        }
+
+                        savedCount++;
+                        setSubmissionProgress(prev => ({ ...prev, current: prev.current + 1 }));
+                    } catch (err: any) {
+                        hasError = true;
+                        errorMessage = err.message || 'Error processing row';
+                        console.error('Submission error:', err);
+                    }
+                }));
+
+                if (hasError) break; // Stop if batch failed
+                // Yield to UI thread so progress indicator updates smoothly
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+
+            if (hasError) {
+                console.error('Error updating/inserting to Supabase:', errorMessage);
+                showToast(`Gagal menyimpan data: ${errorMessage}`, 'error');
                 return;
             }
 
-            console.log('Data berhasil disimpan ke Supabase:', validRows.length);
+            console.log('Data berhasil disimpan ke Supabase:', savedCount);
 
-            setRows(rows.map(row => ({ ...row, validationErrors: undefined })));
-            confirmClearAll(false); // Call the function to reset data, not an auto clear
+            // Reset to a single empty row after successful submission
+            const resetRows: TransactionRow[] = [{
+                id: 'id-' + Date.now().toString() + '_' + Math.random(),
+                tanggal: currentDate,
+                waktu: formatTimeWithSeconds(new Date()),
+                nama_produk: '',
+                jumlah: 0,
+                type: 'IN',
+                gudang: rows.length > 0 ? rows[0].gudang : '',
+                rak: '',
+                stok_tersedia: 0,
+                total_stok: 0,
+                unique_code: generateUniqueCode(),
+                validationErrors: undefined
+            }];
+            setRows(resetRows);
+            saveToStorage(resetRows);
             showToast(`Berhasil menyimpan ${validRows.length} transaksi!`, 'success');
 
         } catch (error) {
@@ -916,6 +1036,7 @@ export function InputBarangMasuk() {
             rak: true,
             stok_tersedia: true,
             total_stok: true,
+            unique_code: true,
             aksi: true
         });
     };
@@ -938,7 +1059,8 @@ export function InputBarangMasuk() {
                 gudang: '',
                 rak: '',
                 stok_tersedia: 0,
-                total_stok: 0
+                total_stok: 0,
+                unique_code: generateUniqueCode()
             }];
         } else {
             finalRows = filteredRows;
@@ -1023,6 +1145,7 @@ export function InputBarangMasuk() {
                 rak: '', // EMPTY THE RACK COLUMN
                 stok_tersedia: stokTersedia,
                 total_stok: calculateTotalStock(stokTersedia, item.jumlah),
+                unique_code: generateUniqueCode(),
                 validationErrors: undefined
             };
         });
@@ -1067,13 +1190,25 @@ export function InputBarangMasuk() {
             if (parts.length >= 3) { // Check for 3 parts
                 const nama_produk = parts[0].trim();
                 const jumlah = parseInt(parts[1].trim());
-                const rak = parts[2].trim();
+                const unique_code = parts[2].trim();
 
-                if (nama_produk && !isNaN(jumlah) && jumlah > 0 && rak) {
-                    newAnalyzedData.push({ nama_produk, jumlah, rak, isValid: true });
+                if (nama_produk && !isNaN(jumlah) && jumlah > 0 && unique_code) {
+                    newAnalyzedData.push({ 
+                        nama_produk, 
+                        jumlah, 
+                        unique_code, 
+                        rak: '', // Rak starts empty for Massal 2
+                        isValid: true 
+                    });
                     successCount++;
                 } else {
-                    newAnalyzedData.push({ nama_produk: parts[0] || 'Tidak Valid', jumlah: isNaN(jumlah) ? 0 : jumlah, rak: parts[2] || 'Tidak Valid', isValid: false });
+                    newAnalyzedData.push({ 
+                        nama_produk: parts[0] || 'Tidak Valid', 
+                        jumlah: isNaN(jumlah) ? 0 : jumlah, 
+                        unique_code: parts[2] || '', 
+                        rak: '',
+                        isValid: false 
+                    });
                     failCount++;
                 }
             } else if (line.trim() !== '') {
@@ -1107,6 +1242,7 @@ export function InputBarangMasuk() {
                 rak: item.rak || '',
                 stok_tersedia: stokTersedia,
                 total_stok: calculateTotalStock(stokTersedia, item.jumlah),
+                unique_code: item.unique_code || generateUniqueCode(),
                 validationErrors: undefined
             };
         }));
@@ -1125,6 +1261,101 @@ export function InputBarangMasuk() {
         // We let the paste happen, then analyze after a short delay
         setTimeout(() => {
             handleBulkAnalyze2();
+        }, 100);
+    };
+
+    // --- BULK INPUT MODAL 3 LOGIC (Tutorial + 3 Columns with Karton) ---
+    const resetBulkModal3 = () => {
+        setBulkInputText3('');
+        setAnalyzedData3([]);
+        setBulkAnalysisResult3({ berhasil: 0, gagal: 0 });
+    };
+
+    const handleBulkAnalyze3 = () => {
+        if (!bulkInputText3.trim()) {
+            showToast('Tidak ada data untuk dianalisa.', 'warning');
+            return;
+        }
+
+        const lines = bulkInputText3.split('\n');
+        const newAnalyzedData: any[] = [];
+        let successCount = 0;
+        let failCount = 0;
+
+        lines.forEach(line => {
+            const parts = line.trim().split(/\t| {2,}/); 
+            if (parts.length >= 3) { 
+                const sku = parts[0].trim();
+                const qty_pcs = parseInt(parts[1].trim());
+                const qty_karton = parseInt(parts[2].trim());
+
+                if (sku && !isNaN(qty_pcs) && qty_pcs >= 0 && !isNaN(qty_karton)) {
+                    newAnalyzedData.push({ 
+                        sku, 
+                        qty_pcs, 
+                        qty_karton,
+                        isValid: true 
+                    });
+                    successCount++;
+                } else {
+                    newAnalyzedData.push({ 
+                        sku: parts[0] || 'Tidak Valid', 
+                        qty_pcs: isNaN(qty_pcs) ? 0 : qty_pcs, 
+                        qty_karton: isNaN(qty_karton) ? 0 : qty_karton,
+                        isValid: false 
+                    });
+                    failCount++;
+                }
+            } else if (line.trim() !== '') {
+                failCount++;
+            }
+        });
+
+        setAnalyzedData3(newAnalyzedData.filter(item => item.isValid));
+        setBulkAnalysisResult3({ berhasil: successCount, gagal: failCount });
+    };
+
+    const handleBulkAdd3 = () => {
+        if (analyzedData3.length === 0) {
+            showToast('Tidak ada data valid untuk ditambahkan.', 'warning');
+            return;
+        }
+
+        const firstRowGudang = rows.length > 0 ? rows[0].gudang : '';
+        const firstRowTanggal = rows.length > 0 ? rows[0].tanggal : currentDate;
+
+        const newRowsFromBulk: TransactionRow[] = analyzedData3.map(item => {
+            return {
+                id: 'id-' + Date.now().toString() + '_' + Math.random(),
+                tanggal: firstRowTanggal,
+                waktu: formatTimeWithSeconds(new Date()),
+                nama_produk: item.sku,
+                jumlah: item.qty_pcs,
+                jumlah_karton: item.qty_karton,
+                type: 'IN',
+                gudang: firstRowGudang,
+                rak: '',
+                stok_tersedia: 0,
+                total_stok: 0,
+                unique_code: generateUniqueCode(),
+                validationErrors: undefined
+            };
+        });
+
+        if (rows.length === 1 && rows[0].nama_produk === '' && rows[0].jumlah === 0) {
+            setRows(newRowsFromBulk);
+        } else {
+            setRows(prevRows => [...prevRows, ...newRowsFromBulk]);
+        }
+
+        showToast(`${analyzedData3.length} baris (Massal 3) berhasil ditambahkan!`, 'success');
+        setIsBulkModal3Open(false);
+        resetBulkModal3();
+    };
+
+    const analyzePaste3 = () => {
+        setTimeout(() => {
+            handleBulkAnalyze3();
         }, 100);
     };
 
@@ -1365,7 +1596,7 @@ export function InputBarangMasuk() {
             {/* ======================================================== */}
             <div className="flex flex-col mb-8 lg:mb-12">
                 {/* Full Immersive Background Banner with Floating Shapes */}
-                <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+                <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 pt-[80px] lg:pt-0 lg:h-[310px] pb-[40px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
                     {/* Decorative Background Icon */}
                     <div className="absolute -top-6 -right-6 text-white opacity-5">
@@ -1379,7 +1610,7 @@ export function InputBarangMasuk() {
                     <div className="absolute top-1/2 right-20 w-16 h-16 bg-blue-400/20 rounded-3xl -rotate-12 blur-xl hidden lg:block"></div>
 
                     {/* Text Content */}
-                    <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6 uppercase">
+                    <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 lg:gap-6 uppercase">
                         <div className="max-w-2xl">
                             <div className="flex items-center gap-2 mb-2 lg:mb-3 opacity-90">
                                 <div className="w-8 h-[2px] bg-white rounded-full"></div>
@@ -1405,33 +1636,65 @@ export function InputBarangMasuk() {
                             </div>
                         </div>
 
-                        {/* Desktop Action Buttons */}
-                        <div className="hidden lg:flex flex-wrap gap-4">
+                        {/* Mobile Reset Button */}
+                        <div className="lg:hidden w-full flex justify-end">
                             <Button
-                                onClick={handleSubmit}
-                                className="h-14 px-8 bg-emerald-500 hover:bg-emerald-600 text-white font-black rounded-2xl shadow-[0_10px_25px_-5px_rgba(16,185,129,0.4)] transition-all duration-300 transform hover:scale-105 active:scale-95 flex items-center gap-3 border border-emerald-400/20"
+                                onClick={handleClearAllClick}
+                                className="h-10 px-4 bg-rose-500/80 hover:bg-rose-600 text-white font-black rounded-xl transition-all active:scale-95 flex items-center gap-2 border border-rose-400/20 backdrop-blur-md shadow-lg"
                                 disabled={isSubmitting}
                             >
-                                <Send className={`h-5 w-5 ${isSubmitting ? 'animate-pulse' : ''}`} />
-                                KIRIM DATA
+                                <Trash className="h-4 w-4" />
+                                <span className="text-[11px] uppercase font-bold">Reset All</span>
+                            </Button>
+                        </div>
+
+                        {/* Desktop Action Buttons */}
+                        <div className="hidden lg:flex flex-wrap justify-end items-center gap-3">
+                            <Button
+                                onClick={() => {
+                                    const rowsToCopy = rows.filter(r => r.nama_produk && r.jumlah > 0);
+                                    if (rowsToCopy.length === 0) {
+                                        showToast('Tidak ada data valid untuk disalin!', 'warning');
+                                        return;
+                                    }
+                                    setIsCopyModalOpen(true);
+                                }}
+                                className="h-11 px-5 bg-white hover:bg-gray-50 text-gray-800 border border-gray-200 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-bold shadow-sm"
+                            >
+                                <LayoutGrid className="h-4 w-4" />
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">Copy All Kode Unik</span>
+                            </Button>
+                            
+                            <Button
+                                onClick={handleSubmit}
+                                className="h-11 px-6 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 shadow-sm"
+                                disabled={isSubmitting || dropdownLoading}
+                            >
+                                <Send className={cn("h-4 w-4", isSubmitting && "animate-pulse")} />
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">
+                                    {isSubmitting ? `MENGIRIM... ${submissionProgress.current}/${rows.filter(r => r.nama_produk.trim() !== '' && r.jumlah > 0).length}` : 'Kirim Data Masuk'}
+                                </span>
                             </Button>
 
                             <Button
                                 onClick={syncDropdownData}
-                                className="h-14 px-8 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl transition-all duration-300 transform hover:scale-105 active:scale-95 flex items-center gap-3 border border-white/20 backdrop-blur-md"
-                                disabled={isSubmitting || dropdownLoading}
+                                className="h-11 px-5 bg-blue-500 hover:bg-blue-600 text-white border border-blue-400 rounded-xl transition-all active:scale-95 flex flex-col items-center justify-center shadow-md"
+                                disabled={dropdownLoading}
                             >
-                                <RefreshCw className={`h-5 w-5 ${dropdownLoading ? 'animate-spin' : ''}`} />
-                                SYNC
+                                <div className="flex items-center gap-2 font-bold whitespace-nowrap">
+                                    <RefreshCw className={cn("h-3.5 w-3.5", dropdownLoading && "animate-spin")} />
+                                    <span className="text-[11px] uppercase tracking-wider">Sync SKU</span>
+                                </div>
+                                <span className="text-[8px] font-normal opacity-90 mt-0.5 whitespace-nowrap text-blue-100">Sinkron SKU Baru</span>
                             </Button>
 
                             <Button
                                 onClick={handleClearAllClick}
-                                className="h-14 px-8 bg-rose-500/80 hover:bg-rose-600 text-white font-black rounded-2xl transition-all duration-300 transform hover:scale-105 active:scale-95 flex items-center gap-3 border border-rose-400/20 backdrop-blur-md"
+                                className="h-11 px-5 bg-rose-500 hover:bg-rose-600 text-white border border-rose-400 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-bold shadow-md"
                                 disabled={isSubmitting}
                             >
-                                <Trash className="h-5 w-5" />
-                                RESET
+                                <Trash className="h-4 w-4 text-white" />
+                                <span className="text-[11px] uppercase tracking-wider text-white whitespace-nowrap">Reset</span>
                             </Button>
                         </div>
                     </div>
@@ -1442,42 +1705,59 @@ export function InputBarangMasuk() {
 
 
                 {/* Grid Stats - Hidden on Mobile */}
-                <div className="hidden lg:block bg-white/50 backdrop-blur-sm p-3 md:p-4 rounded-xl border border-gray-100 shadow-sm">
-                    <div className="grid grid-cols-3 lg:grid-cols-3 gap-2 md:gap-4 text-sm">
-                        <div className="flex flex-col lg:flex-row lg:items-center p-2 bg-white rounded-lg border border-gray-50 items-center text-center lg:text-left transition-all hover:border-blue-100 group">
-                            <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg lg:mr-3 group-hover:bg-blue-600 group-hover:text-white transition-colors mb-1 lg:mb-0">
-                                <Box className="h-4 w-4" />
+                <div className="hidden lg:grid grid-cols-3 gap-4">
+                    <div className="bg-white rounded-[20px] border-l-4 border-l-blue-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-gradient-to-r from-blue-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                        <div className="flex items-center gap-4 relative z-10">
+                            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/20">
+                                <Box className="h-5 w-5" />
                             </div>
-                            <div>
-                                <p className="text-[8px] lg:text-[10px] text-gray-400 font-bold uppercase tracking-wider">Produk</p>
-                                <p className={`text-[10px] lg:text-sm font-black ${validProducts.length > 0 ? 'text-blue-600' : 'text-orange-600'}`}>
-                                    {validProducts.length.toLocaleString()}
-                                </p>
-                            </div>
-                        </div>
-
-                        <div className="flex flex-col lg:flex-row lg:items-center p-2 bg-white rounded-lg border border-gray-50 items-center text-center lg:text-left transition-all hover:border-emerald-100 group">
-                            <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg lg:mr-3 group-hover:bg-emerald-600 group-hover:text-white transition-colors mb-1 lg:mb-0">
-                                <Warehouse className="h-4 w-4" />
-                            </div>
-                            <div>
-                                <p className="text-[8px] lg:text-[10px] text-gray-400 font-bold uppercase tracking-wider">Gudang</p>
-                                <p className={`text-[10px] lg:text-sm font-black ${validWarehouses.length > 0 ? 'text-emerald-600' : 'text-orange-600'}`}>
-                                    {validWarehouses.length}
-                                </p>
+                            <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Produk</span>
+                                <div className="flex items-baseline gap-1.5 mt-1">
+                                    <span className="text-2xl font-black text-gray-800 leading-none">{validProducts.length.toLocaleString()}</span>
+                                </div>
                             </div>
                         </div>
+                        <div className="relative z-10 flex flex-col items-end gap-1">
+                            <span className="text-[10px] font-semibold text-gray-400">Master SKU</span>
+                        </div>
+                    </div>
 
-                        <div className="flex flex-col lg:flex-row lg:items-center p-2 bg-white rounded-lg border border-gray-50 items-center text-center lg:text-left transition-all hover:border-purple-100 group">
-                            <div className="p-1.5 bg-purple-50 text-purple-600 rounded-lg lg:mr-3 group-hover:bg-purple-600 group-hover:text-white transition-colors mb-1 lg:mb-0">
-                                <LayoutGrid className="h-4 w-4" />
+                    <div className="bg-white rounded-[20px] border-l-4 border-l-emerald-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-gradient-to-r from-emerald-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                        <div className="flex items-center gap-4 relative z-10">
+                            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                                <Warehouse className="h-5 w-5" />
                             </div>
-                            <div>
-                                <p className="text-[8px] lg:text-[10px] text-gray-400 font-bold uppercase tracking-wider">Rak</p>
-                                <p className={`text-[10px] lg:text-sm font-black ${validRacks.length > 0 ? 'text-purple-600' : 'text-orange-600'}`}>
-                                    {validRacks.length.toLocaleString()}
-                                </p>
+                            <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Gudang</span>
+                                <div className="flex items-baseline gap-1.5 mt-1">
+                                    <span className="text-2xl font-black text-gray-800 leading-none">{validWarehouses.length.toLocaleString()}</span>
+                                </div>
                             </div>
+                        </div>
+                        <div className="relative z-10 flex flex-col items-end gap-1">
+                            <span className="text-[10px] font-semibold text-gray-400">Total Lokasi</span>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-[20px] border-l-4 border-l-blue-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-gradient-to-r from-blue-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                        <div className="flex items-center gap-4 relative z-10">
+                            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/20">
+                                <LayoutGrid className="h-5 w-5" />
+                            </div>
+                            <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-0.5">Jumlah Baris Terisi</span>
+                                <div className="flex items-baseline gap-1.5 mt-1">
+                                    <span className="text-2xl font-black text-gray-800 leading-none">{rows.filter(r => r.nama_produk && r.nama_produk.trim() !== '').length}</span>
+                                    <span className="text-xs font-semibold text-gray-400">/ {rows.length}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="relative z-10 flex flex-col items-end gap-1">
+                            <span className="text-[10px] font-black tracking-widest uppercase px-2 py-1 bg-blue-50 text-blue-600 rounded-lg border border-blue-100">Live Count</span>
                         </div>
                     </div>
                 </div>
@@ -1600,101 +1880,111 @@ export function InputBarangMasuk() {
                     )}
                 </div>
 
-                {/* Desktop: Action Toolbar - Hidden on Mobile */}
-                <div className="hidden lg:block bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
-                    <div className="flex flex-wrap gap-3">
+                {/* Action Toolbar (Visible on Desktop & Mobile, scrollable) */}
+                <div className="flex bg-white py-2 px-3 rounded-full border border-gray-100 shadow-[0_2px_15px_-5px_rgba(0,0,0,0.05)] justify-between items-center w-full overflow-x-auto no-scrollbar gap-4">
+                    <div className="flex items-center gap-2 flex-nowrap">
+                        {/* + BARIS */}
                         <Button
                             onClick={addRow}
-                            variant="outline"
-                            className="h-10 flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white border-blue-500 rounded-xl transition-all active:scale-95 shadow-sm shadow-blue-200"
+                            className="h-10 px-5 bg-[#1d5bf0] hover:bg-blue-600 text-white font-bold rounded-full transition-all flex items-center gap-2 shadow-none border-none flex-shrink-0"
                         >
                             <Plus className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Baris</span>
+                            <span className="text-[11px] uppercase tracking-wider">Baris</span>
                         </Button>
 
+                        {/* + 50 */}
                         <Button
                             onClick={add50Rows}
-                            variant="outline"
-                            className="h-10 flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-600 text-white border-sky-500 rounded-xl transition-all active:scale-95 shadow-sm shadow-sky-200"
+                            className="h-10 px-5 bg-blue-100/80 hover:bg-blue-200 text-blue-700 font-bold rounded-full transition-all flex items-center gap-2 shadow-none border border-blue-200 flex-shrink-0"
                         >
                             <Plus className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">+50</span>
+                            <span className="text-[11px] uppercase tracking-wider">50 Baris</span>
                         </Button>
 
+                        {/* AUTO RAK */}
                         <Button
                             onClick={handleOtomatisRak}
-                            variant="outline"
-                            className="h-10 flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-600 text-white border-emerald-500 rounded-xl transition-all active:scale-95 shadow-sm shadow-emerald-200"
+                            className="h-10 px-5 bg-emerald-100/80 hover:bg-emerald-200 text-emerald-700 font-bold rounded-full transition-all flex items-center gap-2 shadow-none border border-emerald-200 flex-shrink-0"
                         >
                             <Warehouse className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Auto Rak</span>
+                            <span className="text-[11px] uppercase tracking-wider">Auto Rak</span>
                         </Button>
 
+                        {/* ATUR / PENYESUAIAN */}
                         <Button
                             onClick={penyesuaian}
-                            variant="outline"
-                            className="h-10 flex items-center justify-center gap-2 bg-gray-500 hover:bg-gray-600 text-white border-gray-500 rounded-xl transition-all active:scale-95 shadow-sm shadow-gray-200"
+                            className="h-10 px-5 bg-gray-100/80 hover:bg-gray-200 text-gray-700 font-bold rounded-full transition-all flex items-center gap-2 shadow-none border border-gray-200 ml-1 flex-shrink-0"
                         >
-                            <Settings className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Atur</span>
+                            <SlidersHorizontal className="h-4 w-4" />
+                            <span className="text-[11px] uppercase tracking-wider">Penyesuaian</span>
                         </Button>
 
+                        <div className="w-px h-6 bg-gray-200 mx-2 flex-shrink-0"></div>
+
+                        {/* MASSAL 1 */}
                         <Button
                             onClick={openBulkModal}
-                            variant="outline"
-                            className="h-10 flex items-center justify-center gap-2 bg-indigo-500 hover:bg-indigo-600 text-white border-indigo-500 rounded-xl transition-all active:scale-95 shadow-sm shadow-indigo-200"
+                            className="h-10 px-4 bg-purple-100/80 hover:bg-purple-200 text-purple-700 font-bold rounded-xl transition-all flex items-center gap-2 shadow-none border border-purple-200 flex-shrink-0"
                         >
                             <Layers className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Massal 1</span>
+                            <span className="text-[11px] uppercase tracking-wider">Massal 1</span>
                         </Button>
 
+                        {/* MASSAL 2 */}
                         <Button
                             onClick={openBulkModal2}
-                            variant="outline"
-                            className="h-10 flex items-center justify-center gap-2 bg-violet-500 hover:bg-violet-600 text-white border-violet-500 rounded-xl transition-all active:scale-95 shadow-sm shadow-violet-200"
+                            className="h-10 px-4 bg-indigo-100/80 hover:bg-indigo-200 text-indigo-700 font-bold rounded-xl transition-all flex items-center gap-2 shadow-none border border-indigo-200 flex-shrink-0"
                         >
                             <Layers className="h-4 w-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Massal 2</span>
+                            <span className="text-[11px] uppercase tracking-wider">Massal 2</span>
                         </Button>
 
-                        <div className="relative">
-                            <Button
-                                onClick={() => setShowColumnToggle(!showColumnToggle)}
-                                variant="outline"
-                                className="h-10 px-4 flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white border-amber-500 rounded-xl transition-all active:scale-95 shadow-sm shadow-amber-200"
-                            >
-                                <LayoutGrid className="h-4 w-4" />
-                                <span className="text-xs font-bold uppercase tracking-wider whitespace-nowrap">Kolom ({getVisibleColumnsCount()})</span>
-                            </Button>
+                        {/* MASSAL 3 */}
+                        <Button
+                            onClick={() => setIsBulkModal3Open(true)}
+                            className="h-10 px-4 bg-teal-100/80 hover:bg-teal-200 text-teal-700 font-bold rounded-xl transition-all flex items-center gap-2 shadow-none border border-teal-200 flex-shrink-0"
+                        >
+                            <Layers className="h-4 w-4" />
+                            <span className="text-[11px] uppercase tracking-wider">Massal 3</span>
+                        </Button>
+                    </div>
 
-                            {showColumnToggle && (
-                                <div
-                                    ref={columnToggleRef}
-                                    className="absolute top-full left-0 mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 min-w-[280px] max-h-80 overflow-y-auto animate-in fade-in slide-in-from-top-2"
-                                >
-                                    <div className="p-4 border-b border-gray-100 bg-gray-50/50 sticky top-0 backdrop-blur-md flex justify-between items-center">
-                                        <h3 className="font-black text-xs uppercase tracking-widest text-gray-500">Kolom</h3>
-                                        <button onClick={() => setShowColumnToggle(false)} className="p-1 hover:bg-gray-200 rounded-full"><X className="h-4 w-4" /></button>
-                                    </div>
-                                    <div className="p-2 grid grid-cols-1 gap-1">
-                                        {[
-                                            { key: 'no', label: 'No' },
-                                            { key: 'tanggal', label: 'Tanggal' },
-                                            { key: 'nama_produk', label: 'Nama Produk' },
-                                            { key: 'jumlah', label: 'Jumlah' },
-                                            { key: 'gudang', label: 'Gudang' },
-                                            { key: 'rak', label: 'Rak' },
-                                            { key: 'aksi', label: 'Aksi' }
-                                        ].map(({ key, label }) => (
-                                            <label key={key} className="flex items-center space-x-3 p-3 hover:bg-blue-50 rounded-xl cursor-pointer">
-                                                <input type="checkbox" checked={visibleColumns[key as keyof typeof visibleColumns]} onChange={() => toggleColumn(key as keyof typeof visibleColumns)} className="w-4 h-4 rounded border-gray-300" />
-                                                <span className="text-sm font-bold text-gray-600 uppercase tracking-tight">{label}</span>
-                                            </label>
-                                        ))}
-                                    </div>
+                    <div className="relative pl-4 flex-shrink-0 border-l border-gray-100">
+                        <Button
+                            onClick={() => setShowColumnToggle(!showColumnToggle)}
+                            className="h-10 px-5 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-full transition-all flex items-center justify-center gap-2 shadow-none border-none"
+                        >
+                            <LayoutGrid className="h-4 w-4" />
+                            <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">Kolom ({getVisibleColumnsCount()})</span>
+                        </Button>
+
+                        {showColumnToggle && (
+                            <div
+                                ref={columnToggleRef}
+                                className="absolute top-full right-0 mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 min-w-[280px] max-h-80 overflow-y-auto animate-in fade-in slide-in-from-top-2"
+                            >
+                                <div className="p-4 border-b border-gray-100 bg-gray-50/50 sticky top-0 backdrop-blur-md flex justify-between items-center">
+                                    <h3 className="font-black text-xs uppercase tracking-widest text-gray-500">Kolom</h3>
+                                    <button onClick={() => setShowColumnToggle(false)} className="p-1 hover:bg-gray-200 rounded-full"><X className="h-4 w-4" /></button>
                                 </div>
-                            )}
-                        </div>
+                                <div className="p-2 grid grid-cols-1 gap-1">
+                                    {[
+                                        { key: 'no', label: 'No' },
+                                        { key: 'tanggal', label: 'Tanggal' },
+                                        { key: 'nama_produk', label: 'Nama Produk' },
+                                        { key: 'jumlah', label: 'Jumlah' },
+                                        { key: 'gudang', label: 'Gudang' },
+                                        { key: 'rak', label: 'Rak' },
+                                        { key: 'aksi', label: 'Aksi' }
+                                    ].map(({ key, label }) => (
+                                        <label key={key} className="flex items-center space-x-3 p-3 hover:bg-blue-50 rounded-xl cursor-pointer">
+                                            <input type="checkbox" checked={visibleColumns[key as keyof typeof visibleColumns]} onChange={() => toggleColumn(key as keyof typeof visibleColumns)} className="w-4 h-4 rounded border-gray-300" />
+                                            <span className="text-sm font-bold text-gray-600 uppercase tracking-tight">{label}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -1724,6 +2014,8 @@ export function InputBarangMasuk() {
                                             {visibleColumns.rak && <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-32 whitespace-nowrap uppercase tracking-wider">Rak</th>}
                                             {visibleColumns.stok_tersedia && <th className="px-4 py-4 text-center font-bold border-r border-blue-500 w-24 whitespace-nowrap uppercase tracking-wider text-xs">Tersedia</th>}
                                             {visibleColumns.total_stok && <th className="px-4 py-4 text-center font-bold border-r border-blue-500 w-24 whitespace-nowrap uppercase tracking-wider text-xs">Total</th>}
+                                            {isDevMode && visibleColumns.jumlah_karton && <th className="px-4 py-4 text-center font-bold border-r border-blue-500 w-24 whitespace-nowrap uppercase tracking-wider text-xs bg-amber-700/50">Karton</th>}
+                                            {visibleColumns.unique_code && <th className="px-4 py-4 text-center font-bold border-r border-blue-500 w-40 whitespace-nowrap uppercase tracking-wider text-xs bg-blue-700/50">Kode Unik (SN)</th>}
                                             {visibleColumns.aksi && <th className="px-4 py-4 text-center font-bold w-20 whitespace-nowrap uppercase tracking-wider">Aksi</th>}
                                         </tr>
                                     </thead>
@@ -1865,6 +2157,27 @@ export function InputBarangMasuk() {
                                                         {row.total_stok}
                                                     </div>
                                                 </td>}
+                                                {isDevMode && visibleColumns.jumlah_karton && <td className="px-4 py-3 text-center border-r border-gray-100 bg-amber-50/30">
+                                                    <div className="text-xs font-black text-amber-700">
+                                                        {row.jumlah_karton || 0} CTN
+                                                    </div>
+                                                </td>}
+                                                {visibleColumns.unique_code && <td className="px-4 py-3 text-center border-r border-gray-100 bg-blue-50/20">
+                                                     <div className="flex flex-col items-center gap-1">
+                                                         <div className="text-[11px] font-mono font-black text-blue-700 bg-white py-1 px-2 rounded border border-blue-100 shadow-sm">
+                                                             {row.unique_code}
+                                                         </div>
+                                                         <button 
+                                                            onClick={() => {
+                                                                navigator.clipboard.writeText(row.unique_code);
+                                                                showToast('SN disalin!', 'success');
+                                                            }}
+                                                            className="text-[9px] font-bold text-blue-400 hover:text-blue-600 uppercase"
+                                                         >
+                                                             Copy
+                                                         </button>
+                                                     </div>
+                                                 </td>}
                                                 {visibleColumns.aksi && <td className="px-4 py-3 text-center">
                                                     <Button
                                                         onClick={() => handleDeleteClick(row)}
@@ -2012,6 +2325,25 @@ export function InputBarangMasuk() {
                                                 </div>
                                             </div>
 
+                                            {/* Unique Code (Mobile) */}
+                                            <div className="col-span-2 space-y-1.5 pt-2 border-t border-gray-100 mt-1">
+                                                <div className="flex justify-between items-center pr-1">
+                                                   <label className="text-[10px] font-bold text-blue-500 uppercase tracking-widest pl-1">Kode Unik (Generated)</label>
+                                                   <button 
+                                                       onClick={() => {
+                                                           navigator.clipboard.writeText(row.unique_code);
+                                                           showToast('SN disalin!', 'success');
+                                                       }}
+                                                       className="text-[9px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-100 uppercase"
+                                                   >
+                                                       Copy SN
+                                                   </button>
+                                                </div>
+                                                <div className="h-10 w-full px-4 flex items-center border border-blue-100 rounded-xl bg-blue-50/30 text-sm font-mono font-black text-blue-700 shadow-inner">
+                                                    {row.unique_code}
+                                                </div>
+                                            </div>
+
                                             {/* Meta Info */}
                                             {(row.waktu || row.nama_produk || row.total_stok !== undefined) && (
                                                 <div className="bg-blue-600 rounded-xl p-3 flex justify-between items-center text-white shadow-md shadow-blue-100">
@@ -2033,70 +2365,6 @@ export function InputBarangMasuk() {
                     </CardContent>
                 </Card>
 
-                {/* Mobile Bottom Floating Action Dock (Matching InputBarangKeluar) */}
-                <div className="lg:hidden fixed bottom-0 inset-x-0 z-40 h-[88px] pointer-events-none bg-gradient-to-t from-white via-white/95 to-transparent"></div>
-                <div className="lg:hidden fixed bottom-2.5 inset-x-2 z-40 animate-in fade-in slide-in-from-bottom-5 duration-500 delay-150 fill-mode-both">
-                    <div className="bg-gray-900/95 backdrop-blur-2xl rounded-2xl shadow-[0_16px_50px_rgba(0,0,0,0.3)] p-2 border border-gray-700/50">
-                        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-                            <button
-                                onClick={handleSubmit}
-                                disabled={isSubmitting}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-emerald-500 active:bg-emerald-600 text-white active:scale-95 transition-all disabled:opacity-50 focus:outline-none"
-                            >
-                                <Send className={`h-5 w-5 ${isSubmitting ? 'animate-pulse' : ''}`} />
-                                <span className="text-[12px] font-bold uppercase tracking-wider">{isSubmitting ? '...' : 'Kirim'}</span>
-                            </button>
-
-                            <button
-                                onClick={addRow}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-gray-700/80 active:bg-gray-600 text-white active:scale-95 transition-all focus:outline-none"
-                            >
-                                <Plus className="h-5 w-5" />
-                                <span className="text-[12px] font-bold uppercase tracking-wider">Baris</span>
-                            </button>
-
-                            <button
-                                onClick={add50Rows}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-gray-700/80 active:bg-gray-600 text-white active:scale-95 transition-all focus:outline-none"
-                            >
-                                <Layers className="h-5 w-5" />
-                                <span className="text-[12px] font-bold uppercase tracking-wider">+50</span>
-                            </button>
-
-                            <button
-                                onClick={handleOtomatisRak}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-blue-500 active:bg-blue-600 text-white active:scale-95 transition-all focus:outline-none"
-                            >
-                                <Warehouse className="h-5 w-5" />
-                                <span className="text-[12px] font-bold uppercase tracking-wider">Auto</span>
-                            </button>
-
-                            <button
-                                onClick={penyesuaian}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-amber-500 active:bg-amber-600 text-white active:scale-95 transition-all focus:outline-none"
-                            >
-                                <Settings className="h-5 w-5" />
-                                <span className="text-[12px] font-bold uppercase tracking-wider">Atur</span>
-                            </button>
-
-                            <button
-                                onClick={openBulkModal}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-purple-500 active:bg-purple-600 text-white active:scale-95 transition-all focus:outline-none"
-                            >
-                                <Layers className="h-5 w-5" />
-                                <span className="text-[12px] font-bold uppercase tracking-wider">Massal</span>
-                            </button>
-
-                            <button
-                                onClick={() => setShowColumnToggle(!showColumnToggle)}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-gray-700/80 active:bg-gray-600 text-white active:scale-95 transition-all focus:outline-none"
-                            >
-                                <LayoutGrid className="h-5 w-5" />
-                                <span className="text-[12px] font-bold uppercase tracking-wider">Kolom</span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
 
                 {/* Bottom Spacer for Mobile Sticky Bar */}
                 <div className="h-24 lg:hidden"></div>
@@ -2136,7 +2404,7 @@ export function InputBarangMasuk() {
                         resetBulkModal();
                     }}
                     title="Tambah Massal (Produk & Jumlah)"
-                    size="full"
+                    size="6xl"
                     padding="p-0"
                 >
                     <div className="flex flex-col h-auto lg:h-[70vh] min-h-[500px] p-6">
@@ -2260,7 +2528,7 @@ export function InputBarangMasuk() {
                         resetBulkModal2();
                     }}
                     title="Tambah Massal (3 Kolom)"
-                    size="full"
+                    size="6xl"
                     padding="p-0"
                 >
                     <div className="flex flex-col h-auto lg:h-[70vh] min-h-[500px] p-6">
@@ -2377,6 +2645,287 @@ export function InputBarangMasuk() {
                         </div>
                     </div>
                 </Modal >
+
+                {/* Bulk Input Modal 3 (Step by Step / Tutorial) */}
+                <Modal
+                    isOpen={isBulkModal3Open}
+                    onClose={() => {
+                        setIsBulkModal3Open(false);
+                        resetBulkModal3();
+                    }}
+                    title="Tambah Massal 3 (Tutorial & Karton)"
+                    size="6xl"
+                    padding="p-0"
+                >
+                    <div className="flex flex-col h-auto lg:h-[75vh] min-h-[600px] p-6 bg-gray-50/50">
+                        {/* Tutorial Steps */}
+                        <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div className="bg-white p-4 rounded-3xl border border-blue-100 shadow-sm flex items-start gap-4">
+                                <div className="h-10 w-10 bg-blue-600 text-white rounded-2xl flex items-center justify-center font-black flex-shrink-0 shadow-lg shadow-blue-200">1</div>
+                                <div>
+                                    <h4 className="font-black text-xs uppercase tracking-tight text-blue-600 mb-1">Siapkan Excel</h4>
+                                    <p className="text-[10px] text-gray-500 font-medium leading-relaxed">Siapkan 3 kolom di Excel: <span className="font-bold">SKU</span>, <span className="font-bold">QTY PCS</span>, dan <span className="font-bold">QTY KARTON</span>.</p>
+                                </div>
+                            </div>
+                            <div className="bg-white p-4 rounded-3xl border border-emerald-100 shadow-sm flex items-start gap-4">
+                                <div className="h-10 w-10 bg-emerald-500 text-white rounded-2xl flex items-center justify-center font-black flex-shrink-0 shadow-lg shadow-emerald-200">2</div>
+                                <div>
+                                    <h4 className="font-black text-xs uppercase tracking-tight text-emerald-600 mb-1">Copy & Paste</h4>
+                                    <p className="text-[10px] text-gray-500 font-medium leading-relaxed">Blok data tsb di Excel, Copy (Ctrl+C), lalu Paste (Ctrl+V) ke kotak input di bawah ini.</p>
+                                </div>
+                            </div>
+                            <div className="bg-white p-4 rounded-3xl border border-purple-100 shadow-sm flex items-start gap-4">
+                                <div className="h-10 w-10 bg-purple-500 text-white rounded-2xl flex items-center justify-center font-black flex-shrink-0 shadow-lg shadow-purple-200">3</div>
+                                <div>
+                                    <h4 className="font-black text-xs uppercase tracking-tight text-purple-600 mb-1">Analisa & Tambah</h4>
+                                    <p className="text-[10px] text-gray-500 font-medium leading-relaxed">Klik 'Analisa' untuk cek data, lalu klik 'Tambah' untuk memasukkan ke antrean sistem.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 flex-1 min-h-0">
+                            {/* Input Column */}
+                            <div className="flex flex-col h-full space-y-4">
+                                <div className="flex-1 relative group">
+                                    <textarea
+                                        value={bulkInputText3}
+                                        onChange={(e) => setBulkInputText3(e.target.value)}
+                                        onPaste={analyzePaste3}
+                                        className="w-full h-full p-8 bg-white border-2 border-gray-100 rounded-[2.5rem] focus:outline-none focus:border-blue-500 transition-all font-mono text-sm leading-relaxed shadow-xl resize-none"
+                                        placeholder="Paste 3 Kolom dari Excel di sini...&#10;&#10;SKU-A	120	5&#10;SKU-B	240	10"
+                                    />
+                                    <div className="absolute top-6 right-6">
+                                        <div className="bg-blue-600 text-white text-[10px] font-black px-4 py-1.5 rounded-full shadow-lg uppercase tracking-widest">Input Area (3 Kolom)</div>
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-4">
+                                    <Button
+                                        onClick={handleBulkAnalyze3}
+                                        className="flex-1 h-16 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-xl shadow-blue-100 transition-all active:scale-95 uppercase tracking-widest text-sm flex items-center justify-center gap-3"
+                                    >
+                                        <RefreshCw className="h-5 w-5" /> Analisa Sekarang
+                                    </Button>
+                                    <Button
+                                        onClick={resetBulkModal3}
+                                        variant="outline"
+                                        className="h-16 px-8 border-2 border-gray-100 text-gray-400 hover:bg-gray-50 rounded-2xl transition-all active:scale-95"
+                                    >
+                                        <Trash2 className="h-5 w-5" />
+                                    </Button>
+                                </div>
+                            </div>
+
+                            {/* Preview Column */}
+                            <div className="flex flex-col h-full bg-white rounded-[2.5rem] border border-gray-100 shadow-2xl overflow-hidden">
+                                <div className="p-6 border-b border-gray-50 flex items-center justify-between bg-blue-50/30">
+                                    <h4 className="font-black text-xs uppercase tracking-[0.2em] text-blue-600 flex items-center gap-2">
+                                        <Layers className="h-4 w-4" /> Preview Data Massal 3
+                                    </h4>
+                                    <div className="flex gap-2">
+                                        <div className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-xl text-[10px] font-black border border-emerald-200">
+                                            {bulkAnalysisResult3.berhasil} ✓
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex-1 overflow-auto p-6 space-y-3">
+                                    {analyzedData3.length === 0 ? (
+                                        <div className="h-full flex flex-col items-center justify-center text-gray-200 gap-4 opacity-40">
+                                            <Package className="h-20 w-20 stroke-[1]" />
+                                            <p className="text-[10px] font-black uppercase tracking-[0.2em]">Paste Data Excel Anda</p>
+                                        </div>
+                                    ) : (
+                                        analyzedData3.map((item, idx) => (
+                                            <div key={idx} className="bg-gray-50/50 p-4 rounded-3xl border border-gray-100 flex items-center justify-between group hover:border-blue-200 transition-all">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="h-10 w-10 bg-white border border-gray-100 text-blue-600 rounded-2xl flex items-center justify-center font-black text-xs shadow-sm">
+                                                        {idx + 1}
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-sm font-black text-gray-800 uppercase leading-none mb-1">{item.sku}</p>
+                                                        <p className="text-[9px] font-bold text-gray-400 uppercase">Karton: {item.qty_karton}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-blue-600 text-white px-4 py-2 rounded-2xl">
+                                                    <p className="text-[8px] font-black opacity-70 uppercase leading-none mb-0.5">PCS</p>
+                                                    <p className="text-sm font-black">{item.qty_pcs}</p>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+
+                                <div className="p-6 bg-gray-50/80 border-t border-gray-100">
+                                    <Button
+                                        onClick={handleBulkAdd3}
+                                        disabled={analyzedData3.length === 0}
+                                        className="w-full h-16 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-3xl shadow-2xl shadow-blue-100 transition-all active:scale-95 flex items-center justify-center gap-4 disabled:opacity-40 uppercase tracking-[0.15em] text-sm"
+                                    >
+                                        <Plus className="h-6 w-6" /> Tambah Ke Antrean Inbound
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </Modal>
+
+                {/* MODAL BARU: Copy Data SKU dan Kode Unik */}
+                <Modal
+                    isOpen={isCopyModalOpen}
+                    onClose={() => setIsCopyModalOpen(false)}
+                    title="Salin Data (Format Excel)"
+                    size="7xl"
+                >
+                    <div className="flex flex-col space-y-8 p-4">
+                        {/* Tutorial Steps for QR Label (RE-DESIGNED FOR MAXIMUM CLARITY) */}
+                        <div className="flex flex-col lg:flex-row items-stretch justify-between gap-6 mb-2 bg-blue-50/40 p-8 rounded-[3rem] border border-blue-100 shadow-inner">
+                            {/* Step 1 */}
+                            <div className="flex-1 bg-white p-8 rounded-[2.5rem] border-4 border-emerald-400 shadow-xl relative overflow-hidden group">
+                                <div className="absolute top-0 left-0 bg-emerald-500 text-white px-6 py-2 rounded-br-[1.5rem] font-black text-xs uppercase tracking-[0.2em] shadow-md z-10">Langkah 1</div>
+                                <div className="flex flex-col items-center text-center space-y-5 mt-4">
+                                    <div className="p-5 bg-emerald-50 rounded-3xl text-emerald-600 group-hover:scale-110 transition-transform ring-4 ring-emerald-50 shadow-sm">
+                                        <Box className="h-10 w-10" />
+                                    </div>
+                                    <div>
+                                        <h4 className="font-black text-base uppercase tracking-tight text-emerald-700 mb-3 underline decoration-emerald-200 decoration-4 underline-offset-4">SALIN SEMUA DATA</h4>
+                                        <p className="text-xs text-gray-500 font-bold leading-relaxed px-2">
+                                            Klik tombol hijau besar <br/>
+                                            <span className="inline-block mt-2 text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200 animate-pulse">COPY ALL DATA</span> <br/>
+                                            di bagian bawah.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Arrow Indicator (Desktop) */}
+                            <div className="hidden lg:flex items-center justify-center text-blue-200">
+                                <div className="w-12 h-12 bg-blue-50 rounded-full flex items-center justify-center border-2 border-blue-100">
+                                    <Send className="h-6 w-6 rotate-90 lg:rotate-0" />
+                                </div>
+                            </div>
+
+                            {/* Step 2 */}
+                            <button 
+                                onClick={() => window.open('https://rad-lokum-ced507.netlify.app', '_blank')}
+                                className="flex-1 bg-gradient-to-br from-blue-600 to-blue-800 p-8 rounded-[2.5rem] border-4 border-blue-400 shadow-2xl relative overflow-hidden group hover:from-blue-700 hover:to-blue-900 transition-all transform hover:-translate-y-2 active:scale-95"
+                            >
+                                <div className="absolute top-0 left-0 bg-white text-blue-700 px-6 py-2 rounded-br-[1.5rem] font-black text-xs uppercase tracking-[0.2em] shadow-md z-10">Langkah 2</div>
+                                <div className="flex flex-col items-center text-center space-y-5 mt-4">
+                                    <div className="p-5 bg-white/20 rounded-3xl text-white group-hover:rotate-12 transition-transform ring-4 ring-white/10 shadow-sm">
+                                        <ExternalLink className="h-10 w-10" />
+                                    </div>
+                                    <div>
+                                        <h4 className="font-black text-base uppercase tracking-tight text-white mb-3">BUKA WEB CETAK</h4>
+                                        <p className="text-xs text-blue-100 font-bold leading-relaxed px-2">
+                                            KLIK DI SINI untuk membuka <br/>
+                                            <span className="underline decoration-white/40 underline-offset-4 font-black">Website Cetak Label</span> <br/>
+                                            di halaman baru.
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="absolute bottom-0 right-0 p-4 opacity-10 group-hover:opacity-30 transition-opacity">
+                                    <ExternalLink className="h-24 w-24" />
+                                </div>
+                            </button>
+
+                            {/* Arrow Indicator (Desktop) */}
+                            <div className="hidden lg:flex items-center justify-center text-blue-200">
+                                <div className="w-12 h-12 bg-blue-50 rounded-full flex items-center justify-center border-2 border-blue-100">
+                                    <Send className="h-6 w-6 rotate-90 lg:rotate-0" />
+                                </div>
+                            </div>
+
+                            {/* Step 3 */}
+                            <div className="flex-1 bg-white p-8 rounded-[2.5rem] border-4 border-purple-400 shadow-xl relative overflow-hidden group">
+                                <div className="absolute top-0 left-0 bg-purple-500 text-white px-6 py-2 rounded-br-[1.5rem] font-black text-xs uppercase tracking-[0.2em] shadow-md z-10">Langkah 3</div>
+                                <div className="flex flex-col items-center text-center space-y-5 mt-4">
+                                    <div className="p-5 bg-purple-50 rounded-3xl text-purple-600 group-hover:scale-110 transition-transform ring-4 ring-purple-50 shadow-sm">
+                                        <Package className="h-10 w-10" />
+                                    </div>
+                                    <div>
+                                        <h4 className="font-black text-base uppercase tracking-tight text-purple-700 mb-3 underline decoration-purple-200 decoration-4 underline-offset-4">TEMPEL (PASTE)</h4>
+                                        <p className="text-xs text-gray-500 font-bold leading-relaxed px-2">
+                                            Pilih menu <span className="text-purple-700 font-black">INPUT MASSAL</span> <br/>
+                                            di web tsb, lalu tekan tombol <br/>
+                                            <span className="inline-block mt-2 font-black text-purple-600 border-2 border-purple-100 px-3 py-1 rounded-xl">CTRL + V</span>
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-5 bg-amber-50 border-2 border-amber-200 rounded-[2rem] flex items-center gap-6 text-amber-900 shadow-sm">
+                            <div className="bg-amber-100 p-3 rounded-2xl">
+                                <LayoutGrid className="h-8 w-8 text-amber-600" />
+                            </div>
+                            <p className="text-sm font-bold leading-relaxed">
+                                <span className="uppercase font-black text-xs block mb-1 opacity-70">PENTING:</span>
+                                Data di bawah ini sudah diformat khusus. Cukup ikuti 3 langkah di atas agar label QR Code tercetak dengan benar dan cepat.
+                            </p>
+                        </div>
+
+                        <div className="bg-gray-900 rounded-[2rem] p-6 shadow-2xl border border-gray-800">
+                            <div className="flex justify-between items-center mb-6">
+                                <h3 className="text-white font-black text-sm uppercase tracking-widest flex items-center gap-2">
+                                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                                    Review Data Siap Copy
+                                </h3>
+                                <Button
+                                    onClick={() => {
+                                        const rowsToCopy = rows.filter(r => r.nama_produk && (r.jumlah > 0 || r.jumlah_karton > 0));
+                                        const copyText = rowsToCopy.map(r => `${r.nama_produk}\t${r.jumlah_karton || 0}\t${r.unique_code}`).join('\n');
+                                        navigator.clipboard.writeText(copyText);
+                                        showToast('Semua data (SKU, Karton, SN) berhasil disalin!', 'success');
+                                    }}
+                                    className="bg-emerald-500 hover:bg-emerald-600 text-white font-black rounded-xl px-6 h-10 active:scale-95 transition-all text-xs uppercase"
+                                >
+                                    Copy All Data
+                                </Button>
+                            </div>
+
+                            <div className="max-h-[400px] overflow-y-auto pr-2 space-y-2 no-scrollbar">
+                                <div className="grid grid-cols-4 gap-2 px-4 py-2 text-[10px] font-black text-gray-500 uppercase tracking-widest border-b border-gray-800 mb-2">
+                                    <div className="col-span-2">Nama Produk (SKU)</div>
+                                    <div className="text-center">QTY KARTON</div>
+                                    <div className="text-right">Kode Unik (SN)</div>
+                                </div>
+                                {rows.filter(r => r.nama_produk && (r.jumlah > 0 || r.jumlah_karton > 0)).map((row, idx) => (
+                                    <div key={idx} className="group bg-gray-800/50 hover:bg-gray-800 p-3 rounded-2xl border border-gray-800/50 hover:border-blue-500/30 transition-all flex items-center justify-between">
+                                        <div className="grid grid-cols-4 gap-2 w-full items-center">
+                                            <div className="col-span-2 flex items-center gap-3">
+                                                <div className="h-8 w-8 bg-gray-700 text-gray-400 rounded-xl flex items-center justify-center text-[10px] font-black group-hover:bg-blue-600 group-hover:text-white transition-all">
+                                                    {idx + 1}
+                                                </div>
+                                                <span className="text-sm font-bold text-gray-300 truncate uppercase">{row.nama_produk}</span>
+                                            </div>
+                                            <div className="text-center">
+                                                <span className="bg-gray-700 px-3 py-1 rounded-lg text-amber-400 font-black text-sm">{row.jumlah_karton || 0}</span>
+                                            </div>
+                                            <div className="flex items-center justify-end gap-3">
+                                                <span className="text-xs font-mono font-medium text-gray-400">{row.unique_code}</span>
+                                                <button 
+                                                    onClick={() => {
+                                                        const text = `${row.nama_produk}\t${row.jumlah_karton || 0}\t${row.unique_code}`;
+                                                        navigator.clipboard.writeText(text);
+                                                        showToast(`Baris ${idx+1} (SKU, Karton, SN) disalin!`, 'success');
+                                                    }}
+                                                    className="p-2 bg-gray-700 hover:bg-blue-600 text-white rounded-lg transition-all active:scale-90"
+                                                >
+                                                    <Box className="h-4 w-4" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="pt-2 text-center">
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter italic">*Data disalin dengan pemisah Tab (Excel-ready)</p>
+                        </div>
+                    </div>
+                </Modal>
             </div >
         </>
     );
