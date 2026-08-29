@@ -31,6 +31,7 @@ import { useAuth } from '../lib/AuthContext';
 import { Navigate, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { DatabaseLog } from './DatabaseLog';
+import { notifyAppSettingsChange } from '../lib/settingsSync';
 
 export function DevModeSettings() {
     const { userEmail } = useAuth();
@@ -191,6 +192,7 @@ export function DevModeSettings() {
                 setShowRiwayatStats(!checked);
                 showToast('Gagal mengubah status tampilan!', 'error');
             } else {
+                notifyAppSettingsChange({ hide_riwayat_stats: checked ? 'false' : 'true' });
                 showToast(checked ? 'Summary Stats DITAMPILKAN di Riwayat Barang (Realtime)' : 'Summary Stats DISEMBUNYIKAN di Riwayat Barang (Realtime)');
             }
         } catch (err) {
@@ -209,6 +211,7 @@ export function DevModeSettings() {
             }, { onConflict: 'key' });
 
             if (error) throw error;
+            notifyAppSettingsChange({ riwayat_stats_target_mode: mode });
             showToast(mode === 'all' ? 'Target: Berlaku untuk SEMUA Role' : 'Target: Dibatasi untuk ROLE tertentu saja');
         } catch (err) {
             console.error("Error saving target mode:", err);
@@ -230,6 +233,7 @@ export function DevModeSettings() {
             }, { onConflict: 'key' });
 
             if (error) throw error;
+            notifyAppSettingsChange({ riwayat_stats_allowed_roles: nextRoles });
             showToast(`Hak akses role diperbarui (${nextRoles.length} role aktif)`);
         } catch (err) {
             console.error("Error saving allowed roles:", err);
@@ -267,6 +271,12 @@ export function DevModeSettings() {
                     updated_at: new Date().toISOString()
                 }, { onConflict: 'key' })
             ]);
+
+            notifyAppSettingsChange({
+                hide_riwayat_stats: showRiwayatStats ? 'false' : 'true',
+                riwayat_stats_target_mode: statsTargetMode,
+                riwayat_stats_allowed_roles: statsAllowedRoles
+            });
 
             showToast('Semua pengaturan DevMode & Hak Akses berhasil disimpan!');
         } catch (err) {

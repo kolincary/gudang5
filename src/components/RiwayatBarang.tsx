@@ -10,6 +10,7 @@ import { realtimeManager } from '../lib/realtimeManager';
 import { useAuth } from '../lib/AuthContext';
 import { saveExportHistory } from '../lib/exportHistoryService';
 import { ExportHistoryModal } from './ExportHistoryModal';
+import { subscribeAppSettingsChange } from '../lib/settingsSync';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 
@@ -436,24 +437,17 @@ export function RiwayatBarang() {
 
     fetchStatsSetting();
 
-    // Direct Supabase Realtime Channel for zero-delay update across all users
-    const channel = supabase
-      .channel('app_settings_riwayat_stats_' + Math.random().toString(36).substring(7))
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'app_settings' },
-        () => {
-          fetchStatsSetting();
-        }
-      )
-      .subscribe();
+    // Subscribe to unified zero-delay real-time sync across local tabs, broadcast channel, and Supabase
+    const unsubscribeSettings = subscribeAppSettingsChange(() => {
+      fetchStatsSetting();
+    });
 
     const subId = realtimeManager.subscribe('app_settings', () => {
       fetchStatsSetting();
     });
 
     return () => {
-      supabase.removeChannel(channel);
+      unsubscribeSettings();
       realtimeManager.unsubscribe(subId);
     };
   }, [userRole, userEmail]);
