@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
-import { Building, Download, Upload, FileSpreadsheet, History, Package, TrendingDown, Search, Calendar, X, XCircle, RefreshCw, Loader2, Filter, ChevronLeft, ChevronRight, Trash2, Lock, Copy, CheckSquare } from 'lucide-react';
+import { Building, Download, Upload, FileSpreadsheet, History, Package, TrendingDown, Search, Calendar, X, XCircle, RefreshCw, Loader2, Filter, ChevronLeft, ChevronRight, Trash2, Lock, Copy, CheckSquare, FileText, CheckCircle, Layers } from 'lucide-react';
 import { verifyPin } from '../lib/pinValidator';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
@@ -2060,137 +2060,208 @@ export function StokLantai3() {
 
       <Modal
         isOpen={showImportModal}
-        onClose={() => setShowImportModal(false)}
-        title="Import Order Keluar"
-        size="2xl"
+        onClose={() => !isImporting && setShowImportModal(false)}
+        title={activeTab === 'lantai3' ? 'Import Order Keluar' : 'Import Stok Bundling'}
+        size="5xl"
       >
-        <div className="space-y-4">
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <h4 className="font-semibold text-blue-900 mb-2">Cara Import:</h4>
-            <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
-              <li>Pilih jenis transaksi terlebih dahulu</li>
-              <li>Copy data dari Excel dengan format: Kolom A (Nama Produk), Kolom B (Qty)</li>
-              <li><strong className="text-red-600">TIDAK PERLU konversi box dan pcs, biarkan terpisah (1 baris box, 1 baris pcs) sesuai apa adanya di Excel.</strong></li>
-              <li>Paste data ke textarea di bawah</li>
-              <li>Pastikan nama produk sama persis dengan nama di tabel Stok Lantai 3</li>
-              <li><strong className="text-blue-600">Data dengan nama produk/SKU yang sama akan otomatis di-subtotal (dijumlahkan) qty-nya saat diimpor.</strong></li>
-            </ol>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Tanggal Transaksi
-            </label>
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              onClick={(e) => {
-                e.currentTarget.showPicker?.();
-              }}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                e.currentTarget.showPicker?.();
-              }}
-              onKeyDown={(e) => e.preventDefault()}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer select-none caret-transparent"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Jenis Transaksi <span className="text-red-500">*</span>
-            </label>
-            <select
-              value={transactionType}
-              onChange={(e) => setTransactionType(e.target.value as 'ORDER' | 'OUTBOUND' | 'RETUR' | 'CANCEL' | 'TRANSFER_MASUK' | 'SISA_STOK' | 'ADJUSTMENT' | '')}
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${userRole?.toLowerCase().includes('staf') && userRole?.toLowerCase().includes('gudang') ? 'bg-gray-100 cursor-not-allowed' : ''}`}
-              disabled={userRole?.toLowerCase().includes('staf') && userRole?.toLowerCase().includes('gudang')}
-            >
-              {userRole?.toLowerCase().includes('staf') && userRole?.toLowerCase().includes('gudang') ? (
-                <option value="SISA_STOK">SISA STOK - Input Sisa Stok Awal {GUDANG_LABEL} (Stok Masuk)</option>
-              ) : (
-                <>
-                  <option value="">-- Pilih Jenis Transaksi --</option>
-                  <option value="ORDER">ORDER - Pembelian Customer (Stok Keluar)</option>
-                  <option value="OUTBOUND">OUTBOUND - Keluar Manual / Sample / Non-Bon (Stok Keluar)</option>
-                  <option value="CANCEL">CANCEL - Order Cancel / Batal (Stok Masuk / Kembalikan Stok)</option>
-                  <option value="TRANSFER_MASUK">TRANSFER MASUK - Stok Masuk dari Gudang Utama</option>
-                  <option value="RETUR">RETUR - Retur dari Customer (Stok Masuk)</option>
-                  <option value="SISA_STOK">SISA STOK - Input Sisa Stok Awal {GUDANG_LABEL} (Stok Masuk)</option>
-                  <option value="ADJUSTMENT">ADJUSTMENT - Penyesuaian Stok / Selisih (Penyesuaian)</option>
-                </>
-              )}
-            </select>
-            {transactionType && (
-              <p className="mt-2 text-sm text-gray-600">
-                {transactionType === 'ORDER' && '📦 Stok akan berkurang (pembelian customer dari marketplace)'}
-                {transactionType === 'OUTBOUND' && '📤 Stok akan berkurang (sample kantor / non-bon / keperluan lain)'}
-                {transactionType === 'CANCEL' && '↺ Stok akan bertambah (pembatalan order customer, stok dikembalikan)'}
-                {transactionType === 'RETUR' && '📥 Stok akan bertambah (retur dari customer yang ditolak/dikembalikan)'}
-                {transactionType === 'SISA_STOK' && '📥 Stok akan bertambah (Input stok awal lantai 3 ke sistem)'}
-              </p>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Data Excel (Paste di sini)
-            </label>
-            <textarea
-              value={importText}
-              onChange={(e) => setImportText(e.target.value)}
-              placeholder="Paste data dari Excel di sini...&#10;Contoh:&#10;Produk A&#9;100&#10;Produk B&#9;50"
-              rows={12}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
-            />
-          </div>
-
-          {isImporting && (
-            <div className="space-y-3">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-blue-900">Memproses Import...</span>
-                  <span className="text-sm font-semibold text-blue-900">{importProgress}%</span>
-                </div>
-                <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
-                  <div
-                    className="bg-blue-600 h-full transition-all duration-300 ease-out flex items-center justify-end"
-                    style={{ width: `${importProgress}%` }}
-                  >
-                    <div className="w-2 h-2 bg-white rounded-full mr-1 animate-pulse"></div>
+        <div className="flex flex-col max-h-[80vh]">
+          {/* Main 2-Column Responsive Body */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 overflow-y-auto pr-1 pb-1">
+            {/* LEFT COLUMN: PANDUAN & PENGATURAN TRANSAKSI (5 Cols) */}
+            <div className="lg:col-span-5 space-y-4">
+              {/* Petunjuk Import Box */}
+              <div className="bg-gradient-to-br from-blue-50 via-indigo-50/50 to-blue-50/80 border border-blue-200/90 rounded-2xl p-4 shadow-sm space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="p-1 bg-blue-600 text-white rounded-lg">
+                    <FileText className="w-3.5 h-3.5" />
                   </div>
+                  <h4 className="font-bold text-xs sm:text-sm text-blue-950 uppercase tracking-wide">
+                    Panduan Format Excel
+                  </h4>
                 </div>
-                <p className="text-xs text-blue-700 mt-2">Mohon tunggu, sedang menyimpan data ke database...</p>
+                
+                <ul className="text-xs text-blue-900/90 space-y-1.5 leading-relaxed list-disc list-inside font-medium">
+                  <li>Pilih <strong>Jenis Transaksi</strong> dan <strong>Tanggal</strong> yang sesuai.</li>
+                  <li>Copy data Excel format: <strong>Kolom A (Nama Produk/SKU)</strong> & <strong>Kolom B (Qty)</strong>.</li>
+                  <li><span className="text-red-600 font-bold">Tidak perlu konversi box & pcs</span>, biarkan terpisah apa adanya dari Excel.</li>
+                  <li>Nama produk yang sama akan <strong className="text-blue-700">otomatis di-subtotal</strong> (dijumlahkan qty-nya).</li>
+                </ul>
+              </div>
+
+              {/* Tanggal Transaksi */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Tanggal Transaksi</span>
+                </label>
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  onClick={(e) => {
+                    e.currentTarget.showPicker?.();
+                  }}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.showPicker?.();
+                  }}
+                  onKeyDown={(e) => e.preventDefault()}
+                  className="w-full px-3.5 py-2.5 border-2 border-slate-200 hover:border-blue-300 focus:border-blue-600 focus:ring-4 focus:ring-blue-100 rounded-xl font-bold text-sm text-slate-900 bg-white transition-all shadow-sm cursor-pointer select-none caret-transparent"
+                />
+              </div>
+
+              {/* Jenis Transaksi */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Jenis Transaksi <span className="text-red-500">*</span></span>
+                </label>
+                <select
+                  value={transactionType}
+                  onChange={(e) => setTransactionType(e.target.value as 'ORDER' | 'OUTBOUND' | 'RETUR' | 'CANCEL' | 'TRANSFER_MASUK' | 'SISA_STOK' | 'ADJUSTMENT' | '')}
+                  className={`w-full px-3.5 py-2.5 border-2 border-slate-200 hover:border-blue-300 focus:border-blue-600 focus:ring-4 focus:ring-blue-100 rounded-xl font-bold text-xs sm:text-sm text-slate-900 bg-white transition-all shadow-sm ${
+                    userRole?.toLowerCase().includes('staf') && userRole?.toLowerCase().includes('gudang') ? 'bg-gray-100 cursor-not-allowed' : ''
+                  }`}
+                  disabled={userRole?.toLowerCase().includes('staf') && userRole?.toLowerCase().includes('gudang')}
+                >
+                  {userRole?.toLowerCase().includes('staf') && userRole?.toLowerCase().includes('gudang') ? (
+                    <option value="SISA_STOK">SISA STOK - Input Sisa Stok Awal {GUDANG_LABEL} (Stok Masuk)</option>
+                  ) : (
+                    <>
+                      <option value="">-- Pilih Jenis Transaksi --</option>
+                      <option value="ORDER">ORDER - Pembelian Customer (Stok Keluar)</option>
+                      <option value="OUTBOUND">OUTBOUND - Keluar Manual / Sample / Non-Bon (Stok Keluar)</option>
+                      <option value="CANCEL">CANCEL - Order Cancel / Batal (Stok Masuk / Kembalikan Stok)</option>
+                      <option value="TRANSFER_MASUK">TRANSFER MASUK - Stok Masuk dari Gudang Utama</option>
+                      <option value="RETUR">RETUR - Retur dari Customer (Stok Masuk)</option>
+                      <option value="SISA_STOK">SISA STOK - Input Sisa Stok Awal {GUDANG_LABEL} (Stok Masuk)</option>
+                      <option value="ADJUSTMENT">ADJUSTMENT - Penyesuaian Stok / Selisih (Penyesuaian)</option>
+                    </>
+                  )}
+                </select>
+                {transactionType && (
+                  <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-700 flex items-center gap-2">
+                    <span className="text-base">
+                      {transactionType === 'ORDER' && '📦'}
+                      {transactionType === 'OUTBOUND' && '📤'}
+                      {transactionType === 'CANCEL' && '↺'}
+                      {transactionType === 'RETUR' && '📥'}
+                      {transactionType === 'TRANSFER_MASUK' && '🚚'}
+                      {transactionType === 'SISA_STOK' && '📥'}
+                      {transactionType === 'ADJUSTMENT' && '⚖️'}
+                    </span>
+                    <span>
+                      {transactionType === 'ORDER' && 'Stok akan berkurang (pembelian customer dari marketplace)'}
+                      {transactionType === 'OUTBOUND' && 'Stok akan berkurang (sample kantor / non-bon / keperluan lain)'}
+                      {transactionType === 'CANCEL' && 'Stok akan bertambah (pembatalan order, stok dikembalikan)'}
+                      {transactionType === 'RETUR' && 'Stok akan bertambah (retur customer dikembalikan ke rak)'}
+                      {transactionType === 'TRANSFER_MASUK' && 'Stok akan bertambah (terima transfer dari gudang utama)'}
+                      {transactionType === 'SISA_STOK' && 'Stok akan diset sebagai stok awal lantai 3'}
+                      {transactionType === 'ADJUSTMENT' && 'Penyesuaian selisih stok fisik vs sistem'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* RIGHT COLUMN: TEXTAREA DATA EXCEL (7 Cols) */}
+            <div className="lg:col-span-7 flex flex-col space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <Upload className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Data Excel (Paste di sini)</span>
+                </label>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${
+                    importText.trim()
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : 'bg-slate-100 text-slate-500 border-slate-200'
+                  }`}>
+                    {importText.trim() ? `${importText.trim().split('\n').filter(Boolean).length} Baris Terdeteksi` : '0 Baris'}
+                  </span>
+                  {importText && (
+                    <button
+                      type="button"
+                      onClick={() => setImportText('')}
+                      className="text-[11px] font-bold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 px-2 py-0.5 rounded-md transition-colors cursor-pointer"
+                    >
+                      Bersihkan
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <textarea
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+                placeholder="Paste data dari Excel di sini (Kolom A: Nama Produk/SKU, Kolom B: Qty)...&#10;Contoh:&#10;SPIDOL-HITAM-12&#9;10&#10;PULPEN-GEL-05&#9;25"
+                rows={10}
+                className="w-full flex-1 min-h-[220px] lg:min-h-[260px] p-3.5 border-2 border-slate-200 hover:border-emerald-300 focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 rounded-2xl font-mono text-xs sm:text-sm text-slate-900 bg-slate-50/50 hover:bg-white focus:bg-white transition-all shadow-inner leading-relaxed"
+              />
+            </div>
+          </div>
+
+          {/* Progress Bar (Visible while importing) */}
+          {isImporting && (
+            <div className="pt-3">
+              <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3.5 shadow-sm space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-blue-900">
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                    Memproses & Menyimpan Data Import...
+                  </span>
+                  <span className="font-mono text-sm">{importProgress}%</span>
+                </div>
+                <div className="w-full bg-blue-200 rounded-full h-2.5 overflow-hidden">
+                  <div
+                    className="bg-blue-600 h-full transition-all duration-300 ease-out"
+                    style={{ width: `${importProgress}%` }}
+                  />
+                </div>
               </div>
             </div>
           )}
 
-          <div className="flex justify-end space-x-3 pt-4">
-            <Button
-              onClick={() => setShowImportModal(false)}
-              variant="secondary"
-              disabled={isImporting}
-            >
-              Batal
-            </Button>
-            <Button
-              onClick={handleImportData}
-              className="bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={isImporting}
-            >
-              {isImporting ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Memproses...
-                </>
+          {/* FIXED ACTION FOOTER (ALWAYS VISIBLE WITHOUT SCROLLING) */}
+          <div className="border-t border-slate-200/80 pt-3 mt-3 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0 bg-white">
+            <div className="text-xs text-slate-500 font-medium hidden sm:block">
+              {importText.trim() ? (
+                <span className="text-emerald-700 font-bold flex items-center gap-1.5">
+                  <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                  Siap diimpor: {importText.trim().split('\n').filter(Boolean).length} baris data
+                </span>
               ) : (
-                <>
-                  <Upload className="h-4 w-4 mr-2" />
-                  Import Data
-                </>
+                'Silakan paste data dan pilih jenis transaksi sebelum submit'
               )}
-            </Button>
+            </div>
+
+            <div className="flex items-center justify-end space-x-3 w-full sm:w-auto">
+              <Button
+                onClick={() => setShowImportModal(false)}
+                variant="secondary"
+                disabled={isImporting}
+                className="px-5 py-2.5 text-xs sm:text-sm font-bold rounded-xl border border-slate-300 hover:bg-slate-100 transition-all cursor-pointer flex-1 sm:flex-initial"
+              >
+                Batal
+              </Button>
+              <Button
+                onClick={handleImportData}
+                disabled={isImporting || !importText.trim() || !transactionType}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-sm px-6 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2 flex-1 sm:flex-initial"
+              >
+                {isImporting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Memproses...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4" />
+                    <span>Import Data</span>
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
         </div>
       </Modal>
