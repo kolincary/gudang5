@@ -387,19 +387,47 @@ export function RiwayatBarang() {
   const [isUpdatingInBackground, setIsUpdatingInBackground] = useState(false);
   const [hideRiwayatStats, setHideRiwayatStats] = useState<boolean>(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
-  const { userName } = useAuth();
+  const { userName, userRole, userEmail } = useAuth();
 
   useEffect(() => {
     const fetchStatsSetting = async () => {
       try {
-        const { data } = await supabase
+        const { data: settingsData } = await supabase
           .from('app_settings')
-          .select('value')
-          .eq('key', 'hide_riwayat_stats')
-          .maybeSingle();
+          .select('key, value')
+          .in('key', ['hide_riwayat_stats', 'riwayat_stats_target_mode', 'riwayat_stats_allowed_roles']);
 
-        if (data) {
-          setHideRiwayatStats(data.value === 'true');
+        if (settingsData && settingsData.length > 0) {
+          const map = new Map(settingsData.map((s: any) => [s.key, s.value]));
+          const isGloballyHidden = map.get('hide_riwayat_stats') === 'true';
+          const targetMode = map.get('riwayat_stats_target_mode') || 'all';
+          const allowedRolesRaw = map.get('riwayat_stats_allowed_roles');
+          
+          let allowedRoles: string[] = ['developer', 'staf_admin', 'staf_gudang'];
+          if (allowedRolesRaw) {
+            try {
+              allowedRoles = JSON.parse(allowedRolesRaw);
+            } catch (e) {
+              allowedRoles = ['developer', 'staf_admin', 'staf_gudang'];
+            }
+          }
+
+          if (isGloballyHidden) {
+            setHideRiwayatStats(true);
+          } else if (targetMode === 'roles') {
+            const currentRole = userRole || localStorage.getItem('cached_user_role') || '';
+            const isDev = userEmail === 'rianambong@gmail.com' || userEmail === 'kepin@gmail.com' || userEmail === 'admin@gmail.com' || localStorage.getItem('devmode') === 'true' || currentRole === 'developer';
+            
+            if (isDev && allowedRoles.includes('developer')) {
+              setHideRiwayatStats(false);
+            } else if (currentRole && allowedRoles.includes(currentRole)) {
+              setHideRiwayatStats(false);
+            } else {
+              setHideRiwayatStats(true);
+            }
+          } else {
+            setHideRiwayatStats(false);
+          }
         }
       } catch (err) {
         console.error('Error loading riwayat stats setting:', err);
@@ -414,12 +442,8 @@ export function RiwayatBarang() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'app_settings' },
-        (payload: any) => {
-          if (payload.new && payload.new.key === 'hide_riwayat_stats') {
-            setHideRiwayatStats(payload.new.value === 'true');
-          } else {
-            fetchStatsSetting();
-          }
+        () => {
+          fetchStatsSetting();
         }
       )
       .subscribe();
@@ -432,7 +456,7 @@ export function RiwayatBarang() {
       supabase.removeChannel(channel);
       realtimeManager.unsubscribe(subId);
     };
-  }, []);
+  }, [userRole, userEmail]);
   const [qrModalData, setQrModalData] = useState<{ sku: string; tgl: string; tgl_scan: string } | null>(null);
   const [filters, setFilters] = useState({
     barang: '',

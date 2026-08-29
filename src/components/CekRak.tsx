@@ -73,7 +73,7 @@ export function CekRak() {
 
     const handleGlobalSearch = async (term: string) => {
         setGlobalSearchTerm(term);
-        if (!term.trim() || term.trim().length < 2) {
+        if (!term.trim() || term.trim().length < 1) {
             setGlobalSearchResults([]);
             setShowGlobalResults(false);
             return;
@@ -83,16 +83,38 @@ export function CekRak() {
         setShowGlobalResults(true);
         try {
             const cleanTerm = term.trim();
+            // Search flexibly across nama_produk, sku, and rak without rigid status restriction
             const { data, error } = await supabase
                 .from('stock_items')
                 .select('*')
-                .ilike('nama_produk', `%${cleanTerm}%`)
-                .eq('status', 'Aktif')
+                .or(`nama_produk.ilike.%${cleanTerm}%,sku.ilike.%${cleanTerm}%,rak.ilike.%${cleanTerm}%`)
+                .neq('status', 'Non-Aktif')
                 .gt('tersedia', 0)
                 .order('nama_produk', { ascending: true })
-                .limit(40);
+                .limit(50);
 
-            if (!error && data) {
+            if (error) {
+                console.warn('Primary global search query failed, attempting fallback...', error);
+                const { data: fallbackData } = await supabase
+                    .from('stock_items')
+                    .select('*')
+                    .ilike('nama_produk', `%${cleanTerm}%`)
+                    .gt('tersedia', 0)
+                    .limit(50);
+                
+                if (fallbackData) {
+                    const aggregatedMap = new Map<string, StockItem>();
+                    fallbackData.forEach((item: StockItem) => {
+                        const key = `${item.nama_produk}-${item.rak}`;
+                        if (aggregatedMap.has(key)) {
+                            aggregatedMap.get(key)!.tersedia += item.tersedia;
+                        } else {
+                            aggregatedMap.set(key, { ...item });
+                        }
+                    });
+                    setGlobalSearchResults(Array.from(aggregatedMap.values()));
+                }
+            } else if (data) {
                 const aggregatedMap = new Map<string, StockItem>();
                 data.forEach((item: StockItem) => {
                     const key = `${item.nama_produk}-${item.rak}`;
@@ -1634,262 +1656,313 @@ export function CekRak() {
     };
 
     return (
-        <div className="flex flex-col min-h-screen relative overflow-hidden bg-gray-50/30">
+        <div className="flex flex-col min-h-screen relative overflow-hidden bg-slate-50/50 font-sans">
             {/* MAIN CONTENT AREA */}
-            <main className="flex-1 flex flex-col relative min-w-0 w-full">
-                {/* PREMIUM IMMERSIVE HEADER */}
-                <div className="flex flex-col mb-8 lg:mb-12">
-                    <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 pt-[80px] lg:pt-0 lg:h-[310px] pb-[40px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
-                        <div className="absolute -top-6 -right-6 text-white opacity-5">
-                            <Search className="w-64 h-64 lg:w-96 lg:h-96" />
-                        </div>
-                        {/* Decorative Floating Shapes */}
-                        <div className="absolute top-10 right-10 w-32 h-32 bg-white/10 rounded-full blur-3xl animate-pulse"></div>
-                        <div className="absolute top-24 left-1/4 w-16 h-16 bg-white/5 border border-white/10 rounded-2xl rotate-[35deg] backdrop-blur-sm hidden lg:block"></div>
-                        <div className="absolute bottom-10 right-1/3 w-12 h-12 bg-white/10 rounded-full border border-white/20 hidden lg:block"></div>
-                        <div className="absolute top-1/2 right-20 w-16 h-16 bg-blue-400/20 rounded-3xl -rotate-12 blur-xl hidden lg:block"></div>
+            <main className="flex-1 flex flex-col relative min-w-0 w-full pb-16">
+                {/* MODERN IMMERSIVE HERO HEADER */}
+                <div className="relative bg-gradient-to-br from-blue-700 via-indigo-700 to-slate-900 text-white pt-6 pb-16 sm:pb-20 px-4 sm:px-8 lg:px-12 shadow-xl shadow-blue-950/10 overflow-hidden">
+                    {/* Subtle Background Glow Elements */}
+                    <div className="absolute -top-12 -right-12 w-96 h-96 bg-blue-500/15 rounded-full blur-3xl pointer-events-none"></div>
+                    <div className="absolute -bottom-8 left-1/3 w-64 h-64 bg-indigo-500/20 rounded-full blur-2xl pointer-events-none"></div>
+                    <div className="absolute top-1/2 right-12 text-white/[0.03] pointer-events-none hidden md:block">
+                        <Search className="w-72 h-72" />
+                    </div>
 
-                        {/* Text Content */}
-                        <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 lg:gap-6 uppercase text-left">
-                            <div className="max-w-2xl">
-                                <div className="flex items-center gap-2 mb-2 lg:mb-3 opacity-90">
-                                    <div className="w-8 h-[2px] bg-white rounded-full"></div>
-                                    <span className="text-[10px] lg:text-[12px] font-black tracking-[0.3em] text-white">Inventory Tool</span>
+                    <div className="max-w-7xl mx-auto relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                        <div>
+                            <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/10 backdrop-blur-md rounded-full border border-white/15 mb-3">
+                                <span className="relative flex h-2 w-2">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                                </span>
+                                <span className="text-[11px] font-black tracking-widest uppercase text-blue-100">
+                                    Inventory Tool • Real-time Monitoring
+                                </span>
+                            </div>
+                            <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-white uppercase flex items-center gap-3">
+                                Cek <span className="text-blue-300">Rak</span>
+                            </h1>
+                            <p className="text-sm sm:text-base text-blue-100/80 font-medium mt-1">
+                                Cek stok fisik, konfirmasi barang, scan barcode, dan cari lokasi produk secara real-time
+                            </p>
+                        </div>
+
+                        {/* Top Stats Overview Pill */}
+                        <div className="flex flex-wrap items-center gap-2.5">
+                            <div className="px-4 py-2.5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/15 flex items-center gap-3 shadow-inner">
+                                <div className="p-2 bg-blue-500/30 rounded-xl">
+                                    <MapPin className="w-4 h-4 text-blue-200" />
                                 </div>
-                                <h1 className="text-[34px] lg:text-[54px] font-black text-white tracking-tight leading-[1.1] mb-2 uppercase">
-                                    Cek <span className="text-blue-200">Rak</span>
-                                </h1>
-                                <div className="text-blue-100/90 font-medium text-[14px] lg:text-[18px] leading-relaxed max-w-[90%] normal-case flex items-center gap-3">
-                                    <div className="px-3 py-1 bg-white/10 rounded-full backdrop-blur-sm border border-white/10 flex items-center gap-2">
-                                        <span className="relative flex h-2.5 w-2.5">
-                                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                                        </span>
-                                        <span className="text-[11px] font-bold tracking-widest uppercase text-white">{items.length} Item</span>
-                                    </div>
-                                    <span className="text-[13px] lg:text-[16px] text-white">Cek isi rak secara real-time</span>
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-blue-200">Total Rak</p>
+                                    <p className="text-lg font-black leading-none text-white">{rackOptions.length} <span className="text-xs font-normal text-blue-200">Lokasi</span></p>
                                 </div>
                             </div>
+                            {lastScanned && (
+                                <div className="px-4 py-2.5 bg-emerald-500/20 backdrop-blur-md rounded-2xl border border-emerald-400/30 flex items-center gap-3 shadow-inner animate-in fade-in">
+                                    <div className="p-2 bg-emerald-500/30 rounded-xl">
+                                        <Package className="w-4 h-4 text-emerald-200" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-emerald-200">Rak Aktif</p>
+                                        <p className="text-lg font-black leading-none text-white">{lastScanned} <span className="text-xs font-normal text-emerald-200">({items.length} item)</span></p>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
 
-                <div className="p-4 lg:p-8 space-y-6 w-full max-w-7xl mx-auto -mt-[30px] lg:-mt-[50px] relative z-20">
+                {/* MAIN CONTENT CONTAINER */}
+                <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 -mt-8 sm:-mt-10 relative z-20 space-y-6">
 
-                    {/* Header Controls: Lokasi Rak & Global Product Search */}
-                    <div className="max-w-3xl mx-auto w-full space-y-4">
-                        {/* Lokasi Rak Selector Card */}
-                        <Card className="rounded-3xl shadow-xl shadow-blue-500/5 border-2 border-blue-100/80 bg-white overflow-hidden">
-                            <CardContent className="p-5 md:p-6">
-                                <div className="flex flex-col gap-4">
-                                    <div className="flex items-center justify-between">
-                                        <label className="text-xs font-black text-blue-900 uppercase tracking-[0.25em] flex items-center gap-2">
-                                            <MapPin className="w-4 h-4 text-blue-600" />
-                                            <span>Filter Lokasi Rak</span>
-                                        </label>
-                                        <span className="text-[10px] font-extrabold text-blue-600 bg-blue-50 border border-blue-100 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                                            {rackOptions.length} Rak Terdaftar
-                                        </span>
-                                    </div>
-                                    
-                                    <form onSubmit={handleSearch} className="flex gap-2.5 items-center">
-                                        <div className="relative flex-1">
-                                            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none z-10">
-                                                <Search className="h-5 w-5 text-blue-600" />
+                    {/* DUAL SEARCH & CONTROL HUB (2 Columns on Desktop) */}
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                        
+                        {/* LEFT COLUMN: RAK SELECTOR (7 Cols on LG) */}
+                        <div className="lg:col-span-7">
+                            <Card className="rounded-3xl shadow-xl shadow-slate-900/5 border border-slate-200/80 bg-white overflow-hidden transition-all duration-300 hover:shadow-2xl hover:border-blue-200">
+                                <CardContent className="p-5 sm:p-6">
+                                    <div className="space-y-4">
+                                        <div className="flex items-center justify-between">
+                                            <label className="text-xs font-black text-slate-800 uppercase tracking-[0.2em] flex items-center gap-2">
+                                                <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
+                                                    <MapPin className="w-4 h-4" />
+                                                </div>
+                                                <span>Filter & Scan Lokasi Rak</span>
+                                            </label>
+                                            <span className="text-[10px] font-extrabold text-blue-700 bg-blue-50 border border-blue-100 px-2.5 py-1 rounded-full uppercase tracking-wider">
+                                                {rackOptions.length} Rak Terdaftar
+                                            </span>
+                                        </div>
+
+                                        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2.5 items-stretch">
+                                            <div className="relative flex-1">
+                                                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none z-10">
+                                                    <Search className="h-5 w-5 text-blue-600" />
+                                                </div>
+                                                <CustomDropdown
+                                                    value={rackId}
+                                                    onChange={(e) => setRackId(e.target.value)}
+                                                    options={rackOptions}
+                                                    placeholder="PILIH ATAU KETIK LOKASI RAK..."
+                                                    className="pl-11 h-12 sm:h-13 text-sm sm:text-base font-black shadow-none w-full border-2 border-slate-200 bg-slate-50/50 hover:bg-white focus-within:border-blue-600 focus-within:ring-4 focus-within:ring-blue-100 rounded-2xl transition-all"
+                                                    showClearButton={true}
+                                                    forceUppercase={true}
+                                                    onOptionSelect={() => {
+                                                        setTimeout(() => {
+                                                            submitButtonRef.current?.click();
+                                                        }, 100);
+                                                    }}
+                                                />
                                             </div>
-                                            <CustomDropdown
-                                                value={rackId}
-                                                onChange={(e) => setRackId(e.target.value)}
-                                                options={rackOptions}
-                                                placeholder="PILIH ATAU KETIK LOKASI RAK..."
-                                                className="pl-11 h-13 text-base md:text-lg font-black shadow-none w-full border-2 border-blue-100 bg-blue-50/30 focus-within:border-blue-600 focus-within:ring-4 focus-within:ring-blue-100 rounded-2xl transition-all"
-                                                showClearButton={true}
-                                                forceUppercase={true}
-                                                onOptionSelect={() => {
-                                                    setTimeout(() => {
-                                                        submitButtonRef.current?.click();
-                                                    }, 100);
-                                                }}
-                                            />
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => setShowScanner(true)}
-                                            className="px-4 py-2 text-blue-600 bg-blue-50 border-2 border-blue-200 rounded-2xl hover:bg-blue-100 active:scale-95 transition-all h-13 flex items-center justify-center shadow-sm shrink-0"
-                                            title="Scan QR / Barcode Kamera"
-                                        >
-                                            <Camera className="h-5 w-5" />
-                                        </button>
-                                        <button
-                                            ref={submitButtonRef}
-                                            type="submit"
-                                            className="px-7 py-2 text-sm font-black text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-2xl shadow-lg shadow-blue-500/25 active:scale-95 transition-all h-13 uppercase tracking-widest shrink-0 flex items-center gap-2"
-                                        >
-                                            <span>CARI</span>
-                                            <ChevronRight className="w-4 h-4" />
-                                        </button>
-                                    </form>
-
-                                    {isDeveloper && (
-                                        <div className="w-full pt-3 border-t border-gray-100 flex justify-center">
-                                            <button
-                                                type="button"
-                                                onClick={() => setShowBulkUnverifyModal(true)}
-                                                className="w-full sm:w-auto px-5 py-2.5 bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-black rounded-xl text-xs uppercase tracking-wider transition-all border border-rose-200 shadow-sm flex items-center justify-center gap-2"
-                                                title="DevMode: Batalkan konfirmasi secara serentak untuk banyak rak terpilih"
-                                            >
-                                                <XCircle className="w-4 h-4 text-rose-600" />
-                                                <span>Batal Konfirmasi Massal (DevMode)</span>
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-                            </CardContent>
-                        </Card>
-
-                        {/* Global Product Search Card (Cari Barang / SKU di Seluruh Rak) */}
-                        <Card className="rounded-3xl shadow-xl shadow-emerald-500/5 border-2 border-emerald-200/80 bg-white overflow-hidden relative">
-                            <CardContent className="p-5 md:p-6">
-                                <div className="space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <label className="text-xs font-black text-emerald-900 uppercase tracking-[0.25em] flex items-center gap-2">
-                                            <SearchCode className="w-4 h-4 text-emerald-600" />
-                                            <span>Cari Barang / SKU (Seluruh Rak)</span>
-                                        </label>
-                                        <span className="text-[10px] font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                                            Cek Lokasi Rak Produk
-                                        </span>
-                                    </div>
-
-                                    <div className="relative w-full">
-                                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none z-10">
-                                            {isGlobalSearching ? (
-                                                <Loader className="h-5 w-5 text-emerald-600 animate-spin" />
-                                            ) : (
-                                                <Search className="h-5 w-5 text-emerald-600" />
-                                            )}
-                                        </div>
-                                        <input
-                                            type="text"
-                                            value={globalSearchTerm}
-                                            onChange={(e) => handleGlobalSearch(e.target.value)}
-                                            onFocus={() => { if (globalSearchResults.length > 0) setShowGlobalResults(true); }}
-                                            placeholder="Ketik SKU / Nama Barang di sini untuk cek posisi raknya..."
-                                            className="w-full pl-11 pr-10 h-13 text-sm md:text-base font-extrabold text-gray-900 placeholder:text-gray-400 border-2 border-emerald-200 focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 rounded-2xl bg-emerald-50/20 transition-all shadow-sm"
-                                        />
-                                        {globalSearchTerm && (
-                                            <button
-                                                type="button"
-                                                onClick={() => handleGlobalSearch('')}
-                                                className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600"
-                                            >
-                                                <X className="h-5 w-5" />
-                                            </button>
-                                        )}
-                                    </div>
-
-                                    {/* Global Search Results List */}
-                                    {showGlobalResults && globalSearchTerm.trim().length >= 2 && (
-                                        <div className="mt-3 bg-white rounded-2xl border-2 border-emerald-200 shadow-2xl overflow-hidden max-h-96 overflow-y-auto divide-y divide-gray-100 animate-in fade-in zoom-in-95 duration-200">
-                                            <div className="p-3 bg-emerald-50/80 border-b border-emerald-100 flex justify-between items-center">
-                                                <span className="text-xs font-black text-emerald-900 uppercase tracking-wider">
-                                                    Ditemukan {globalSearchResults.length} Lokasi Produk
-                                                </span>
+                                            <div className="flex gap-2 shrink-0">
                                                 <button
-                                                    onClick={() => setShowGlobalResults(false)}
-                                                    className="text-xs font-bold text-emerald-700 hover:text-emerald-900"
+                                                    type="button"
+                                                    onClick={() => setShowScanner(true)}
+                                                    className="flex-1 sm:flex-none px-4 py-2 text-blue-600 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 border-2 border-blue-200/80 rounded-2xl active:scale-95 transition-all h-12 sm:h-13 flex items-center justify-center gap-2 shadow-sm font-bold text-xs uppercase tracking-wider"
+                                                    title="Scan QR / Barcode Kamera"
                                                 >
-                                                    Tutup ✕
+                                                    <Camera className="h-5 w-5 text-blue-600" />
+                                                    <span className="sm:hidden">Scan</span>
+                                                </button>
+                                                <button
+                                                    ref={submitButtonRef}
+                                                    type="submit"
+                                                    className="flex-1 sm:flex-none px-6 py-2 text-xs sm:text-sm font-black text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-2xl shadow-lg shadow-blue-500/25 active:scale-95 transition-all h-12 sm:h-13 uppercase tracking-widest flex items-center justify-center gap-2"
+                                                >
+                                                    <span>Cari</span>
+                                                    <ChevronRight className="w-4 h-4" />
                                                 </button>
                                             </div>
+                                        </form>
 
-                                            {globalSearchResults.length === 0 ? (
-                                                <div className="p-6 text-center text-sm font-bold text-gray-500">
-                                                    {isGlobalSearching ? 'Mencari di seluruh rak...' : `Tidak ditemukan produk "${globalSearchTerm}" di rak manapun.`}
+                                        {isDeveloper && (
+                                            <div className="pt-3 border-t border-slate-100 flex justify-center">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowBulkUnverifyModal(true)}
+                                                    className="w-full px-4 py-2.5 bg-rose-50/80 hover:bg-rose-100 text-rose-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-all border border-rose-200/80 shadow-sm flex items-center justify-center gap-2 group"
+                                                    title="DevMode: Batalkan konfirmasi secara serentak untuk banyak rak terpilih"
+                                                >
+                                                    <XCircle className="w-4 h-4 text-rose-600 group-hover:rotate-90 transition-transform duration-200" />
+                                                    <span>Batal Konfirmasi Massal (DevMode)</span>
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </div>
+
+                        {/* RIGHT COLUMN: GLOBAL PRODUCT SEARCH (5 Cols on LG) */}
+                        <div className="lg:col-span-5 relative z-30">
+                            <Card className="rounded-3xl shadow-xl shadow-slate-900/5 border border-slate-200/80 bg-white overflow-visible transition-all duration-300 hover:shadow-2xl hover:border-emerald-200 relative">
+                                <CardContent className="p-5 sm:p-6">
+                                    <div className="space-y-4">
+                                        <div className="flex items-center justify-between">
+                                            <label className="text-xs font-black text-slate-800 uppercase tracking-[0.2em] flex items-center gap-2">
+                                                <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg">
+                                                    <SearchCode className="w-4 h-4" />
                                                 </div>
-                                            ) : (
-                                                globalSearchResults.map((gItem) => (
-                                                    <div
-                                                        key={`${gItem.id}-${gItem.rak}`}
-                                                        className="p-4 hover:bg-emerald-50/40 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
-                                                    >
-                                                        <div className="space-y-1">
-                                                            <h4 className="font-black text-sm text-gray-900 uppercase tracking-tight group-hover:text-emerald-700 transition-colors">
-                                                                {gItem.nama_produk}
-                                                            </h4>
-                                                            <div className="flex flex-wrap items-center gap-2">
-                                                                <span className="px-2.5 py-1 rounded-lg text-xs font-black bg-blue-600 text-white shadow-sm uppercase tracking-wider flex items-center gap-1">
-                                                                    <Package className="w-3.5 h-3.5" />
-                                                                    Rak: {gItem.rak}
-                                                                </span>
-                                                                {gItem.sub_rak && gItem.sub_rak !== gItem.rak && (
-                                                                    <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase">
-                                                                        Sub: {gItem.sub_rak}
-                                                                    </span>
-                                                                )}
-                                                                <span className="text-xs font-bold text-gray-500">
-                                                                    Stok: <strong className="text-emerald-600 font-black">{gItem.tersedia.toLocaleString()}</strong> {gItem.satuan}
-                                                                </span>
-                                                            </div>
-                                                        </div>
+                                                <span>Cari Posisi Barang / SKU</span>
+                                            </label>
+                                            <span className="text-[10px] font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-full uppercase tracking-wider">
+                                                Semua Rak
+                                            </span>
+                                        </div>
 
-                                                        <button
-                                                            onClick={() => handleSelectRackFromSearch(gItem.rak)}
-                                                            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
-                                                        >
-                                                            <span>Buka Rak {gItem.rak}</span>
-                                                            <ChevronRight className="w-4 h-4" />
-                                                        </button>
+                                        <div className="relative w-full">
+                                            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none z-10">
+                                                {isGlobalSearching ? (
+                                                    <Loader className="h-5 w-5 text-emerald-600 animate-spin" />
+                                                ) : (
+                                                    <Search className="h-5 w-5 text-emerald-600" />
+                                                )}
+                                            </div>
+                                            <input
+                                                type="text"
+                                                value={globalSearchTerm}
+                                                onChange={(e) => handleGlobalSearch(e.target.value)}
+                                                onFocus={() => { if (globalSearchResults.length > 0 || globalSearchTerm.trim().length >= 1) setShowGlobalResults(true); }}
+                                                placeholder="Ketik SKU / Nama Barang di sini..."
+                                                className="w-full pl-11 pr-10 h-12 sm:h-13 text-sm font-bold text-slate-900 placeholder:text-slate-400 border-2 border-slate-200 hover:border-emerald-300 focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 rounded-2xl bg-slate-50/50 hover:bg-white transition-all shadow-sm"
+                                            />
+                                            {globalSearchTerm && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleGlobalSearch('')}
+                                                    className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                                                >
+                                                    <div className="p-1 bg-slate-100 rounded-full hover:bg-slate-200 transition-colors">
+                                                        <X className="h-3.5 w-3.5" />
                                                     </div>
-                                                ))
+                                                </button>
                                             )}
                                         </div>
-                                    )}
-                                </div>
-                            </CardContent>
-                        </Card>
+
+                                        {/* Global Search Results List Overlay */}
+                                        {showGlobalResults && globalSearchTerm.trim().length >= 1 && (
+                                            <div className="absolute top-[105%] left-0 right-0 z-[100] bg-white rounded-2xl border-2 border-emerald-300 shadow-2xl overflow-hidden max-h-96 overflow-y-auto divide-y divide-slate-100 animate-in fade-in zoom-in-95 duration-150 ring-8 ring-black/5">
+                                                <div className="p-3 bg-emerald-50/90 border-b border-emerald-100 flex justify-between items-center sticky top-0 backdrop-blur-sm z-10">
+                                                    <span className="text-xs font-black text-emerald-900 uppercase tracking-wider flex items-center gap-1.5">
+                                                        <Package className="w-3.5 h-3.5 text-emerald-600" />
+                                                        Ditemukan {globalSearchResults.length} Lokasi Produk
+                                                    </span>
+                                                    <button
+                                                        onClick={() => setShowGlobalResults(false)}
+                                                        className="text-xs font-black text-emerald-700 hover:text-emerald-900 bg-emerald-100/70 px-2 py-0.5 rounded-lg"
+                                                    >
+                                                        Tutup ✕
+                                                    </button>
+                                                </div>
+
+                                                {globalSearchResults.length === 0 ? (
+                                                    <div className="p-6 text-center text-sm font-bold text-slate-500">
+                                                        {isGlobalSearching ? 'Mencari di seluruh rak...' : `Tidak ditemukan produk "${globalSearchTerm}" di rak manapun.`}
+                                                    </div>
+                                                ) : (
+                                                    globalSearchResults.map((gItem) => (
+                                                        <div
+                                                            key={`${gItem.id}-${gItem.rak}`}
+                                                            className="p-3.5 hover:bg-emerald-50/50 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
+                                                        >
+                                                            <div className="space-y-1">
+                                                                <h4 className="font-black text-xs sm:text-sm text-slate-900 uppercase tracking-tight group-hover:text-emerald-700 transition-colors">
+                                                                    {gItem.nama_produk}
+                                                                </h4>
+                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                    <span className="px-2 py-0.5 rounded-md text-[11px] font-black bg-blue-600 text-white uppercase tracking-wider flex items-center gap-1">
+                                                                        <Package className="w-3 h-3" />
+                                                                        Rak: {gItem.rak}
+                                                                    </span>
+                                                                    {gItem.sub_rak && gItem.sub_rak !== gItem.rak && (
+                                                                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase">
+                                                                            Sub: {gItem.sub_rak}
+                                                                        </span>
+                                                                    )}
+                                                                    <span className="text-xs font-bold text-slate-500">
+                                                                        Stok: <strong className="text-emerald-600 font-black">{gItem.tersedia.toLocaleString()}</strong> {gItem.satuan}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+
+                                                            <button
+                                                                onClick={() => handleSelectRackFromSearch(gItem.rak)}
+                                                                className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-sm hover:shadow transition-all flex items-center justify-center gap-1 shrink-0 cursor-pointer"
+                                                            >
+                                                                <span>Buka Rak</span>
+                                                                <ChevronRight className="w-3.5 h-3.5" />
+                                                            </button>
+                                                        </div>
+                                                    ))
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </div>
                     </div>
 
-                    {/* Content Display */}
+                    {/* ACTIVE RAK DETAIL & ACTION CENTER */}
                     {lastScanned && (
-                        <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
-                                <div className="flex items-center gap-4">
-                                    <div className="w-12 h-12 bg-blue-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-blue-100">
-                                        <Package className="h-6 w-6" />
+                        <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-400">
+                            {/* RAK HERO BAR */}
+                            <div className="bg-white rounded-3xl p-5 sm:p-6 shadow-xl shadow-slate-900/5 border border-slate-200/80 flex flex-col xl:flex-row xl:items-center justify-between gap-5">
+                                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                                    <div className="w-14 h-14 bg-gradient-to-br from-blue-600 to-indigo-700 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/20 shrink-0">
+                                        <Package className="h-7 w-7" />
                                     </div>
-                                    <div>
-                                        <h2 className="text-2xl font-black text-gray-900 tracking-tight leading-none mb-1 uppercase">Rak {lastScanned}</h2>
-                                        <div className="flex items-center gap-2">
-                                            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></span>
-                                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{items.length} Item terdaftar</span>
+                                    <div className="space-y-1.5">
+                                        <div className="flex items-center gap-3">
+                                            <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight uppercase">
+                                                Rak {lastScanned}
+                                            </h2>
+                                            <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-blue-50 text-blue-700 border border-blue-200 uppercase">
+                                                {items.length} Item
+                                            </span>
+                                        </div>
+                                        {/* Status Progress Bar */}
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-36 sm:w-48 h-2 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                                                <div 
+                                                    className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full transition-all duration-500"
+                                                    style={{ width: `${items.length > 0 ? (confirmedCount / items.length) * 100 : 0}%` }}
+                                                />
+                                            </div>
+                                            <span className="text-xs font-bold text-slate-500">
+                                                <strong className="text-emerald-600">{confirmedCount}</strong> / {items.length} Terkonfirmasi ({items.length > 0 ? Math.round((confirmedCount / items.length) * 100) : 0}%)
+                                            </span>
                                         </div>
                                     </div>
                                 </div>
-                                <div className="flex flex-wrap sm:flex-nowrap gap-3 w-full sm:w-auto mt-2 sm:mt-0">
+
+                                {/* ACTION BUTTONS TOOLBAR */}
+                                <div className="flex flex-wrap items-center gap-2.5">
                                     {isAuditMode ? (
                                         <>
                                             <Button
                                                 onClick={openPullModal}
-                                                className="w-full sm:w-auto h-12 px-4 rounded-xl font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg flex items-center justify-center animate-in fade-in zoom-in"
+                                                className="h-11 px-4 rounded-xl font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md flex items-center justify-center text-xs uppercase tracking-wider"
                                             >
-                                                <SearchCode size={18} className="mr-2" />
+                                                <SearchCode size={16} className="mr-1.5" />
                                                 <span>Tarik Barang Fisik</span>
                                             </Button>
                                             <Button
                                                 onClick={handleClearRack}
                                                 disabled={isCompletingAudit}
-                                                className="w-full sm:w-auto h-12 px-4 rounded-xl font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg flex items-center justify-center animate-in fade-in zoom-in"
+                                                className="h-11 px-4 rounded-xl font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-md flex items-center justify-center text-xs uppercase tracking-wider"
                                             >
-                                                {isCompletingAudit ? <Loader className="animate-spin h-5 w-5" /> : <Archive size={18} className="mr-2" />}
-                                                <span className="ml-2">Bersihkan Rak</span>
+                                                {isCompletingAudit ? <Loader className="animate-spin h-4 w-4 mr-1.5" /> : <Archive size={16} className="mr-1.5" />}
+                                                <span>Bersihkan Rak</span>
                                             </Button>
                                             <Button
                                                 variant="outline"
                                                 onClick={() => setIsAuditMode(false)}
-                                                className="w-full sm:w-auto h-12 px-4 rounded-xl font-bold border-red-200 text-red-600 hover:bg-red-50 flex items-center justify-center whitespace-nowrap animate-in fade-in zoom-in"
+                                                className="h-11 px-4 rounded-xl font-bold border-rose-200 text-rose-600 hover:bg-rose-50 flex items-center justify-center text-xs uppercase tracking-wider"
                                             >
-                                                <CheckCircle size={18} className="mr-2 shrink-0" />
+                                                <CheckCircle size={16} className="mr-1.5" />
                                                 <span>Selesai Audit</span>
                                             </Button>
                                         </>
@@ -1897,41 +1970,41 @@ export function CekRak() {
                                         <Button
                                             variant="outline"
                                             onClick={() => setIsAuditMode(true)}
-                                            className="w-full sm:w-auto h-12 px-4 rounded-xl font-bold bg-amber-50 text-amber-600 border border-amber-200 hover:bg-amber-100 shadow-sm flex items-center justify-center"
+                                            className="h-11 px-4 rounded-xl font-bold bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 shadow-sm flex items-center justify-center text-xs uppercase tracking-wider"
                                         >
-                                            <AlertTriangle size={18} className="mr-2" />
+                                            <AlertTriangle size={16} className="mr-1.5 text-amber-600" />
                                             <span>Mulai Susun / Audit</span>
                                         </Button>
                                     )}
+
                                     <Button
                                         onClick={handleConfirmAll}
-                                        className="flex-1 sm:flex-none bg-emerald-600 hover:bg-emerald-700 text-white h-12 px-4 rounded-xl font-bold transition-all shadow-md hover:shadow-lg active:scale-95 flex items-center justify-center order-1 sm:order-none"
+                                        className="h-11 px-4 rounded-xl font-black bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-500/20 active:scale-95 transition-all flex items-center justify-center text-xs uppercase tracking-wider"
                                         title="Konfirmasi seluruh barang di rak ini sekaligus (Memerlukan PIN 1234)"
                                     >
-                                        <CheckCheck className="h-4 w-4 mr-2" />
-                                        Konfirmasi Semua
+                                        <CheckCheck className="h-4 w-4 mr-1.5" />
+                                        <span>Konfirmasi Semua</span>
                                     </Button>
                                     <Button
                                         onClick={() => fetchItems(lastScanned, true)}
-                                        className="flex-1 sm:flex-none bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 h-12 px-4 rounded-xl font-bold transition-all shadow-sm hover:shadow active:scale-95 flex items-center justify-center order-2 sm:order-none"
+                                        className="h-11 px-4 rounded-xl font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 active:scale-95 transition-all flex items-center justify-center text-xs uppercase tracking-wider"
                                     >
-                                        <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
-                                        Refresh
+                                        <RefreshCw className={cn("h-4 w-4 mr-1.5", loading && "animate-spin")} />
+                                        <span>Refresh</span>
                                     </Button>
                                     <Button
                                         onClick={handlePrintBarcode}
-                                        className="flex-1 sm:flex-none bg-blue-600 text-white hover:bg-blue-700 h-12 px-4 rounded-xl font-bold shadow-lg shadow-blue-200 transition-all hover:shadow-xl active:scale-95 flex items-center justify-center order-3 sm:order-none"
+                                        className="h-11 px-4 rounded-xl font-black bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 active:scale-95 transition-all flex items-center justify-center text-xs uppercase tracking-wider"
                                     >
-                                        <QrCode className="h-4 w-4 mr-2" />
-                                        Print QR
+                                        <QrCode className="h-4 w-4 mr-1.5" />
+                                        <span>Print QR</span>
                                     </Button>
                                 </div>
                             </div>
 
-                            {/* ITEM FILTER / SEARCH BAR INSIDE RAK */}
+                            {/* ITEM FILTER & SEARCH BAR INSIDE RAK */}
                             {items.length > 0 && (
-                                <div className="space-y-3.5 bg-white p-4 md:p-5 rounded-2xl border-2 border-blue-100 shadow-md">
-                                    {/* SEARCH INPUT */}
+                                <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/80 shadow-lg shadow-slate-900/5 space-y-3.5">
                                     <div className="relative w-full">
                                         <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none z-10">
                                             <Search className="h-5 w-5 text-blue-600" />
@@ -1941,38 +2014,38 @@ export function CekRak() {
                                             value={itemSearchTerm}
                                             onChange={(e) => setItemSearchTerm(e.target.value)}
                                             placeholder={`Cari Barang / SKU di Rak ${lastScanned}... (${filteredItems.length} dari ${items.length} item)`}
-                                            className="w-full pl-11 pr-11 py-3 bg-white border-2 border-gray-300 rounded-xl text-sm font-bold text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-500/15 shadow-sm transition-all"
+                                            className="w-full pl-11 pr-11 py-3 bg-slate-50 border-2 border-slate-200 focus:border-blue-600 focus:ring-4 focus:ring-blue-100 focus:bg-white rounded-2xl text-sm font-bold text-slate-900 placeholder:text-slate-400 shadow-sm transition-all"
                                         />
                                         {itemSearchTerm && (
                                             <button
                                                 type="button"
                                                 onClick={() => setItemSearchTerm('')}
-                                                className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-red-600 transition-colors"
+                                                className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-rose-600 transition-colors"
                                             >
-                                                <div className="bg-gray-100 hover:bg-red-50 p-1 rounded-full border border-gray-200">
-                                                    <X className="h-4 w-4" />
+                                                <div className="bg-slate-200/70 hover:bg-rose-100 p-1 rounded-full">
+                                                    <X className="h-3.5 w-3.5" />
                                                 </div>
                                             </button>
                                         )}
                                     </div>
 
-                                    {/* RESPONSIVE STATUS FILTER PILLS */}
-                                    <div className="flex items-center gap-2 overflow-x-auto pb-1 pt-0.5 scrollbar-none w-full border-t border-gray-100 pt-3">
+                                    {/* STATUS FILTER PILLS */}
+                                    <div className="flex items-center gap-2 overflow-x-auto pb-1 pt-1 scrollbar-none w-full border-t border-slate-100">
                                         <button
                                             type="button"
                                             onClick={() => setStatusFilter('all')}
                                             className={cn(
-                                                "shrink-0 px-4 py-2 rounded-xl text-xs font-bold transition-all duration-200 flex items-center gap-2 whitespace-nowrap cursor-pointer",
+                                                "shrink-0 px-4 py-2 rounded-xl text-xs font-black transition-all duration-200 flex items-center gap-2 whitespace-nowrap cursor-pointer uppercase tracking-wider",
                                                 statusFilter === 'all'
-                                                    ? "bg-blue-600 text-white shadow-md shadow-blue-500/20 ring-2 ring-blue-600/30"
-                                                    : "bg-gray-100 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900"
+                                                    ? "bg-blue-600 text-white shadow-md shadow-blue-500/20"
+                                                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
                                             )}
                                         >
                                             <Package className="w-3.5 h-3.5" />
                                             <span>Semua</span>
                                             <span className={cn(
                                                 "px-2 py-0.5 rounded-full text-[10px] font-black",
-                                                statusFilter === 'all' ? "bg-white/20 text-white" : "bg-gray-200 text-gray-700"
+                                                statusFilter === 'all' ? "bg-white/20 text-white" : "bg-slate-200 text-slate-700"
                                             )}>
                                                 {items.length}
                                             </span>
@@ -1982,9 +2055,9 @@ export function CekRak() {
                                             type="button"
                                             onClick={() => setStatusFilter('terkonfirmasi')}
                                             className={cn(
-                                                "shrink-0 px-4 py-2 rounded-xl text-xs font-bold transition-all duration-200 flex items-center gap-2 whitespace-nowrap cursor-pointer",
+                                                "shrink-0 px-4 py-2 rounded-xl text-xs font-black transition-all duration-200 flex items-center gap-2 whitespace-nowrap cursor-pointer uppercase tracking-wider",
                                                 statusFilter === 'terkonfirmasi'
-                                                    ? "bg-emerald-600 text-white shadow-md shadow-emerald-500/20 ring-2 ring-emerald-600/30"
+                                                    ? "bg-emerald-600 text-white shadow-md shadow-emerald-500/20"
                                                     : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-100"
                                             )}
                                         >
@@ -1992,7 +2065,7 @@ export function CekRak() {
                                             <span>Terkonfirmasi</span>
                                             <span className={cn(
                                                 "px-2 py-0.5 rounded-full text-[10px] font-black",
-                                                statusFilter === 'terkonfirmasi' ? "bg-white/20 text-white" : "bg-emerald-100 text-emerald-800"
+                                                statusFilter === 'terkonfirmasi' ? "bg-white/20 text-white" : "bg-emerald-200 text-emerald-900"
                                             )}>
                                                 {confirmedCount}
                                             </span>
@@ -2002,9 +2075,9 @@ export function CekRak() {
                                             type="button"
                                             onClick={() => setStatusFilter('belum_terkonfirmasi')}
                                             className={cn(
-                                                "shrink-0 px-4 py-2 rounded-xl text-xs font-bold transition-all duration-200 flex items-center gap-2 whitespace-nowrap cursor-pointer",
+                                                "shrink-0 px-4 py-2 rounded-xl text-xs font-black transition-all duration-200 flex items-center gap-2 whitespace-nowrap cursor-pointer uppercase tracking-wider",
                                                 statusFilter === 'belum_terkonfirmasi'
-                                                    ? "bg-amber-500 text-white shadow-md shadow-amber-500/20 ring-2 ring-amber-500/30"
+                                                    ? "bg-amber-500 text-white shadow-md shadow-amber-500/20"
                                                     : "bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-100"
                                             )}
                                         >
@@ -2012,7 +2085,7 @@ export function CekRak() {
                                             <span>Belum Terkonfirmasi</span>
                                             <span className={cn(
                                                 "px-2 py-0.5 rounded-full text-[10px] font-black",
-                                                statusFilter === 'belum_terkonfirmasi' ? "bg-white/20 text-white" : "bg-amber-100 text-amber-800"
+                                                statusFilter === 'belum_terkonfirmasi' ? "bg-white/20 text-white" : "bg-amber-200 text-amber-900"
                                             )}>
                                                 {unconfirmedCount}
                                             </span>
@@ -2021,86 +2094,122 @@ export function CekRak() {
                                 </div>
                             )}
 
+                            {/* ITEM CARDS LIST / EMPTY STATES */}
                             {items.length === 0 ? (
-                                <Card className="border-dashed border-2 border-gray-200 bg-gray-50/30 rounded-[30px]">
-                                    <CardContent className="flex flex-col items-center justify-center py-20 text-center">
-                                        <div className="w-20 h-20 bg-white border border-gray-100 rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-gray-100 rotate-3">
-                                            <AlertTriangle className="h-10 w-10 text-gray-300" />
+                                <Card className="border-dashed border-2 border-slate-300 bg-white rounded-3xl shadow-sm">
+                                    <CardContent className="flex flex-col items-center justify-center py-16 text-center px-4">
+                                        <div className="w-16 h-16 bg-slate-100 text-slate-400 rounded-3xl flex items-center justify-center mb-4 shadow-inner">
+                                            <AlertTriangle className="h-8 w-8" />
                                         </div>
-                                        <h3 className="text-xl font-black text-gray-900 uppercase tracking-tight">Rak Kosong</h3>
-                                        <p className="text-gray-500 max-w-sm mt-2 font-medium">
-                                            Tidak ada barang yang terdaftar di lokasi rak <strong className="text-blue-600 tracking-widest uppercase">{lastScanned}</strong>.
+                                        <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Rak Ini Kosong</h3>
+                                        <p className="text-slate-500 text-sm max-w-sm mt-1 font-medium">
+                                            Tidak ada barang yang terdaftar di lokasi rak <strong className="text-blue-600 uppercase">{lastScanned}</strong>.
                                         </p>
                                     </CardContent>
                                 </Card>
                             ) : filteredItems.length === 0 ? (
-                                <Card className="border-dashed border-2 border-gray-200 bg-gray-50/30 rounded-[30px]">
-                                    <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-                                        <h3 className="text-lg font-bold text-gray-700">Barang Tidak Ditemukan</h3>
-                                        <p className="text-gray-500 text-xs mt-1">
+                                <Card className="border-dashed border-2 border-slate-300 bg-white rounded-3xl shadow-sm">
+                                    <CardContent className="flex flex-col items-center justify-center py-12 text-center px-4">
+                                        <h3 className="text-base font-bold text-slate-700">Barang Tidak Ditemukan</h3>
+                                        <p className="text-slate-500 text-xs mt-1">
                                             Tidak ada barang yang cocok {itemSearchTerm ? `dengan pencarian "${itemSearchTerm}"` : ''} 
                                             {statusFilter !== 'all' ? ` (Filter: ${statusFilter === 'terkonfirmasi' ? 'Terkonfirmasi' : 'Belum Terkonfirmasi'})` : ''} di Rak {lastScanned}.
                                         </p>
                                     </CardContent>
                                 </Card>
                             ) : (
-                                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 pb-20">
-                                    {filteredItems.map((item) => (
-                                        <Card key={item.id} className="hover:shadow-xl hover:-translate-y-1 transition-all duration-300 border border-gray-100 rounded-3xl overflow-hidden group bg-white">
-                                            <div className="h-1.5 bg-blue-600 w-full group-hover:h-2 transition-all" />
-                                            <CardContent className="p-6">
-                                                <div className="flex justify-between items-start mb-4">
-                                                    <h3 className="font-black text-lg text-gray-900 line-clamp-2 leading-tight min-h-[3rem] uppercase tracking-tight">
-                                                        {item.nama_produk}
-                                                    </h3>
-                                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                                    {filteredItems.map((item) => {
+                                        const isVerified = verifiedIds.has(item.id);
+                                        return (
+                                            <Card 
+                                                key={item.id} 
+                                                className={cn(
+                                                    "transition-all duration-300 rounded-3xl overflow-hidden group bg-white border hover:shadow-xl hover:-translate-y-1 relative flex flex-col justify-between",
+                                                    isVerified 
+                                                        ? "border-emerald-200/80 shadow-md shadow-emerald-900/5" 
+                                                        : "border-slate-200/80 shadow-md shadow-slate-900/5"
+                                                )}
+                                            >
+                                                {/* Top Status Accent Bar */}
+                                                <div className={cn(
+                                                    "h-1.5 w-full transition-all",
+                                                    isVerified ? "bg-emerald-500 group-hover:h-2" : "bg-amber-400 group-hover:h-2"
+                                                )} />
 
-                                                <div className="space-y-4">
-                                                    <div className="grid grid-cols-2 gap-4">
-                                                        <div className="bg-gray-50/50 p-3 rounded-2xl border border-gray-100">
-                                                            <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">Packing</p>
-                                                            <p className="font-bold text-gray-900 truncate">{item.packing || '-'}</p>
+                                                <CardContent className="p-5 flex-1 flex flex-col justify-between space-y-4">
+                                                    <div className="space-y-3">
+                                                        <div className="flex justify-between items-start gap-2">
+                                                            <h3 className="font-black text-base text-slate-900 leading-snug uppercase tracking-tight line-clamp-2">
+                                                                {item.nama_produk}
+                                                            </h3>
+                                                            {isVerified ? (
+                                                                <span className="shrink-0 p-1 bg-emerald-50 text-emerald-600 rounded-lg border border-emerald-100" title="Terkonfirmasi">
+                                                                    <CheckCircle2 className="w-4 h-4" />
+                                                                </span>
+                                                            ) : (
+                                                                <span className="shrink-0 p-1 bg-amber-50 text-amber-600 rounded-lg border border-amber-100" title="Belum Terkonfirmasi">
+                                                                    <AlertTriangle className="w-4 h-4" />
+                                                                </span>
+                                                            )}
                                                         </div>
-                                                        <div className="bg-gray-50/50 p-3 rounded-2xl border border-gray-100">
-                                                            <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">Satuan</p>
-                                                            <p className="font-bold text-gray-900 uppercase">{item.satuan}</p>
+
+                                                        {/* Metadata Badges */}
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
+                                                                <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Packing</p>
+                                                                <p className="font-bold text-xs text-slate-800 truncate">{item.packing || '-'}</p>
+                                                            </div>
+                                                            <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
+                                                                <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">Satuan</p>
+                                                                <p className="font-bold text-xs text-slate-800 uppercase truncate">{item.satuan || '-'}</p>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Stok Tersedia Box */}
+                                                        <div className={cn(
+                                                            "p-3 rounded-2xl border flex items-center justify-between",
+                                                            isVerified ? "bg-emerald-50/40 border-emerald-100" : "bg-blue-50/40 border-blue-100"
+                                                        )}>
+                                                            <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Stok Fisik</span>
+                                                            <div className="flex items-baseline gap-1">
+                                                                <span className={cn(
+                                                                    "text-2xl font-black tracking-tight",
+                                                                    isVerified ? "text-emerald-700" : "text-blue-700"
+                                                                )}>
+                                                                    {item.tersedia.toLocaleString()}
+                                                                </span>
+                                                                <span className="text-[10px] font-extrabold text-slate-500 uppercase">{item.satuan}</span>
+                                                            </div>
                                                         </div>
                                                     </div>
 
-                                                    <div className="bg-blue-50/30 p-4 rounded-2xl border border-blue-50 flex items-center justify-between">
-                                                        <div className="flex flex-col">
-                                                            <span className="text-[9px] font-black text-blue-400 uppercase tracking-[0.2em]">Sisa Stok</span>
-                                                            <div className="flex items-baseline gap-1">
-                                                                <span className="text-3xl font-black text-blue-600 tracking-tighter">
-                                                                    {item.tersedia.toLocaleString()}
-                                                                </span>
-                                                                <span className="text-[10px] font-bold text-blue-400 uppercase">{item.satuan}</span>
-                                                            </div>
-                                                        </div>
-                                                        {verifiedIds.has(item.id) ? (
+                                                    {/* Action Controls */}
+                                                    <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
+                                                        {isVerified ? (
                                                             <button
                                                                 onClick={() => handleMarkAsUnverified(item)}
                                                                 title="Klik untuk Batal Konfirmasi (Memerlukan PIN)"
-                                                                className="h-10 px-4 rounded-xl bg-emerald-100 text-emerald-700 hover:bg-red-100 hover:text-red-700 transition-all flex items-center justify-center font-bold text-xs uppercase tracking-wider group cursor-pointer border border-emerald-200 hover:border-red-200 shadow-sm"
+                                                                className="w-full h-10 px-3 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-rose-50 hover:text-rose-700 transition-all flex items-center justify-center font-black text-xs uppercase tracking-wider group/btn cursor-pointer border border-emerald-200 hover:border-rose-200 shadow-sm"
                                                             >
-                                                                <span className="group-hover:hidden flex items-center">
-                                                                    <CheckCircle2 className="h-4 w-4 mr-1.5 text-emerald-600" />
+                                                                <span className="group-hover/btn:hidden flex items-center gap-1.5">
+                                                                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                                                                     Terkonfirmasi
                                                                 </span>
-                                                                <span className="hidden group-hover:flex items-center text-red-600">
-                                                                    <XCircle className="h-4 w-4 mr-1.5" />
+                                                                <span className="hidden group-hover/btn:flex items-center gap-1.5 text-rose-600 font-black">
+                                                                    <XCircle className="h-4 w-4" />
                                                                     Batal Konfirmasi
                                                                 </span>
                                                             </button>
                                                         ) : (
-                                                            <div className="flex items-center gap-2">
+                                                            <>
                                                                 <button
                                                                     onClick={() => handleMarkAsVerified(item)}
-                                                                    className="h-10 px-4 rounded-xl text-white bg-emerald-600 hover:bg-emerald-700 flex items-center justify-center font-bold text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all"
+                                                                    className="flex-1 h-10 px-3 rounded-xl text-white bg-emerald-600 hover:bg-emerald-700 flex items-center justify-center font-black text-xs uppercase tracking-wider shadow-sm hover:shadow active:scale-95 transition-all gap-1.5"
                                                                     title="Konfirmasi langsung barang di rak ini (Memerlukan PIN 1234)"
                                                                 >
-                                                                    <CheckCircle2 className="h-4 w-4 mr-1.5" />
-                                                                    Konfirmasi
+                                                                    <CheckCircle2 className="h-4 w-4" />
+                                                                    <span>Konfirmasi</span>
                                                                 </button>
                                                                 <button
                                                                     onClick={() => {
@@ -2108,18 +2217,19 @@ export function CekRak() {
                                                                         setMoveData({ rak_tujuan: '', jumlah_pindah: '' });
                                                                         setShowMoveModal(true);
                                                                     }}
-                                                                    className="h-10 px-4 rounded-xl text-white bg-blue-600 hover:bg-blue-700 flex items-center justify-center font-bold text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all"
+                                                                    className="h-10 px-3.5 rounded-xl text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 flex items-center justify-center font-black text-xs uppercase tracking-wider active:scale-95 transition-all gap-1"
+                                                                    title="Pindahkan stok ke rak lain"
                                                                 >
-                                                                    <ArrowRightLeft className="h-4 w-4 mr-1.5" />
-                                                                    Pindah
+                                                                    <ArrowRightLeft className="h-4 w-4" />
+                                                                    <span>Pindah</span>
                                                                 </button>
-                                                            </div>
+                                                            </>
                                                         )}
                                                     </div>
-                                                </div>
-                                            </CardContent>
-                                        </Card>
-                                    ))}
+                                                </CardContent>
+                                            </Card>
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>

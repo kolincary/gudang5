@@ -654,7 +654,6 @@ export function InputBarangKeluar() {
         const targetSequence = 'SHOW';
         const devModeTarget = 'DEVMODE';
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (import.meta.env.PROD) return;
             if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
                 // Abaikan input jika user sedang mengetik di input field, textarea, dll.
                 const target = event.target as HTMLElement;

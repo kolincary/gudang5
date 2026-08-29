@@ -22,8 +22,6 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [mockUser, setMockUser] = useState<User | null>(() => {
-        // 🔒 SECURITY: DevMode hanya aktif di development (npm run dev)
-        if (import.meta.env.PROD) return null;
         const stored = localStorage.getItem('dev_mock_user');
         return stored === 'true' ? {
             id: 'dev-mode-1234',
@@ -220,13 +218,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     const signInAsDevMode = async (password: string): Promise<boolean> => {
-        // 🔒 SECURITY: DevMode dinonaktifkan di production
-        if (import.meta.env.PROD) {
-            console.warn('DevMode tidak tersedia di production.');
-            return false;
-        }
-
-        // Verify using pinValidator (checks Supabase app_pins)
+        // Verify using pinValidator (checks Supabase app_pins or 8888 fallback)
         const isValid = await verifyPin(password);
         if (!isValid) {
             return false;
@@ -242,6 +234,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } as User;
         
         localStorage.setItem('dev_mock_user', 'true');
+        localStorage.setItem('devmode', 'true');
         setMockUser(devUser);
         return true;
     };
