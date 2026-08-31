@@ -77,7 +77,7 @@ export function ManageRoleNotifications() {
                     message: newMessage.trim(),
                     target_role: targetRole,
                     is_active: true,
-                    created_by: userEmail
+                    created_by: userEmail || 'Admin'
                 })
                 .select('*')
                 .single();
@@ -89,9 +89,9 @@ export function ManageRoleNotifications() {
                 fetchNotifications();
             }
             setNewMessage('');
-        } catch (err) {
+        } catch (err: any) {
             console.error('Error creating notification:', err);
-            alert('Gagal membuat notifikasi');
+            alert('Gagal membuat notifikasi: ' + (err?.message || 'Pastikan RLS / Policy di Supabase sudah diizinkan'));
         } finally {
             setIsSubmitting(false);
         }
@@ -116,9 +116,9 @@ export function ManageRoleNotifications() {
                 );
                 throw error;
             }
-        } catch (err) {
+        } catch (err: any) {
             console.error('Error toggling status:', err);
-            alert('Gagal mengubah status');
+            alert('Gagal mengubah status: ' + (err?.message || 'Terjadi kesalahan'));
         }
     };
 
@@ -138,9 +138,9 @@ export function ManageRoleNotifications() {
                 setNotifications(previous);
                 throw error;
             }
-        } catch (err) {
+        } catch (err: any) {
             console.error('Error deleting notification:', err);
-            alert('Gagal menghapus notifikasi');
+            alert('Gagal menghapus notifikasi: ' + (err?.message || 'Terjadi kesalahan'));
         }
     };
 
