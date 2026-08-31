@@ -104,19 +104,19 @@ export function RoleNotificationBlocker() {
 
     if (!activeNotification || !userRole || loading) return null;
 
-    // Render Minimized: Slim Floating Header at the Top
+    // Render Minimized: Slim Floating Header at Top-Right (leaves top-left hamburger menu completely accessible)
     if (isMinimized) {
         return (
-            <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[99999] w-[94%] sm:w-auto max-w-md sm:max-w-xl animate-in slide-in-from-top-3 duration-200">
+            <div className="fixed top-3 right-3 sm:right-6 z-[99999] max-w-[calc(100vw-5.5rem)] sm:max-w-md pointer-events-auto animate-in slide-in-from-top-2 duration-200">
                 <div 
                     onClick={() => setIsMinimized(false)}
-                    className="bg-slate-900/95 hover:bg-slate-900 text-white pl-3.5 pr-2 py-1.5 rounded-full shadow-xl shadow-black/25 border border-slate-700/70 flex items-center gap-2.5 cursor-pointer backdrop-blur-md transition-all hover:scale-[1.01]"
+                    className="bg-slate-900/95 hover:bg-slate-900 text-white pl-3 pr-1.5 py-1 rounded-full shadow-xl shadow-black/25 border border-slate-700/70 flex items-center gap-2 cursor-pointer backdrop-blur-md transition-all hover:scale-[1.01]"
                 >
                     {/* Pulsing indicator tag */}
                     <div className="flex items-center gap-1.5 shrink-0">
                         <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-                        <span className="text-[10px] font-extrabold tracking-wider uppercase text-rose-300 bg-rose-500/20 px-2 py-0.5 rounded-full border border-rose-500/30">
-                            Pemberitahuan
+                        <span className="text-[10px] font-extrabold tracking-wider uppercase text-rose-300 bg-rose-500/20 px-1.5 py-0.5 rounded-full border border-rose-500/30">
+                            Wajib
                         </span>
                     </div>
 
