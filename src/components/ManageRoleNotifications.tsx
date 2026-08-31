@@ -160,7 +160,7 @@ export function ManageRoleNotifications() {
                 </div>
                 <div>
                     <h1 className="text-2xl font-bold text-gray-800">Kelola Notifikasi Wajib (Blocking)</h1>
-                    <p className="text-gray-500 text-sm">Buat notifikasi yang tidak bisa ditutup oleh user sampai admin mematikannya.</p>
+                    <p className="text-gray-500 text-sm">Buat notifikasi pop-up penting ke role target (dapat diminimize oleh user saat bekerja).</p>
                 </div>
             </div>
 
