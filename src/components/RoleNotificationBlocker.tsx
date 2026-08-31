@@ -86,9 +86,9 @@ export function RoleNotificationBlocker() {
             });
 
             if (matchingNotif) {
-                // If this is a new notification or changed notification, reset minimized state so user sees it full screen
+                const isSavedMinimized = localStorage.getItem(`minimized_notif_${matchingNotif.id}`) === 'true';
                 if (matchingNotif.id !== lastNotifIdRef.current) {
-                    setIsMinimized(false);
+                    setIsMinimized(isSavedMinimized);
                     lastNotifIdRef.current = matchingNotif.id;
                 }
                 setActiveNotification(matchingNotif);
@@ -102,6 +102,20 @@ export function RoleNotificationBlocker() {
         }
     };
 
+    const handleMinimize = () => {
+        if (activeNotification) {
+            localStorage.setItem(`minimized_notif_${activeNotification.id}`, 'true');
+        }
+        setIsMinimized(true);
+    };
+
+    const handleMaximize = () => {
+        if (activeNotification) {
+            localStorage.removeItem(`minimized_notif_${activeNotification.id}`);
+        }
+        setIsMinimized(false);
+    };
+
     if (!activeNotification || !userRole || loading) return null;
 
     // Render Minimized: Slim Floating Header at Top-Right (leaves top-left hamburger menu completely accessible)
@@ -109,7 +123,7 @@ export function RoleNotificationBlocker() {
         return (
             <div className="fixed top-3 right-3 sm:right-6 z-[99999] max-w-[calc(100vw-5.5rem)] sm:max-w-md pointer-events-auto animate-in slide-in-from-top-2 duration-200">
                 <div 
-                    onClick={() => setIsMinimized(false)}
+                    onClick={handleMaximize}
                     className="bg-slate-900/95 hover:bg-slate-900 text-white pl-3 pr-1.5 py-1 rounded-full shadow-xl shadow-black/25 border border-slate-700/70 flex items-center gap-2 cursor-pointer backdrop-blur-md transition-all hover:scale-[1.01]"
                 >
                     {/* Pulsing indicator tag */}
@@ -132,7 +146,7 @@ export function RoleNotificationBlocker() {
                         type="button"
                         onClick={(e) => {
                             e.stopPropagation();
-                            setIsMinimized(false);
+                            handleMaximize();
                         }}
                         className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-bold flex items-center gap-1 transition-all shrink-0 hover:scale-105 active:scale-95 cursor-pointer"
                         title="Buka Layar Penuh"
@@ -176,7 +190,7 @@ export function RoleNotificationBlocker() {
                     <div className="flex-shrink-0 flex flex-col gap-2.5">
                         <button
                             type="button"
-                            onClick={() => setIsMinimized(true)}
+                            onClick={handleMinimize}
                             className="w-full py-3 px-5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-md shadow-slate-900/15 active:scale-[0.99] transition-all cursor-pointer"
                         >
                             <Minimize2 className="w-4 h-4 text-slate-300" />
@@ -192,5 +206,6 @@ export function RoleNotificationBlocker() {
         </div>
     );
 }
+
 
 
