@@ -303,12 +303,12 @@ export function CustomDropdown({ value, onChange, options, placeholder, classNam
                 <>
                     {/* Desktop Dropdown */}
                     <div
-                        className={`hidden md:block bg-white border border-gray-300 rounded-md shadow-xl overflow-y-scroll scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 
+                        className={`hidden md:block bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent 
                             ${isInTable
                                 ? ''
-                                : `absolute left-0 right-0 z-50 max-h-60 ${dropdownPosition === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`
+                                : `absolute left-0 right-0 z-[100] max-h-72 ${dropdownPosition === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'}`
                             }`}
-                        style={isInTable ? { ...dropdownStyle, maxHeight: '240px', overflowY: 'scroll' } : { zIndex: 9999 }}
+                        style={isInTable ? { ...dropdownStyle, maxHeight: '240px', overflowY: 'auto' } : { zIndex: 9999 }}
                     >
                         {filteredOptions.length > 0 ? (
                             filteredOptions.map((option, index) => (
@@ -316,16 +316,16 @@ export function CustomDropdown({ value, onChange, options, placeholder, classNam
                                     ref={el => optionRefs.current[index] = el}
                                     key={index}
                                     onClick={() => handleOptionSelect(option, false)}
-                                    className={`px-3 py-2 text-sm cursor-pointer border-b border-gray-100 last:border-b-0 transition-colors ${index === highlightedIndex
-                                        ? 'bg-blue-500 text-white font-medium'
-                                        : 'hover:bg-blue-50 hover:text-blue-700'
+                                    className={`px-4 py-3 text-sm cursor-pointer border-b border-slate-100 last:border-b-0 transition-colors font-medium ${index === highlightedIndex
+                                        ? 'bg-blue-600 text-white font-bold'
+                                        : 'hover:bg-blue-50 hover:text-blue-700 text-slate-800'
                                         }`}
                                 >
                                     {option}
                                 </div>
                             ))
                         ) : (
-                            <div className="px-3 py-2 text-sm text-gray-500">
+                            <div className="px-4 py-3 text-sm text-slate-400 italic text-center">
                                 Tidak ada data yang cocok
                             </div>
                         )}

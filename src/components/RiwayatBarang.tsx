@@ -1328,24 +1328,37 @@ export function RiwayatBarang() {
       const day = String(currentDate.getDate()).padStart(2, '0');
       const month = String(currentDate.getMonth() + 1).padStart(2, '0');
       const year = currentDate.getFullYear();
+      const shortYear = String(year).slice(-2);
+      const rawDay = String(currentDate.getDate());
+      const rawMonth = String(currentDate.getMonth() + 1);
 
       // Push ALL potential formats that might constitute "this date" in the DB
-      dates.push(`${day}/${month}/${year}`); // Legacy format
-      dates.push(`${year}-${month}-${day}`); // New format (InputBarangMasuk)
+      dates.push(`${day}/${month}/${year}`); // 25/08/2026
+      dates.push(`${year}-${month}-${day}`); // 2026-08-25
+      dates.push(`${day}-${month}-${year}`); // 25-08-2026
+      dates.push(`${year}/${month}/${day}`); // 2026/08/25
+      dates.push(`${rawDay}/${rawMonth}/${year}`); // 25/8/2026
+      dates.push(`${rawDay}-${rawMonth}-${year}`); // 25-8-2026
+      dates.push(`${year}-${rawMonth}-${rawDay}`); // 2026-8-25
+      dates.push(`${day}/${month}/${shortYear}`); // 25/08/26
+      dates.push(`${day}-${month}-${shortYear}`); // 25-08-26
 
       currentDate.setDate(currentDate.getDate() + 1);
     }
-    return dates;
+    return Array.from(new Set(dates));
   };
 
   const loadHistoryData = useCallback(async () => {
-    if (!filters.tanggal_awal || !filters.tanggal_akhir) {
+    const effectiveStart = filters.tanggal_awal || filters.tanggal_akhir;
+    const effectiveEnd = filters.tanggal_akhir || filters.tanggal_awal;
+
+    if (!effectiveStart || !effectiveEnd) {
       return;
     }
     try {
       setLoading(true);
-      const startDate = parseDateFlexible(filters.tanggal_awal);
-      const endDate = parseDateFlexible(filters.tanggal_akhir);
+      const startDate = parseDateFlexible(effectiveStart);
+      const endDate = parseDateFlexible(effectiveEnd);
       if (!startDate || !endDate) {
         showToast('Format tanggal tidak valid. Gunakan format DD/MM/YYYY, DD-MM-YYYY, atau YYYY-MM-DD', 'error');
         return;
@@ -1433,15 +1446,18 @@ export function RiwayatBarang() {
   }, [filters, currentPage, itemsPerPage]);
 
   const fetchAllHistoryData = useCallback(async () => {
-    if (!filters.tanggal_awal || !filters.tanggal_akhir) {
+    const effectiveStart = filters.tanggal_awal || filters.tanggal_akhir;
+    const effectiveEnd = filters.tanggal_akhir || filters.tanggal_awal;
+
+    if (!effectiveStart || !effectiveEnd) {
       return [];
     }
 
     // Show toast for transparency
     showToast('Sedang menyiapkan data export...', 'info');
 
-    const startDate = parseDateFlexible(filters.tanggal_awal);
-    const endDate = parseDateFlexible(filters.tanggal_akhir);
+    const startDate = parseDateFlexible(effectiveStart);
+    const endDate = parseDateFlexible(effectiveEnd);
     if (!startDate || !endDate) return [];
 
     const dateList = getDatesInRange(startDate, endDate);
@@ -1519,7 +1535,7 @@ export function RiwayatBarang() {
   }, [currentPage, loadHistoryData]);
 
   useEffect(() => {
-    if (filters.tanggal_awal && filters.tanggal_akhir) {
+    if (filters.tanggal_awal || filters.tanggal_akhir) {
       loadHistoryData();
     } else {
       setHistoryData([]);

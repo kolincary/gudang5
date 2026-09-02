@@ -1659,56 +1659,68 @@ export function CekRak() {
         <div className="flex flex-col min-h-screen relative overflow-hidden bg-slate-50/50 font-sans">
             {/* MAIN CONTENT AREA */}
             <main className="flex-1 flex flex-col relative min-w-0 w-full pb-16">
-                {/* MODERN IMMERSIVE HERO HEADER */}
-                <div className="relative bg-gradient-to-br from-blue-700 via-indigo-700 to-slate-900 text-white pt-6 pb-16 sm:pb-20 px-4 sm:px-8 lg:px-12 shadow-xl shadow-blue-950/10 overflow-hidden">
-                    {/* Subtle Background Glow Elements */}
-                    <div className="absolute -top-12 -right-12 w-96 h-96 bg-blue-500/15 rounded-full blur-3xl pointer-events-none"></div>
-                    <div className="absolute -bottom-8 left-1/3 w-64 h-64 bg-indigo-500/20 rounded-full blur-2xl pointer-events-none"></div>
-                    <div className="absolute top-1/2 right-12 text-white/[0.03] pointer-events-none hidden md:block">
-                        <Search className="w-72 h-72" />
-                    </div>
+                {/* ======================================================== */}
+                {/* PREMIUM RESPONSIVE HEADER & ACTIONS (Mobile & Desktop) */}
+                {/* ======================================================== */}
+                <div className="flex flex-col mb-8 lg:mb-12">
+                    {/* Full Immersive Background Banner with Floating Shapes */}
+                    <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 pt-[80px] lg:pt-0 lg:h-[310px] pb-[40px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/20 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
-                    <div className="max-w-7xl mx-auto relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                        <div>
-                            <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/10 backdrop-blur-md rounded-full border border-white/15 mb-3">
-                                <span className="relative flex h-2 w-2">
-                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
-                                </span>
-                                <span className="text-[11px] font-black tracking-widest uppercase text-blue-100">
-                                    Inventory Tool • Real-time Monitoring
-                                </span>
-                            </div>
-                            <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-white uppercase flex items-center gap-3">
-                                Cek <span className="text-blue-300">Rak</span>
-                            </h1>
-                            <p className="text-sm sm:text-base text-blue-100/80 font-medium mt-1">
-                                Cek stok fisik, konfirmasi barang, scan barcode, dan cari lokasi produk secara real-time
-                            </p>
+                        {/* Decorative Background Icon */}
+                        <div className="absolute -top-6 -right-6 text-white opacity-5">
+                            <MapPin className="w-64 h-64 lg:w-96 lg:h-96" />
                         </div>
 
-                        {/* Top Stats Overview Pill */}
-                        <div className="flex flex-wrap items-center gap-2.5">
-                            <div className="px-4 py-2.5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/15 flex items-center gap-3 shadow-inner">
-                                <div className="p-2 bg-blue-500/30 rounded-xl">
-                                    <MapPin className="w-4 h-4 text-blue-200" />
+                        {/* Decorative Floating Shapes */}
+                        <div className="absolute top-10 right-10 w-32 h-32 bg-white/10 rounded-full blur-3xl animate-pulse"></div>
+                        <div className="absolute top-24 left-1/4 w-16 h-16 bg-white/5 border border-white/10 rounded-2xl rotate-[35deg] backdrop-blur-sm hidden lg:block"></div>
+                        <div className="absolute bottom-10 right-1/3 w-12 h-12 bg-white/10 rounded-full border border-white/20 hidden lg:block"></div>
+                        <div className="absolute top-1/2 right-20 w-16 h-16 bg-blue-400/20 rounded-3xl -rotate-12 blur-xl hidden lg:block"></div>
+
+                        {/* Text Content */}
+                        <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 lg:gap-6 uppercase">
+                            <div className="max-w-2xl">
+                                <div className="flex items-center gap-2 mb-2 lg:mb-3 opacity-90">
+                                    <div className="w-8 h-[2px] bg-white rounded-full"></div>
+                                    <span className="text-[10px] lg:text-[12px] font-black tracking-[0.3em] text-white">Inventory Tool V5</span>
                                 </div>
-                                <div>
-                                    <p className="text-[10px] font-black uppercase tracking-wider text-blue-200">Total Rak</p>
-                                    <p className="text-lg font-black leading-none text-white">{rackOptions.length} <span className="text-xs font-normal text-blue-200">Lokasi</span></p>
+                                <h1 className="text-[34px] lg:text-[54px] font-black text-white tracking-tight leading-[1.1] mb-2 uppercase">
+                                    Cek <span className="text-blue-200">Rak</span>
+                                </h1>
+                                <div className="text-blue-100/90 font-medium text-[14px] lg:text-[18px] leading-relaxed max-w-[90%] normal-case">
+                                    <div className="flex items-center gap-3">
+                                        <span className="relative flex h-3 w-3">
+                                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                            <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                                        </span>
+                                        <span><span className="font-black text-white">Real-Time Monitoring</span> — Cek stok fisik, konfirmasi barang, scan barcode, dan cari lokasi produk</span>
+                                    </div>
                                 </div>
                             </div>
-                            {lastScanned && (
-                                <div className="px-4 py-2.5 bg-emerald-500/20 backdrop-blur-md rounded-2xl border border-emerald-400/30 flex items-center gap-3 shadow-inner animate-in fade-in">
-                                    <div className="p-2 bg-emerald-500/30 rounded-xl">
-                                        <Package className="w-4 h-4 text-emerald-200" />
+
+                            {/* Top Stats Overview Pill */}
+                            <div className="flex flex-wrap items-center gap-2.5">
+                                <div className="px-5 py-3 bg-white/10 backdrop-blur-md rounded-2xl border border-white/15 flex items-center gap-3 shadow-inner">
+                                    <div className="p-2.5 bg-blue-500/30 rounded-xl">
+                                        <MapPin className="w-5 h-5 text-blue-200" />
                                     </div>
                                     <div>
-                                        <p className="text-[10px] font-black uppercase tracking-wider text-emerald-200">Rak Aktif</p>
-                                        <p className="text-lg font-black leading-none text-white">{lastScanned} <span className="text-xs font-normal text-emerald-200">({items.length} item)</span></p>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-blue-200">Total Rak</p>
+                                        <p className="text-xl font-black leading-none text-white">{rackOptions.length} <span className="text-xs font-normal text-blue-200">Lokasi</span></p>
                                     </div>
                                 </div>
-                            )}
+                                {lastScanned && (
+                                    <div className="px-5 py-3 bg-emerald-500/20 backdrop-blur-md rounded-2xl border border-emerald-400/30 flex items-center gap-3 shadow-inner animate-in fade-in">
+                                        <div className="p-2.5 bg-emerald-500/30 rounded-xl">
+                                            <Package className="w-5 h-5 text-emerald-200" />
+                                        </div>
+                                        <div>
+                                            <p className="text-[10px] font-black uppercase tracking-wider text-emerald-200">Rak Aktif</p>
+                                            <p className="text-xl font-black leading-none text-white">{lastScanned} <span className="text-xs font-normal text-emerald-200">({items.length} item)</span></p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1720,9 +1732,9 @@ export function CekRak() {
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
                         
                         {/* LEFT COLUMN: RAK SELECTOR (7 Cols on LG) */}
-                        <div className="lg:col-span-7">
-                            <Card className="rounded-3xl shadow-xl shadow-slate-900/5 border border-slate-200/80 bg-white overflow-hidden transition-all duration-300 hover:shadow-2xl hover:border-blue-200">
-                                <CardContent className="p-5 sm:p-6">
+                        <div className="lg:col-span-7 relative z-40">
+                            <Card className="rounded-3xl shadow-xl shadow-slate-900/5 border border-slate-200/80 bg-white overflow-visible transition-all duration-300 hover:shadow-2xl hover:border-blue-200 relative">
+                                <CardContent className="p-5 sm:p-6 overflow-visible">
                                     <div className="space-y-4">
                                         <div className="flex items-center justify-between">
                                             <label className="text-xs font-black text-slate-800 uppercase tracking-[0.2em] flex items-center gap-2">

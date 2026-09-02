@@ -67,39 +67,65 @@ export const getExportHistory = async (
   endDate?: string
 ) => {
   try {
-    let q = query(collection(db, 'export_history'), orderBy('timestamp', 'desc'));
-
-    // Filter tanggal spesifik
-    if (startDate && startDate === endDate) {
-      q = query(collection(db, 'export_history'), where('tanggal', '==', startDate), orderBy('timestamp', 'desc'));
-    } else if (startDate && endDate) {
-      q = query(collection(db, 'export_history'), where('tanggal', '>=', startDate), where('tanggal', '<=', endDate), orderBy('timestamp', 'desc'));
-    }
-
-    q = query(q, limit(pageSize));
-
-    if (lastDoc) {
-      q = query(q, startAfter(lastDoc));
-    }
+    // Query ordered by timestamp desc without compound where clauses that require composite index
+    const q = query(
+      collection(db, 'export_history'),
+      orderBy('timestamp', 'desc'),
+      limit(startDate ? 300 : pageSize)
+    );
 
     const snapshot = await getDocs(q);
-    const data: ExportHistoryData[] = [];
+    let rawData: ExportHistoryData[] = [];
     
     snapshot.forEach(doc => {
-      data.push({ id: doc.id, ...doc.data() } as ExportHistoryData);
+      rawData.push({ id: doc.id, ...doc.data() } as ExportHistoryData);
     });
 
+    // Flexible Filter Function
+    if (startDate) {
+      const cleanStartDate = startDate.trim();
+
+      // Check if item date matches or contains date filter
+      rawData = rawData.filter(item => {
+        const itemTanggal = (item.tanggal || '').trim();
+        const itemCreatedDate = item.timestamp ? new Date(item.timestamp).toISOString().split('T')[0] : '';
+        const itemFormattedDate = item.timestamp ? new Date(item.timestamp).toLocaleDateString('id-ID', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-') : '';
+
+        // Formats to match: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY
+        const parts = cleanStartDate.split('-');
+        let indoStartDate = '';
+        let dashIndoStartDate = '';
+        if (parts.length === 3) {
+          const [sy, sm, sd] = parts;
+          indoStartDate = `${sd}/${sm}/${sy}`;
+          dashIndoStartDate = `${sd}-${sm}-${sy}`;
+        }
+
+        const matchesTanggal = 
+          itemTanggal.includes(cleanStartDate) ||
+          (indoStartDate && itemTanggal.includes(indoStartDate)) ||
+          (dashIndoStartDate && itemTanggal.includes(dashIndoStartDate));
+
+        const matchesTimestamp = 
+          itemCreatedDate === cleanStartDate ||
+          (dashIndoStartDate && itemFormattedDate === dashIndoStartDate);
+
+        return matchesTanggal || matchesTimestamp;
+      });
+    }
+
+    const paginatedData = startDate ? rawData.slice(0, pageSize) : rawData;
     const newLastDoc = snapshot.docs.length > 0 ? snapshot.docs[snapshot.docs.length - 1] : null;
 
     return { 
-      data, 
+      data: paginatedData, 
       lastDoc: newLastDoc, 
-      hasMore: snapshot.docs.length === pageSize,
+      hasMore: startDate ? rawData.length > pageSize : snapshot.docs.length === pageSize,
       firstDoc: snapshot.docs.length > 0 ? snapshot.docs[0] : null
     };
   } catch (error) {
     console.error("Error getting export history:", error);
-    throw error;
+    return { data: [], lastDoc: null, hasMore: false, firstDoc: null };
   }
 };
 
