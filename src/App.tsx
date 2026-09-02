@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './lib/AuthContext';
 import { LoginPage } from './components/LoginPage';
 import { Layout } from './components/Layout';
 import { Dashboard } from './components/Dashboard';
+import { KonversiPCS } from './components/KonversiPCS';
 import { InputBarangMasuk } from './components/InputBarangMasuk';
 import { InputBarangKeluar } from './components/InputBarangKeluar';
 
@@ -90,6 +91,7 @@ function AuthenticatedApp() {
       <Layout>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/konversi-pcs" element={<KonversiPCS />} />
           <Route path="/input-masuk" element={<InputBarangMasuk />} />
           <Route path="/input-keluar" element={<InputBarangKeluar />} />
           <Route path="/monitoring-harian" element={<DailyMonitoring />} />

@@ -21,11 +21,13 @@ import {
   Users,
   Activity,
   Ban,
-  Upload
+  Upload,
+  Calculator
 } from 'lucide-react';
 
 export const navigationItems = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Konversi PCS', href: '/konversi-pcs', icon: Calculator },
   { name: 'Stok Lantai 3', href: '/stok-lantai-3', icon: Building },
   { name: 'Monitoring Harian', href: '/monitoring-harian', icon: Activity },
   { name: 'Input Barang Masuk', href: '/input-masuk', icon: Package },

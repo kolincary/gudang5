@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
-import { Building, Download, Upload, FileSpreadsheet, History, Package, TrendingDown, Search, Calendar, X, XCircle, RefreshCw, Loader2, Filter, ChevronLeft, ChevronRight, Trash2, Lock, Copy, CheckSquare, FileText, CheckCircle, Layers } from 'lucide-react';
+import { Building, Download, Upload, FileSpreadsheet, History, Package, TrendingDown, Search, Calendar, X, XCircle, RefreshCw, Loader2, Filter, ChevronLeft, ChevronRight, Trash2, Lock, Copy, CheckSquare, FileText, CheckCircle, Layers, Calculator, Sparkles } from 'lucide-react';
 import { verifyPin } from '../lib/pinValidator';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
@@ -10,6 +10,7 @@ import { useAuth } from '../lib/AuthContext';
 import { DatabaseService } from '../lib/DatabaseService';
 import { db } from '../lib/firebase';
 import { collection, getDocs, onSnapshot, doc, writeBatch, getDoc, increment, deleteField, query, where, deleteDoc } from 'firebase/firestore';
+import { skuConversionService } from '../services/skuConversionService';
 
 interface StokLantai3Item {
   id: string;
@@ -1031,12 +1032,43 @@ export function StokLantai3() {
         return;
       }
 
-      // Aggregate duplicate SKUs to avoid batch conflicts
-      const aggregatedItems = new Map<string, number>();
+      // Step 1: Subtotal / Aggregate duplicate raw SKUs from pasted input
+      const initialAggregated = new Map<string, number>();
       items.forEach(item => {
-        aggregatedItems.set(item.nama_produk, (aggregatedItems.get(item.nama_produk) || 0) + item.qty);
+        const cleanSku = item.nama_produk.trim();
+        initialAggregated.set(cleanSku, (initialAggregated.get(cleanSku) || 0) + item.qty);
       });
-      const uniqueItems = Array.from(aggregatedItems.entries()).map(([nama_produk, qty]) => ({ nama_produk, qty }));
+
+      // Step 2: Fetch active conversion rules from Konversi PCS
+      const allConversions = await skuConversionService.fetchConversions();
+      const conversionMap = new Map<string, { sku_pcs: string; qty: number }>();
+      allConversions.forEach(c => {
+        if (c.sku_konversi && c.sku_pcs) {
+          conversionMap.set(c.sku_konversi.trim().toLowerCase(), {
+            sku_pcs: c.sku_pcs.trim(),
+            qty: Number(c.qty) || 1
+          });
+        }
+      });
+
+      // Step 3: Match against Konversi PCS and multiply qty
+      // Step 4: Re-aggregate into clean final PCS / SKU items
+      const finalAggregated = new Map<string, number>();
+      let convertedCount = 0;
+
+      initialAggregated.forEach((rawQty, rawSku) => {
+        const conv = conversionMap.get(rawSku.toLowerCase());
+        if (conv && conv.sku_pcs && conv.qty > 0) {
+          const targetSku = conv.sku_pcs;
+          const convertedQty = rawQty * conv.qty;
+          finalAggregated.set(targetSku, (finalAggregated.get(targetSku) || 0) + convertedQty);
+          convertedCount++;
+        } else {
+          finalAggregated.set(rawSku, (finalAggregated.get(rawSku) || 0) + rawQty);
+        }
+      });
+
+      const uniqueItems = Array.from(finalAggregated.entries()).map(([nama_produk, qty]) => ({ nama_produk, qty }));
 
       const typeConfig = {
         'ORDER': { multiplier: -1, outKey: 'out' as const, label: 'Order Keluar' },
@@ -2062,28 +2094,28 @@ export function StokLantai3() {
         isOpen={showImportModal}
         onClose={() => !isImporting && setShowImportModal(false)}
         title={activeTab === 'lantai3' ? 'Import Order Keluar' : 'Import Stok Bundling'}
-        size="5xl"
+        size="6xl"
       >
-        <div className="flex flex-col max-h-[80vh]">
+        <div className="flex flex-col max-h-[85vh]">
           {/* Main 2-Column Responsive Body */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 overflow-y-auto pr-1 pb-1">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 overflow-y-auto p-1 pb-2">
             {/* LEFT COLUMN: PANDUAN & PENGATURAN TRANSAKSI (5 Cols) */}
             <div className="lg:col-span-5 space-y-4">
               {/* Petunjuk Import Box */}
               <div className="bg-gradient-to-br from-blue-50 via-indigo-50/50 to-blue-50/80 border border-blue-200/90 rounded-2xl p-4 shadow-sm space-y-2.5">
                 <div className="flex items-center gap-2">
-                  <div className="p-1 bg-blue-600 text-white rounded-lg">
-                    <FileText className="w-3.5 h-3.5" />
+                  <div className="p-1.5 bg-blue-600 text-white rounded-lg shadow-sm">
+                    <FileText className="w-4 h-4" />
                   </div>
                   <h4 className="font-bold text-xs sm:text-sm text-blue-950 uppercase tracking-wide">
                     Panduan Format Excel
                   </h4>
                 </div>
                 
-                <ul className="text-xs text-blue-900/90 space-y-1.5 leading-relaxed list-disc list-inside font-medium">
+                <ul className="text-xs text-blue-900/90 space-y-2 leading-relaxed list-disc list-inside font-medium">
                   <li>Pilih <strong>Jenis Transaksi</strong> dan <strong>Tanggal</strong> yang sesuai.</li>
                   <li>Copy data Excel format: <strong>Kolom A (Nama Produk/SKU)</strong> & <strong>Kolom B (Qty)</strong>.</li>
-                  <li><span className="text-red-600 font-bold">Tidak perlu konversi box & pcs</span>, biarkan terpisah apa adanya dari Excel.</li>
+                  <li><span className="text-emerald-700 font-bold">Otomatis Konversi PCS:</span> Nama SKU Pack/Box akan otomatis dicocokkan ke menu <strong>Konversi PCS</strong>, dikalikan pengali, dan di-subtotal ke SKU PCS tujuan.</li>
                   <li>Nama produk yang sama akan <strong className="text-blue-700">otomatis di-subtotal</strong> (dijumlahkan qty-nya).</li>
                 </ul>
               </div>
@@ -2194,9 +2226,9 @@ export function StokLantai3() {
               <textarea
                 value={importText}
                 onChange={(e) => setImportText(e.target.value)}
-                placeholder="Paste data dari Excel di sini (Kolom A: Nama Produk/SKU, Kolom B: Qty)...&#10;Contoh:&#10;SPIDOL-HITAM-12&#9;10&#10;PULPEN-GEL-05&#9;25"
-                rows={10}
-                className="w-full flex-1 min-h-[220px] lg:min-h-[260px] p-3.5 border-2 border-slate-200 hover:border-emerald-300 focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 rounded-2xl font-mono text-xs sm:text-sm text-slate-900 bg-slate-50/50 hover:bg-white focus:bg-white transition-all shadow-inner leading-relaxed"
+                placeholder="Paste data dari Excel di sini (Kolom A: Nama Produk/SKU, Kolom B: Qty)...&#10;Contoh:&#10;BOOK-1PACK/CLBK-3501&#9;2&#10;BAG-DCB/32/BILL&#9;23&#10;BOOK-1PACK/CLBK-3501&#9;1&#10;BOOK-CLBK-3501/1PC&#9;7"
+                rows={12}
+                className="w-full flex-1 min-h-[280px] lg:min-h-[330px] p-4 border-2 border-slate-200 hover:border-emerald-300 focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 rounded-2xl font-mono text-xs sm:text-sm text-slate-900 bg-slate-50/50 hover:bg-white focus:bg-white transition-all shadow-inner leading-relaxed"
               />
             </div>
           </div>
@@ -2208,7 +2240,7 @@ export function StokLantai3() {
                 <div className="flex items-center justify-between text-xs font-bold text-blue-900">
                   <span className="flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-                    Memproses & Menyimpan Data Import...
+                    Memproses, Mengonversi & Menyimpan Data Import...
                   </span>
                   <span className="font-mono text-sm">{importProgress}%</span>
                 </div>
@@ -2223,12 +2255,12 @@ export function StokLantai3() {
           )}
 
           {/* FIXED ACTION FOOTER (ALWAYS VISIBLE WITHOUT SCROLLING) */}
-          <div className="border-t border-slate-200/80 pt-3 mt-3 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0 bg-white">
+          <div className="border-t border-slate-200/80 pt-3.5 mt-3 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0 bg-white">
             <div className="text-xs text-slate-500 font-medium hidden sm:block">
               {importText.trim() ? (
                 <span className="text-emerald-700 font-bold flex items-center gap-1.5">
                   <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                  Siap diimpor: {importText.trim().split('\n').filter(Boolean).length} baris data
+                  Siap diimpor: {importText.trim().split('\n').filter(Boolean).length} baris data (Otomatis Dikonversi & Disubtotal)
                 </span>
               ) : (
                 'Silakan paste data dan pilih jenis transaksi sebelum submit'

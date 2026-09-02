@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { X, RefreshCw, Search, Package } from 'lucide-react';
+import { X, RefreshCw, Search, Package, Calculator, Sparkles, Tag, AlertTriangle } from 'lucide-react';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { StockTableSkeleton } from './ui/SkeletonLoader';
@@ -7,6 +7,7 @@ import { supabase, fetchAllStockItems, warmupConnection } from '../lib/supabase'
 import { queryOptimizer } from '../lib/queryOptimizer';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { DatabaseService } from '../lib/DatabaseService';
+import { skuConversionService, SKUConversion } from '../services/skuConversionService';
 
 // Cache untuk optimasi performa
 const CACHE_PRODUCTS_KEY = 'dashboard_products_cache';
@@ -206,6 +207,19 @@ export function Dashboard() {
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [totalProductStock, setTotalProductStock] = useState<number>(0);
+  const [conversions, setConversions] = useState<SKUConversion[]>(() => skuConversionService.getCachedConversions());
+
+  // Check if the currently searched product has a registered conversion rule
+  const activeConversion = useMemo(() => {
+    if (!selectedProduct) return null;
+    const clean = selectedProduct.trim().toLowerCase();
+    return conversions.find(c => c.sku_konversi.trim().toLowerCase() === clean) || null;
+  }, [selectedProduct, conversions]);
+
+  const totalStockInPcs = useMemo(() => {
+    if (!activeConversion) return null;
+    return totalProductStock * activeConversion.qty;
+  }, [activeConversion, totalProductStock]);
 
   // Cache untuk performa instant
   const [logCache, setLogCache] = useState<Map<string, DatabaseLogEntry[]>>(new Map());
@@ -238,6 +252,15 @@ export function Dashboard() {
     // Keep reference updated
     latestRequestedProductRef.current = selectedProduct;
   }, [selectedProduct]);
+
+  useEffect(() => {
+    // Load conversion list & subscribe to live updates
+    skuConversionService.fetchConversions().then(setConversions);
+    const unsubscribe = skuConversionService.subscribe(() => {
+      setConversions(skuConversionService.getCachedConversions());
+    });
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     const initDashboard = async () => {
@@ -828,31 +851,150 @@ export function Dashboard() {
 
           {!loading && productStocks.length > 0 && (
             <div className="space-y-6 my-6 fade-in">
-              {/* Bagian Total Stok Keseluruhan - Premium High Contrast Green */}
-              <div className={`${totalProductStock >= 0
-                ? 'bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-800 shadow-[0_15px_35px_-5px_rgba(16,185,129,0.3)] border-emerald-500/30'
-                : 'bg-gradient-to-br from-rose-600 via-red-700 to-red-900 shadow-[0_15px_35px_-5px_rgba(225,29,72,0.3)] border-red-500/30'
-                } rounded-[28px] p-8 text-center border text-white relative overflow-hidden isolate transition-all duration-500 hover:scale-[1.01]`}>
+              {/* Bagian Total Stok Keseluruhan & Konversi PCS */}
+              {activeConversion ? (
+                <div className="bg-white rounded-[28px] p-6 lg:p-7 shadow-[0_10px_35px_-5px_rgba(0,0,0,0.06)] border border-gray-100 transition-all duration-300">
+                  {/* Top Header Status Bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-5 pb-3">
+                    <div className="flex items-center gap-2.5">
+                      <span className={`h-3 w-3 rounded-full inline-block shadow-sm ${
+                        totalProductStock >= 0 ? 'bg-emerald-500' : 'bg-rose-500'
+                      }`}></span>
+                      <span className="text-xs lg:text-[13px] font-black tracking-wider uppercase text-slate-900">
+                        {totalProductStock >= 0 ? 'STOK TERINTEGRASI & KONVERSI OTOMATIS' : 'PERINGATAN: TERDETEKSI SELISIH STOK MINUS'}
+                      </span>
+                    </div>
 
-                {/* Glass Texture & Glow Effect */}
-                <div className="absolute inset-0 bg-white/10 opacity-30 mix-blend-overlay"></div>
-                <div className="absolute -top-24 -left-24 w-64 h-64 bg-white/10 rounded-full blur-3xl animate-pulse"></div>
-                <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-emerald-400/20 rounded-full blur-3xl"></div>
+                    <div className="flex items-center gap-2">
+                      <span className="bg-[#f0edff] text-[#6322e0] px-3.5 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm border border-indigo-100/60">
+                        <Calculator className="h-3.5 w-3.5 text-[#6322e0]" />
+                        RUMUS: 1 PACK = {activeConversion.qty} PCS
+                      </span>
+                    </div>
+                  </div>
 
-                <h4 className="font-black text-[13px] flex items-center justify-center gap-3 relative z-10 text-emerald-50/80 tracking-[0.2em] uppercase mb-4">
-                  <div className="h-1 w-8 bg-emerald-400 rounded-full"></div>
-                  <Package className="h-5 w-5" />
-                  Stok Keseluruhan
-                  <div className="h-1 w-8 bg-emerald-400 rounded-full"></div>
-                </h4>
+                  {/* Main Grid: Left Green Card + Center Ring + Right Purple Card */}
+                  <div className="grid grid-cols-1 lg:grid-cols-11 gap-4 items-center">
+                    {/* Left Card: Stok Unit Fisik (Pack / Box) */}
+                    <div className={`lg:col-span-5 rounded-[22px] p-6 text-white relative overflow-hidden shadow-lg flex flex-col justify-between ${
+                      totalProductStock >= 0
+                        ? 'bg-gradient-to-r from-[#00b074] to-[#00a368] shadow-emerald-500/20'
+                        : 'bg-gradient-to-r from-rose-500 to-red-600 shadow-rose-500/20'
+                    }`}>
+                      <Package className="absolute right-3 top-1/2 -translate-y-1/2 w-32 h-32 text-white/10 pointer-events-none stroke-1" />
 
-                <div className="relative z-10 flex flex-col items-center">
-                  <p className="text-[64px] font-black leading-none tracking-tighter drop-shadow-lg">
-                    {totalProductStock.toLocaleString()}
-                  </p>
-                  <p className="text-[14px] mt-4 font-black uppercase tracking-[0.2em] text-emerald-100/90">Unit Produk Tersedia</p>
+                      <div className="relative z-10">
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <span className="text-xs font-black uppercase tracking-wide flex items-center gap-1.5 text-white/95">
+                            <Package className="h-4 w-4" />
+                            STOK UNIT FISIK (PACK / BOX)
+                          </span>
+                          <span className="border border-white/40 text-[10px] font-bold px-3 py-0.5 rounded-full text-white uppercase tracking-wider">
+                            UNIT ASLI
+                          </span>
+                        </div>
+                        <div className="my-2">
+                          <div className="text-[54px] lg:text-[62px] font-black leading-none text-white tracking-tight">
+                            {totalProductStock.toLocaleString()}
+                          </div>
+                          <p className="text-xs font-black text-white/90 uppercase tracking-wide mt-2">
+                            {totalProductStock >= 0 ? 'UNIT TERSEDIA DI RAK GUDANG' : 'DEFISIT STOK TERSEDIA (MINUS)'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="relative z-10 mt-5 pt-3.5 border-t border-white/20 flex items-center gap-2">
+                        <Tag className="h-3.5 w-3.5 text-white/80 flex-shrink-0" />
+                        <span className="text-xs font-mono font-bold text-white/95 truncate">
+                          SKU: {selectedProduct}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Middle Math Ring */}
+                    <div className="lg:col-span-1 flex items-center justify-center py-2 lg:py-0">
+                      <div className="w-14 h-14 rounded-full p-[3px] bg-gradient-to-r from-[#00b074] to-[#6322e0] shadow-xl flex items-center justify-center">
+                        <div className="w-full h-full bg-white rounded-full flex flex-col items-center justify-center text-slate-900 leading-none">
+                          <span className="text-[10px] font-black text-slate-600 leading-none">×</span>
+                          <span className="text-sm font-black text-slate-900 leading-none mt-0.5">{activeConversion.qty}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Card: Hasil Konversi Satuan PCS */}
+                    <div className={`lg:col-span-5 rounded-[22px] p-6 text-white relative overflow-hidden shadow-lg flex flex-col justify-between ${
+                      totalProductStock >= 0
+                        ? 'bg-gradient-to-r from-[#6322e0] to-[#5017c6] shadow-indigo-500/25'
+                        : 'bg-gradient-to-r from-red-600 to-rose-700 shadow-rose-600/25'
+                    }`}>
+                      <Package className="absolute right-3 top-1/2 -translate-y-1/2 w-32 h-32 text-white/10 pointer-events-none stroke-1" />
+
+                      <div className="relative z-10">
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <span className="text-xs font-black uppercase tracking-wide flex items-center gap-1.5 text-white/95">
+                            <Sparkles className="h-4 w-4" />
+                            TOTAL HASIL KONVERSI PCS
+                          </span>
+                          <span className="border border-white/40 text-[10px] font-bold px-3 py-0.5 rounded-full text-white uppercase tracking-wider">
+                            SATUAN TERKECIL
+                          </span>
+                        </div>
+                        <div className="my-2">
+                          <div className="text-[54px] lg:text-[62px] font-black leading-none text-white tracking-tight">
+                            {totalStockInPcs?.toLocaleString()}
+                          </div>
+                          <p className="text-xs font-black text-white/90 uppercase tracking-wide mt-2">
+                            PCS ({totalProductStock.toLocaleString()} PACK × {activeConversion.qty})
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="relative z-10 mt-5 pt-3.5 border-t border-white/20 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-xs font-mono font-bold text-white/95 truncate">
+                          <Tag className="h-3.5 w-3.5 text-white/80 flex-shrink-0" />
+                          <span>SKU: {activeConversion.sku_pcs}</span>
+                        </div>
+                        {activeConversion.satuan_packing && (
+                          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-md bg-white/15 text-white border border-white/20">
+                            {activeConversion.satuan_packing}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="bg-white rounded-[28px] p-6 lg:p-7 shadow-[0_10px_35px_-5px_rgba(0,0,0,0.06)] border border-gray-100 transition-all duration-300">
+                  <div className="flex items-center gap-2.5 mb-5 pb-3 border-b border-gray-100">
+                    <span className={`h-3 w-3 rounded-full inline-block shadow-sm ${
+                      totalProductStock >= 0 ? 'bg-emerald-500' : 'bg-rose-500'
+                    }`}></span>
+                    <span className="text-xs lg:text-[13px] font-black tracking-wider uppercase text-slate-900">
+                      {totalProductStock >= 0 ? 'STOK KESELURUHAN' : 'PERINGATAN: TERDETEKSI SELISIH STOK MINUS'}
+                    </span>
+                  </div>
+
+                  <div className={`rounded-[22px] p-8 text-center text-white relative overflow-hidden shadow-lg ${
+                    totalProductStock >= 0
+                      ? 'bg-gradient-to-r from-[#00b074] to-[#00a368] shadow-emerald-500/20'
+                      : 'bg-gradient-to-r from-rose-500 to-red-600 shadow-rose-500/20'
+                  }`}>
+                    <Package className="absolute right-6 top-1/2 -translate-y-1/2 w-48 h-48 text-white/10 pointer-events-none stroke-1" />
+
+                    <div className="relative z-10 flex flex-col items-center justify-center">
+                      <div className="text-[64px] lg:text-[76px] font-black leading-none text-white tracking-tight my-2">
+                        {totalProductStock.toLocaleString()}
+                      </div>
+                      <p className="text-xs lg:text-sm font-black uppercase tracking-wider text-white/90 mt-2">
+                        {totalProductStock >= 0 ? 'UNIT PRODUK TERSEDIA DI RAK GUDANG' : 'DEFISIT STOK TERCATAT (KELUAR MELEBIHI MASUK)'}
+                      </p>
+                      <div className="mt-4 px-4 py-1.5 rounded-full bg-white/15 text-xs font-mono font-bold text-white border border-white/20">
+                        SKU: {selectedProduct}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Tabel Detail per Rak */}
               <div className="bg-white rounded-2xl overflow-hidden shadow-xl shadow-gray-200/50 border border-gray-100">
