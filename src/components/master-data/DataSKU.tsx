@@ -114,6 +114,8 @@ export function DataSKU() {
   const [addSkuRows, setAddSkuRows] = useState<AddSkuRow[]>([]);
   const [showPasteInput, setShowPasteInput] = useState(false);
   const [pasteContent, setPasteContent] = useState("");
+  const [showMassUpdatePaste, setShowMassUpdatePaste] = useState(false);
+  const [massUpdatePasteContent, setMassUpdatePasteContent] = useState("");
   const [satuanOptions, setSatuanOptions] = useState<string[]>(['PCS', 'BOX', 'CTN', 'PACK', 'SET', 'UNIT', 'KG']);
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
   const [lastId, setLastId] = useState<number>(0);
@@ -665,6 +667,50 @@ export function DataSKU() {
     showToast("Berhasil memproses " + lines.length + " SKU!", 'success');
   };
 
+  const handleProcessMassUpdatePaste = () => {
+    const lines = massUpdatePasteContent.split(/\r?\n/).map(line => line.trim()).filter(line => line);
+    if (lines.length === 0) {
+      showToast('Tidak ada data valid untuk diproses', 'warning');
+      return;
+    }
+
+    const newRows: MassUpdateRow[] = [];
+    let matchedCount = 0;
+
+    lines.forEach((line, index) => {
+      let parts: string[] = [];
+      if (line.includes('\t')) {
+        parts = line.split('\t');
+      } else if (line.includes(';')) {
+        parts = line.split(';');
+      } else if (line.includes(',') && !line.includes('  ')) {
+        parts = line.split(',');
+      } else {
+        parts = [line, ''];
+      }
+
+      const oldSku = (parts[0] || '').trim();
+      const newSku = (parts[1] || '').trim();
+
+      const foundSku = skuNames.find(sku => sku.nama.toLowerCase().trim() === oldSku.toLowerCase().trim())
+        || skus.find(sku => sku.nama.toLowerCase().trim() === oldSku.toLowerCase().trim());
+
+      if (foundSku) matchedCount++;
+
+      newRows.push({
+        id: Date.now() + index,
+        old_sku: oldSku,
+        old_id_barang: foundSku ? foundSku.id_barang : '',
+        new_sku: newSku
+      });
+    });
+
+    setUpdateRows(newRows);
+    setMassUpdatePasteContent('');
+    setShowMassUpdatePaste(false);
+    showToast(`Berhasil memuat ${newRows.length} baris! (${matchedCount} SKU lama teridentifikasi)`, 'success');
+  };
+
   const handleAddRow = () => {
     const nextIdNumber = addSkuRows.length > 0
       ? (parseInt(addSkuRows[addSkuRows.length - 1].id_barang) || 0) + 1
@@ -1077,28 +1123,28 @@ export function DataSKU() {
               <div className="relative z-10 flex flex-wrap gap-2 lg:gap-3 lg:mb-2 items-center">
                 <Button
                   onClick={() => setShowDuplicatesOnly(!showDuplicatesOnly)}
-                  className={`h-12 px-5 font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-white/30 backdrop-blur-xl ${showDuplicatesOnly ? 'bg-amber-500 text-white' : 'bg-white/10 hover:bg-white/20 text-white'}`}
+                  className={`h-12 px-5 font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border-none backdrop-blur-xl ${showDuplicatesOnly ? 'bg-amber-500 text-white' : 'bg-white/10 hover:bg-white/20 text-white'}`}
                 >
                   <Copy className="h-4 w-4" />
                   <span className="uppercase text-[10px] font-black">Cari Duplikat</span>
                 </Button>
                 <Button
                   onClick={() => setIsUpdateModalOpen(true)}
-                  className="h-12 px-5 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-white/30 backdrop-blur-xl"
+                  className="h-12 px-5 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border-none backdrop-blur-xl"
                 >
                   <RefreshCcw className="h-4 w-4" />
                   <span className="uppercase text-[10px] font-black">Update Massal</span>
                 </Button>
                 <Button
                   onClick={handleImport}
-                  className="h-12 px-5 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-white/30 backdrop-blur-xl"
+                  className="h-12 px-5 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border-none backdrop-blur-xl"
                 >
                   <Upload className="h-4 w-4" />
                   <span className="uppercase text-[10px] font-black">Import</span>
                 </Button>
                 <Button
                   onClick={handleExport}
-                  className="h-12 px-5 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-white/30 backdrop-blur-xl"
+                  className="h-12 px-5 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border-none backdrop-blur-xl"
                 >
                   <Download className="h-4 w-4" />
                   <span className="uppercase text-[10px] font-black">Export</span>
@@ -1146,151 +1192,198 @@ export function DataSKU() {
           isOpen={isFormOpen}
           onClose={() => setIsFormOpen(false)}
           title="Tambah SKU Baru"
-          size="xl"
+          size="7xl"
+          fullHeight={true}
         >
-          <div className="p-4 bg-gray-50 rounded-lg shadow-inner">
-            <p className="text-sm text-gray-600 mb-2">
-              Masukkan data untuk SKU baru. Anda dapat menambahkan beberapa SKU sekaligus.
-            </p>
-            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 shadow-sm">
+          <div className="p-6 bg-gray-50 rounded-2xl">
+            <div className="mb-5 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3 shadow-sm">
               <Info className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
-              <p className="text-sm text-red-700 font-medium leading-relaxed">
+              <p className="text-xs md:text-sm text-red-700 font-medium leading-relaxed">
                 SKU yang baru ditambahkan akan <strong>otomatis dibuatkan datanya</strong> di menu Data Gudang (dengan Rak UTAMA, CTN/, dan Stok 0).
               </p>
             </div>
+
             <form onSubmit={handleAddSkuSubmit} className="space-y-4">
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse">
-                  <thead>
-                    <tr className="bg-blue-600 text-white">
-                      <th className="p-2 text-left w-[15%]">ID Barang</th>
-                      <th className="p-2 text-left w-[35%]">Nama Produk</th>
-                      <th className="p-2 text-left w-[15%]">Satuan</th>
-                      <th className="p-2 text-left w-[15%]">Status</th>
-                      <th className="p-2 text-center w-[10%]">Aksi</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {addSkuRows.map((row, index) => (
-                      <tr key={row.id} className="border-b border-gray-200">
-                        <td className="p-2">
-                          <input
-                            type="text"
-                            className="w-full px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-100 cursor-not-allowed"
-                            placeholder="ID Barang"
-                            value={row.id_barang}
-                            readOnly
-                          />
-                        </td>
-                        <td className="p-2">
-                          <input
-                            type="text"
-                            className="w-full px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            placeholder="Nama Produk"
-                            value={row.nama}
-                            onChange={(e) => handleAddSkuChange(e, row.id, 'nama')}
-                            required={index === 0}
-                          />
-                        </td>
-                        <td className="p-2">
-                          <select
-                            value={row.satuan}
-                            onChange={(e) => handleAddSkuChange(e, row.id, 'satuan')}
-                            className="w-full px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                            required={index === 0}
-                          >
-                            {satuanOptions.map(opt => (
-                              <option key={opt} value={opt}>{opt}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="p-2">
-                          <select
-                            value={row.status}
-                            onChange={(e) => handleAddSkuChange(e, row.id, 'status')}
-                            className="w-full px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                            required={index === 0}
-                          >
-                            <option value="Aktif">Aktif</option>
-                            <option value="Tidak Aktif">Tidak Aktif</option>
-                          </select>
-                        </td>
-                        <td className="p-2">
-                          <div className="flex justify-center">
-                            {addSkuRows.length > 1 && (
-                              <Button
-                                type="button"
-                                onClick={() => handleRemoveAddRow(row.id)}
-                                className="h-8 w-8 p-0 flex items-center justify-center bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 rounded-lg transition-all duration-200 transform active:scale-90 border border-rose-500/20"
-                              >
-                                <Trash2 className="h-4 w-4 text-rose-600 stroke-[2.5px]" />
-                              </Button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {showPasteInput && (
-                <div className="mt-4 p-4 bg-indigo-50 border border-indigo-100 rounded-xl space-y-3">
-                  <label className="block text-sm font-medium text-indigo-800">
-                    Paste data nama produk vertikal (dari Excel/Spreadsheet):
-                  </label>
-                  <textarea
-                    value={pasteContent}
-                    onChange={(e) => setPasteContent(e.target.value)}
-                    placeholder="Contoh:
-Produk A
-Produk B
-Produk C"
-                    className="w-full h-32 p-3 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white resize-y"
-                  />
-                  <div className="flex justify-end">
-                    <Button
-                      type="button"
-                      onClick={handleProcessPaste}
-                      className="px-6 h-10 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-md transition-all active:scale-95 flex items-center justify-center"
-                    >
-                      Proses Data
-                    </Button>
+              <div className={`grid grid-cols-1 ${showPasteInput ? 'lg:grid-cols-12' : 'grid-cols-1'} gap-6 items-start`}>
+                
+                {/* LEFT COLUMN: Paste Data Sekaligus Form */}
+                {showPasteInput && (
+                  <div className="lg:col-span-4 bg-white p-5 rounded-2xl border-2 border-indigo-100 shadow-lg space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
+                    <div className="flex items-center justify-between pb-3 border-b border-indigo-50">
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+                          <Copy className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-black uppercase text-indigo-900 tracking-wider">Paste Sekaligus</h4>
+                          <p className="text-[10px] text-gray-500">Salin daftar vertikal dari Excel</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowPasteInput(false)}
+                        className="p-1 hover:bg-gray-100 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                        Daftar Nama Produk:
+                      </label>
+                      <textarea
+                        value={pasteContent}
+                        onChange={(e) => setPasteContent(e.target.value)}
+                        placeholder="Contoh:&#10;PULPEN STANDARD 01&#10;BUKU TULIS KIKY 38&#10;PENSIL 2B FABER"
+                        rows={9}
+                        className="w-full p-3 text-xs font-mono border-2 border-indigo-100 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-indigo-50/20 resize-none font-semibold text-gray-800 placeholder:text-gray-400"
+                      />
+                      <p className="text-[10px] text-gray-400 mt-1 italic">* 1 baris = 1 Nama SKU baru</p>
+                    </div>
+
+                    <div className="flex gap-2 pt-2">
+                      <Button
+                        type="button"
+                        onClick={handleProcessPaste}
+                        className="flex-1 h-10 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center justify-center text-xs border-none"
+                      >
+                        <PlusCircle className="h-4 w-4 mr-1.5" />
+                        Proses ke Tabel
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => setPasteContent('')}
+                        className="h-10 px-3 bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold rounded-xl text-xs transition-all border-none"
+                      >
+                        Reset
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* RIGHT (or Full) COLUMN: Table & Row Actions */}
+                <div className={showPasteInput ? 'lg:col-span-8' : 'w-full'}>
+                  <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div className="max-h-[50vh] overflow-y-auto">
+                      <table className="w-full border-collapse">
+                        <thead className="sticky top-0 z-10">
+                          <tr className="bg-blue-600 text-white text-xs font-bold uppercase tracking-wider">
+                            <th className="p-3 text-left w-[20%]">ID Barang</th>
+                            <th className="p-3 text-left w-[42%]">Nama Produk</th>
+                            <th className="p-3 text-center w-[16%]">Satuan</th>
+                            <th className="p-3 text-center w-[14%]">Status</th>
+                            <th className="p-3 text-center w-[8%]">Aksi</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 text-sm">
+                          {addSkuRows.map((row, index) => (
+                            <tr key={row.id} className="hover:bg-blue-50/50 transition-colors">
+                              <td className="p-2.5">
+                                <input
+                                  type="text"
+                                  className="w-full px-3 py-1.5 text-xs font-bold border border-gray-200 rounded-lg bg-gray-50 text-gray-500 cursor-not-allowed focus:outline-none"
+                                  value={row.id_barang}
+                                  readOnly
+                                />
+                              </td>
+                              <td className="p-2.5">
+                                <input
+                                  type="text"
+                                  className="w-full px-3 py-1.5 text-xs font-bold border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800 uppercase"
+                                  placeholder="Nama Produk..."
+                                  value={row.nama}
+                                  onChange={(e) => handleAddSkuChange(e, row.id, 'nama')}
+                                  required={index === 0}
+                                />
+                              </td>
+                              <td className="p-2.5">
+                                <select
+                                  value={row.satuan}
+                                  onChange={(e) => handleAddSkuChange(e, row.id, 'satuan')}
+                                  className="w-full px-2 py-1.5 text-xs font-bold border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                                  required={index === 0}
+                                >
+                                  {satuanOptions.map(opt => (
+                                    <option key={opt} value={opt}>{opt}</option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td className="p-2.5">
+                                <select
+                                  value={row.status}
+                                  onChange={(e) => handleAddSkuChange(e, row.id, 'status')}
+                                  className="w-full px-2 py-1.5 text-xs font-bold border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                                  required={index === 0}
+                                >
+                                  <option value="Aktif">Aktif</option>
+                                  <option value="Tidak Aktif">Tidak Aktif</option>
+                                </select>
+                              </td>
+                              <td className="p-2.5 text-center">
+                                {addSkuRows.length > 1 && (
+                                  <Button
+                                    type="button"
+                                    onClick={() => handleRemoveAddRow(row.id)}
+                                    className="h-8 w-8 p-0 mx-auto flex items-center justify-center bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition-all border-none"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 mt-4 pt-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        onClick={handleAddRow}
+                        className="h-10 px-4 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs"
+                      >
+                        <PlusCircle className="h-4 w-4 mr-1.5" />
+                        Tambah Baris
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => setShowPasteInput(!showPasteInput)}
+                        className={`h-10 px-4 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs ${
+                          showPasteInput
+                            ? 'bg-indigo-600 text-white shadow-md'
+                            : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700'
+                        }`}
+                      >
+                        <Copy className="h-4 w-4 mr-1.5" />
+                        {showPasteInput ? 'Tutup Panel Paste' : 'Paste Data Sekaligus'}
+                      </Button>
+                      <span className="text-xs font-bold text-gray-500 bg-gray-100 px-3 py-2 rounded-xl border border-gray-200">
+                        {addSkuRows.length} Baris Data
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <Button
+                        type="button"
+                        onClick={() => setIsFormOpen(false)}
+                        className="h-10 px-5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl border-none transition-all active:scale-95 text-xs"
+                      >
+                        Batal
+                      </Button>
+                      <Button
+                        type="submit"
+                        className="h-10 px-7 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 text-xs flex items-center border-none"
+                      >
+                        <Save className="h-4 w-4 mr-1.5" />
+                        Simpan
+                      </Button>
+                    </div>
                   </div>
                 </div>
-              )}
-              <div className="flex justify-between items-center mt-4">
-                <Button
-                  type="button"
-                  onClick={handleAddRow}
-                  className="px-6 h-10 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 font-bold rounded-xl border border-blue-500/20 backdrop-blur-md transition-all active:scale-95 flex items-center justify-center"
-                >
-                  <PlusCircle className="h-4 w-4 mr-2" />
-                  Tambah Baris
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => setShowPasteInput(!showPasteInput)}
-                  className="px-4 h-10 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 font-bold rounded-xl border border-indigo-500/20 backdrop-blur-md transition-all active:scale-95 flex items-center justify-center ml-3"
-                >
-                  <Copy className="h-4 w-4 mr-2" />
-                  Paste Data Sekaligus
-                </Button>
-                <div className="flex space-x-3">
-                  <Button
-                    type="button"
-                    onClick={() => setIsFormOpen(false)}
-                    className="px-6 h-10 bg-white/10 hover:bg-white/20 text-gray-700 font-bold rounded-xl border border-gray-300/50 backdrop-blur-md transition-all active:scale-95 flex items-center justify-center"
-                  >
-                    Batal
-                  </Button>
-                  <Button
-                    type="submit"
-                    className="px-8 h-10 bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 text-white font-bold rounded-xl shadow-lg border border-white/20 backdrop-blur-md transition-all active:scale-95 flex items-center justify-center"
-                  >
-                    <Save className="h-4 w-4 mr-2" />
-                    Simpan
-                  </Button>
-                </div>
+
               </div>
             </form>
           </div>
@@ -1368,13 +1461,13 @@ Produk C"
                 <Button
                   type="button"
                   onClick={resetForm}
-                  className="px-6 h-10 bg-white/10 hover:bg-white/20 text-gray-700 font-bold rounded-xl border border-gray-300/50 backdrop-blur-md transition-all active:scale-95"
+                  className="px-6 h-10 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl border-none transition-all active:scale-95"
                 >
                   Batal
                 </Button>
                 <Button
                   type="submit"
-                  className="px-8 h-10 bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 text-white font-bold rounded-xl shadow-lg border border-white/20 backdrop-blur-md transition-all active:scale-95"
+                  className="px-8 h-10 bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 text-white font-bold rounded-xl shadow-lg border-none transition-all active:scale-95"
                 >
                   <Save className="h-4 w-4 mr-2" />
                   Simpan Perubahan
@@ -1429,7 +1522,7 @@ Produk C"
                   <div className="flex gap-2 justify-center mt-2 mb-4">
                     <Button
                       type="button"
-                      className="px-6 h-10 bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 text-white font-bold rounded-xl shadow-lg border border-white/20 backdrop-blur-md transition-all active:scale-95"
+                      className="px-6 h-10 bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-800 text-white font-bold rounded-xl shadow-lg border-none transition-all active:scale-95"
                       onClick={(e) => {
                         e.preventDefault();
                         inputRef.current?.click();
@@ -1464,7 +1557,7 @@ Produk C"
                           XLSX.utils.book_append_sheet(wb, ws, "Template Import");
                           XLSX.writeFile(wb, "Template_Import_SKU.xlsx");
                         }}
-                        className="bg-white text-blue-600 hover:bg-blue-50 font-black rounded-2xl px-6 h-12 active:scale-95 transition-all shadow-lg"
+                        className="bg-white text-blue-600 hover:bg-blue-50 font-black rounded-2xl px-6 h-12 active:scale-95 transition-all shadow-lg border-none"
                       >
                         <Download className="h-4 w-4 mr-2" /> Download
                       </Button>
@@ -1507,8 +1600,9 @@ Produk C"
           onClose={() => !updateProgress.isUpdating && setIsUpdateModalOpen(false)}
           title="Update Massal SKU"
           size="7xl"
+          fullHeight={true}
         >
-          <div className="p-5 bg-gray-50 rounded-2xl shadow-inner">
+          <div className="p-6 bg-gray-50 rounded-2xl shadow-inner">
             {updateProgress.isUpdating ? (
               <div className="text-center p-10 bg-white rounded-[2.5rem] border-2 border-indigo-50 shadow-sm flex flex-col items-center justify-center space-y-6">
                 <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center animate-bounce">
@@ -1532,7 +1626,7 @@ Produk C"
               </div>
             ) : (
               <>
-                <p className="text-sm text-gray-600 mb-6">
+                <p className="text-sm text-gray-600 mb-5">
                   Ubah nama produk lama menjadi nama produk baru. Semua data yang terkait di tabel products (kolom nama), database_log (kolom sku), dan stock_items (kolom nama_produk) akan diperbarui secara otomatis.
                 </p>
 
@@ -1558,7 +1652,7 @@ Produk C"
                         XLSX.writeFile(wb, "Template_Update_Massal_SKU.xlsx");
                         showToast('Template berhasil diunduh!', 'success');
                       }}
-                      className="bg-white text-indigo-600 hover:bg-indigo-50 font-black rounded-2xl px-5 h-11 active:scale-95 transition-all shadow-md text-xs flex items-center"
+                      className="bg-white text-indigo-600 hover:bg-indigo-50 font-black rounded-2xl px-5 h-11 active:scale-95 transition-all shadow-md text-xs flex items-center border-none"
                     >
                       <Download className="h-4 w-4 mr-2" /> Unduh Template
                     </Button>
@@ -1571,7 +1665,7 @@ Produk C"
                       <p className="text-gray-500 text-xs font-medium">Pilih file Excel template yang sudah diisi untuk memuat data langsung ke tabel di bawah.</p>
                     </div>
                     <div className="w-full">
-                      <label className="flex items-center justify-center bg-indigo-50 hover:bg-indigo-100/80 text-indigo-600 font-black rounded-2xl px-5 h-11 active:scale-95 transition-all shadow-sm text-xs cursor-pointer border border-indigo-100 w-full text-center">
+                      <label className="flex items-center justify-center bg-indigo-50 hover:bg-indigo-100/80 text-indigo-600 font-black rounded-2xl px-5 h-11 active:scale-95 transition-all shadow-sm text-xs cursor-pointer border-none w-full text-center">
                         <Upload className="h-4 w-4 mr-2" /> Pilih & Unggah File Excel
                         <input
                           type="file"
@@ -1585,133 +1679,216 @@ Produk C"
                 </div>
 
                 <form onSubmit={handleMassUpdate} className="space-y-4">
-                  <div className="flex justify-between items-center mb-4">
-                    <div className="flex space-x-2">
-                      <Button
-                        type="button"
-                        onClick={handleAddUpdateRow}
-                        className="px-4 h-10 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 font-bold rounded-xl border border-indigo-500/20 backdrop-blur-md transition-all active:scale-95 flex items-center justify-center text-xs"
-                      >
-                        <PlusCircle className="h-4 w-4 mr-2" />
-                        1 Baris
-                      </Button>
-                      <Button
-                        type="button"
-                        onClick={handleAddUpdate10Row}
-                        className="px-4 h-10 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 font-bold rounded-xl border border-indigo-500/20 backdrop-blur-md transition-all active:scale-95 flex items-center justify-center text-xs"
-                      >
-                        <PlusCircle className="h-4 w-4 mr-2" />
-                        10 Baris
-                      </Button>
-                      <Button
-                        type="button"
-                        onClick={handleCleanupUpdateRows}
-                        className="px-4 h-10 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 font-bold rounded-xl border border-rose-500/20 backdrop-blur-md transition-all active:scale-95 flex items-center justify-center text-xs"
-                      >
-                        <Trash2 className="h-4 w-4 mr-2" />
-                        Penyesuaian
-                      </Button>
-                      <div className="flex items-center ml-2 px-3 bg-gray-100 rounded-lg border border-gray-200">
-                        <span className="text-xs font-bold text-gray-600">{updateRows.length} Baris Data</span>
+                  <div className={`grid grid-cols-1 ${showMassUpdatePaste ? 'lg:grid-cols-12' : 'grid-cols-1'} gap-6 items-start`}>
+                    
+                    {/* LEFT COLUMN: Paste Update Massal Panel */}
+                    {showMassUpdatePaste && (
+                      <div className="lg:col-span-4 bg-white p-5 rounded-2xl border-2 border-indigo-100 shadow-lg space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
+                        <div className="flex items-center justify-between pb-3 border-b border-indigo-50">
+                          <div className="flex items-center gap-2">
+                            <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+                              <Copy className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <h4 className="text-xs font-black uppercase text-indigo-900 tracking-wider">Paste Update Massal</h4>
+                              <p className="text-[10px] text-gray-500">Salin 2 kolom dari Excel</p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowMassUpdatePaste(false)}
+                            className="p-1 hover:bg-gray-100 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                            Paste 2 Kolom (Produk Lama & Baru):
+                          </label>
+                          <textarea
+                            value={massUpdatePasteContent}
+                            onChange={(e) => setMassUpdatePasteContent(e.target.value)}
+                            placeholder="Contoh (Salin 2 kolom dari Excel):&#10;PRODUK LAMA A [TAB] PRODUK BARU A&#10;PRODUK LAMA B [TAB] PRODUK BARU B"
+                            rows={9}
+                            className="w-full p-3 text-xs font-mono border-2 border-indigo-100 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-indigo-50/20 resize-none font-semibold text-gray-800 placeholder:text-gray-400"
+                          />
+                          <p className="text-[10px] text-gray-400 mt-1 italic leading-tight">
+                            * Kolom dipisahkan dengan Tab (Excel), Koma (,), atau Titik Koma (;).
+                          </p>
+                        </div>
+
+                        <div className="flex gap-2 pt-2">
+                          <Button
+                            type="button"
+                            onClick={handleProcessMassUpdatePaste}
+                            className="flex-1 h-10 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center justify-center text-xs border-none"
+                          >
+                            <PlusCircle className="h-4 w-4 mr-1.5" />
+                            Proses ke Tabel
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={() => setMassUpdatePasteContent('')}
+                            className="h-10 px-3 bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold rounded-xl text-xs transition-all border-none"
+                          >
+                            Reset
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* RIGHT (or Full) COLUMN: Table & Row Actions */}
+                    <div className={showMassUpdatePaste ? 'lg:col-span-8' : 'w-full'}>
+                      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            onClick={handleAddUpdateRow}
+                            className="h-10 px-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs"
+                          >
+                            <PlusCircle className="h-4 w-4 mr-1.5" />
+                            1 Baris
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={handleAddUpdate10Row}
+                            className="h-10 px-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs"
+                          >
+                            <PlusCircle className="h-4 w-4 mr-1.5" />
+                            10 Baris
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={() => setShowMassUpdatePaste(!showMassUpdatePaste)}
+                            className={`h-10 px-4 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs ${
+                              showMassUpdatePaste
+                                ? 'bg-indigo-600 text-white shadow-md'
+                                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700'
+                            }`}
+                          >
+                            <Copy className="h-4 w-4 mr-1.5" />
+                            {showMassUpdatePaste ? 'Tutup Panel Paste' : 'Paste Data Sekaligus'}
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={handleCleanupUpdateRows}
+                            className="h-10 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs"
+                          >
+                            <Trash2 className="h-4 w-4 mr-1.5" />
+                            Penyesuaian
+                          </Button>
+                          <span className="text-xs font-bold text-gray-500 bg-gray-100 px-3 py-2 rounded-xl border border-gray-200">
+                            {updateRows.length} Baris Data
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <Button
+                            type="button"
+                            onClick={() => setIsUpdateModalOpen(false)}
+                            className="h-10 px-5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl border-none transition-all active:scale-95 text-xs"
+                          >
+                            Batal
+                          </Button>
+                          <Button
+                            type="submit"
+                            className="h-10 px-7 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 text-xs flex items-center border-none"
+                          >
+                            <Save className="h-4 w-4 mr-1.5" />
+                            Update
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+                        <div className="max-h-[50vh] overflow-y-auto">
+                          <table className="w-full border-collapse">
+                            <thead className="sticky top-0 z-20">
+                              <tr className="bg-blue-600 text-white text-xs font-bold uppercase tracking-wider">
+                                <th className="p-3 text-left w-[18%]">ID Barang</th>
+                                <th className="p-3 text-left w-[38%]">Nama Produk Lama</th>
+                                <th className="p-3 text-left w-[38%]">Nama Produk Baru</th>
+                                <th className="p-3 text-center w-[6%]">Aksi</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100 text-sm">
+                              {updateRows.map((row) => (
+                                <tr key={row.id} className="hover:bg-blue-50/50 transition-colors">
+                                  <td className="p-2.5">
+                                    <input
+                                      type="text"
+                                      className="w-full px-3 py-1.5 text-xs font-bold border border-gray-200 rounded-lg bg-gray-50 text-gray-500 cursor-not-allowed focus:outline-none"
+                                      value={row.old_id_barang}
+                                      readOnly
+                                    />
+                                  </td>
+                                  <td className="p-2.5">
+                                    <div className="relative">
+                                      <input
+                                        id={`old_sku_${row.id}`}
+                                        type="text"
+                                        className="w-full px-3 py-1.5 text-xs font-bold border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800"
+                                        placeholder="Ketik nama produk lama..."
+                                        value={row.old_sku}
+                                        onChange={(e) => handleUpdateInputChange(e, row.id, 'old_sku')}
+                                        onKeyDown={(e) => handleUpdateInputKeyDown(e, row.id)}
+                                        onFocus={() => {
+                                          setFocusedRow(row.id);
+                                          setFilteredSkuNames(skuNames);
+                                          setHighlightedSuggestionIndex(0);
+                                        }}
+                                        onBlur={() => setTimeout(() => setFocusedRow(null), 200)}
+                                      />
+                                      {focusedRow === row.id && filteredSkuNames.length > 0 && (
+                                        <ul className="absolute z-30 w-full bg-white border border-gray-200 rounded-xl mt-1 max-h-48 overflow-y-auto shadow-2xl">
+                                          {filteredSkuNames.map((sku, skuIndex) => (
+                                            <li
+                                              key={skuIndex}
+                                              className={`px-3 py-2 cursor-pointer transition-colors text-xs ${skuIndex === highlightedSuggestionIndex ? 'bg-blue-100 text-blue-900 font-bold' : 'hover:bg-gray-50 text-gray-700'}`}
+                                              onMouseDown={() => handleSelectSuggestion(sku, row.id)}
+                                            >
+                                              {sku.nama}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="p-2.5">
+                                    <input
+                                      type="text"
+                                      className="w-full px-3 py-1.5 text-xs font-bold border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800 uppercase"
+                                      placeholder="Nama produk baru... (Bisa paste vertikal dari Excel)"
+                                      value={row.new_sku}
+                                      onChange={(e) => handleUpdateInputChange(e, row.id, 'new_sku')}
+                                      onPaste={(e) => {
+                                        const rowIndex = updateRows.findIndex(r => r.id === row.id);
+                                        handleNewSkuPaste(e, rowIndex);
+                                      }}
+                                    />
+                                  </td>
+                                  <td className="p-2.5 text-center">
+                                    {updateRows.length > 1 && (
+                                      <Button
+                                        type="button"
+                                        onClick={() => handleRemoveUpdateRow(row.id)}
+                                        className="h-8 w-8 p-0 mx-auto flex items-center justify-center bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition-all border-none"
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </Button>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
                     </div>
-                    <div className="flex space-x-3">
-                      <Button
-                        type="button"
-                        onClick={() => setIsUpdateModalOpen(false)}
-                        className="px-6 h-10 bg-white/10 hover:bg-white/20 text-gray-700 font-bold rounded-xl border border-gray-300/50 backdrop-blur-md transition-all active:scale-95 flex items-center justify-center"
-                      >
-                        Batal
-                      </Button>
-                      <Button
-                        type="submit"
-                        className="px-8 h-10 bg-gradient-to-br from-indigo-500 to-violet-700 hover:from-indigo-600 hover:to-violet-800 text-white font-bold rounded-xl shadow-lg border border-white/20 backdrop-blur-md transition-all active:scale-95 flex items-center justify-center"
-                      >
-                        <Save className="h-4 w-4 mr-2" />
-                        Update
-                      </Button>
-                    </div>
+
                   </div>
-                  <table className="w-full border-collapse">
-                    <thead>
-                      <tr className="bg-blue-600 text-white">
-                        <th className="p-2 text-left w-[15%]">ID Barang</th>
-                        <th className="p-2 text-left w-[35%]">Nama Produk Lama</th>
-                        <th className="p-2 text-left w-[35%]">Nama Produk Baru</th>
-                        <th className="p-2 text-center w-[15%]">Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {updateRows.map((row) => (
-                        <tr key={row.id} className="border-b border-gray-200">
-                          <td className="p-2 text-sm">
-                            <input
-                              type="text"
-                              className="w-full px-2 py-1 border border-gray-300 rounded-md bg-gray-100 cursor-not-allowed focus:outline-none"
-                              value={row.old_id_barang}
-                              readOnly
-                            />
-                          </td>
-                          <td className="p-2">
-                            <div className="relative">
-                              <input
-                                id={`old_sku_${row.id}`}
-                                type="text"
-                                className="w-full px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="Ketik nama produk lama..."
-                                value={row.old_sku}
-                                onChange={(e) => handleUpdateInputChange(e, row.id, 'old_sku')}
-                                onKeyDown={(e) => handleUpdateInputKeyDown(e, row.id)}
-                                onFocus={() => {
-                                  setFocusedRow(row.id);
-                                  setFilteredSkuNames(skuNames);
-                                  setHighlightedSuggestionIndex(0);
-                                }}
-                                onBlur={() => setTimeout(() => setFocusedRow(null), 200)}
-                              />
-                              {focusedRow === row.id && filteredSkuNames.length > 0 && (
-                                <ul className="absolute z-10 w-full bg-white border border-gray-300 rounded-md mt-1 max-h-48 overflow-y-auto shadow-lg">
-                                  {filteredSkuNames.map((sku, skuIndex) => (
-                                    <li
-                                      key={skuIndex}
-                                      className={`px-3 py-2 cursor-pointer transition-colors ${skuIndex === highlightedSuggestionIndex ? 'bg-blue-100 text-blue-900 font-bold' : 'hover:bg-gray-100'}`}
-                                      onMouseDown={() => handleSelectSuggestion(sku, row.id)}
-                                    >
-                                      {sku.nama}
-                                    </li>
-                                  ))}
-                                </ul>
-                              )}
-                            </div>
-                          </td>
-                          <td className="p-2">
-                            <input
-                              type="text"
-                              className="w-full px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              placeholder="Nama produk baru... (Bisa paste vertikal dari Excel)"
-                              value={row.new_sku}
-                              onChange={(e) => handleUpdateInputChange(e, row.id, 'new_sku')}
-                              onPaste={(e) => {
-                                const rowIndex = updateRows.findIndex(r => r.id === row.id);
-                                handleNewSkuPaste(e, rowIndex);
-                              }}
-                            />
-                          </td>
-                          <td className="p-2 text-center">
-                            {updateRows.length > 1 && (
-                              <Button
-                                type="button"
-                                onClick={() => handleRemoveUpdateRow(row.id)}
-                                className="h-8 w-8 p-0 flex items-center justify-center bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 rounded-lg transition-all duration-200 transform active:scale-90 border border-rose-500/20"
-                              >
-                                <Trash2 className="h-4 w-4 text-rose-600 stroke-[2.5px]" />
-                              </Button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
                 </form>
               </>
             )}
@@ -1776,13 +1953,13 @@ Produk C"
                         <div className="flex justify-center space-x-2">
                           <Button
                             onClick={() => handleEdit(sku)}
-                            className="h-8 w-8 p-0 flex items-center justify-center bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 rounded-lg transition-all duration-200 transform active:scale-90 border border-blue-500/20"
+                            className="h-8 w-8 p-0 flex items-center justify-center bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 rounded-lg transition-all duration-200 transform active:scale-90 border-none"
                           >
                             <Edit2 className="h-4 w-4" />
                           </Button>
                           <Button
                             onClick={() => handleDelete(sku.id, sku.nama)}
-                            className="h-8 w-8 p-0 flex items-center justify-center bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 rounded-lg transition-all duration-200 transform active:scale-90 border border-rose-500/20"
+                            className="h-8 w-8 p-0 flex items-center justify-center bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 rounded-lg transition-all duration-200 transform active:scale-90 border-none"
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -1817,7 +1994,7 @@ Produk C"
             <Button
               onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
               disabled={currentPage === 1}
-              className="h-9 px-4 bg-white/10 hover:bg-white/20 text-gray-700 font-bold rounded-lg border border-gray-300/50 backdrop-blur-md transition-all active:scale-95 disabled:opacity-50 disabled:scale-100"
+              className="h-9 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-lg border-none transition-all active:scale-95 disabled:opacity-50 disabled:scale-100"
             >
               <ChevronLeft className="h-4 w-4 mr-2" />
               Sebelumnya
@@ -1828,7 +2005,7 @@ Produk C"
             <Button
               onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
               disabled={currentPage === totalPages}
-              className="h-9 px-4 bg-white/10 hover:bg-white/20 text-gray-700 font-bold rounded-lg border border-gray-300/50 backdrop-blur-md transition-all active:scale-95 disabled:opacity-50 disabled:scale-100"
+              className="h-9 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-lg border-none transition-all active:scale-95 disabled:opacity-50 disabled:scale-100"
             >
               Berikutnya
               <ChevronRight className="h-4 w-4 ml-2" />
