@@ -16,6 +16,7 @@ import { db } from '../lib/firebase';
 import { collection, writeBatch, doc } from 'firebase/firestore';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { DatabaseService } from '../lib/DatabaseService';
+import { skuConversionService } from '../services/skuConversionService';
 // Local storage keys
 const STORAGE_KEY = 'input_barang_keluar_data';
 const PRODUCTS_CACHE_KEY = 'input_barang_keluar_products_cache';
@@ -1707,6 +1708,11 @@ export function InputBarangKeluar() {
                     }
                 }
 
+                const cleanSkuName = (row.nama_produk || '').trim();
+                const conv = skuConversionService.findConversion(cleanSkuName);
+                const skuPcs = conv ? conv.sku_pcs : null;
+                const jumlahPcs = conv ? finalJumlah * (Number(conv.qty) || 1) : null;
+
                 return {
                     tgl: formattedDate,
                     waktu: row.waktu,
@@ -1720,7 +1726,8 @@ export function InputBarangKeluar() {
                     user_name: row.user_name || userEmail,
                     unique_code: row.unique_code || null,
                     log_update_user: '',
-                    is_adjustment: isAdjustment
+                    is_adjustment: isAdjustment,
+                    ...(skuPcs ? { sku_pcs: skuPcs, jumlah_pcs: jumlahPcs } : {})
                 };
             });
             let insertedData: any = null;

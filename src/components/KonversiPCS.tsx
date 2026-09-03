@@ -665,12 +665,12 @@ export function KonversiPCS() {
           isOpen={isFormOpen || isEditModalOpen}
           onClose={resetSingleForm}
           title={editingId ? 'Edit Aturan Konversi PCS' : 'Tambah Aturan Konversi PCS'}
-          size="lg"
+          size="4xl"
         >
           <div className="p-6 bg-gray-50 rounded-2xl">
-            <div className="mb-5 p-4 bg-indigo-50 rounded-xl flex items-start gap-3">
-              <Info className="h-5 w-5 text-indigo-600 mt-0.5 flex-shrink-0" />
-              <p className="text-xs text-indigo-900 font-medium leading-relaxed">
+            <div className="mb-5 p-4 bg-blue-50 rounded-xl flex items-start gap-3 border border-blue-100">
+              <Info className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-blue-900 font-medium leading-relaxed">
                 Saat SKU Konversi dicari di <strong>Dashboard</strong>, stok akan otomatis dikalikan dengan <strong>Qty</strong> untuk menampilkan total stok dalam satuan <strong>PCS</strong>.
               </p>
             </div>
@@ -686,7 +686,7 @@ export function KonversiPCS() {
                   placeholder="Contoh: BOOK-1PACK/CLBK-3501"
                   value={formData.sku_konversi}
                   onChange={(e) => setFormData({ ...formData, sku_konversi: e.target.value.toUpperCase() })}
-                  className="w-full px-3.5 py-2 text-xs font-bold border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono uppercase bg-white"
+                  className="w-full px-3.5 py-2.5 text-xs font-bold border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono uppercase bg-white"
                 />
               </div>
 
@@ -700,7 +700,7 @@ export function KonversiPCS() {
                   placeholder="Contoh: BOOK-CLBK-3501/1PC"
                   value={formData.sku_pcs}
                   onChange={(e) => setFormData({ ...formData, sku_pcs: e.target.value.toUpperCase() })}
-                  className="w-full px-3.5 py-2 text-xs font-bold border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono uppercase bg-white"
+                  className="w-full px-3.5 py-2.5 text-xs font-bold border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono uppercase bg-white"
                 />
               </div>
 
@@ -714,7 +714,7 @@ export function KonversiPCS() {
                     placeholder="Contoh: CTN/16PACK/12PCS"
                     value={formData.satuan_packing}
                     onChange={(e) => setFormData({ ...formData, satuan_packing: e.target.value.toUpperCase() })}
-                    className="w-full px-3.5 py-2 text-xs font-bold border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase bg-white"
+                    className="w-full px-3.5 py-2.5 text-xs font-bold border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 uppercase bg-white"
                   />
                 </div>
 
@@ -729,7 +729,7 @@ export function KonversiPCS() {
                     placeholder="Contoh: 12"
                     value={formData.qty}
                     onChange={(e) => setFormData({ ...formData, qty: parseInt(e.target.value, 10) || 1 })}
-                    className="w-full px-3.5 py-2 text-xs font-bold border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                    className="w-full px-3.5 py-2.5 text-xs font-bold border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                   />
                 </div>
               </div>
@@ -738,15 +738,15 @@ export function KonversiPCS() {
                 <Button
                   type="button"
                   onClick={resetSingleForm}
-                  className="h-10 px-5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl border-none transition-all active:scale-95 text-xs"
+                  className="px-5 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold rounded-xl border-none transition-all active:scale-95 text-xs"
                 >
                   Batal
                 </Button>
                 <Button
                   type="submit"
-                  className="h-10 px-7 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 text-xs flex items-center border-none"
+                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-xl shadow-lg transition-all active:scale-95 border-none flex items-center gap-2 text-xs uppercase"
                 >
-                  <Save className="h-4 w-4 mr-1.5" />
+                  <Save className="h-4 w-4" />
                   {editingId ? 'Simpan Perubahan' : 'Tambah Aturan'}
                 </Button>
               </div>

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { X, RefreshCw, Search, Package, Calculator, Sparkles, Tag, AlertTriangle } from 'lucide-react';
+import { X, RefreshCw, Search, Package, Calculator, Sparkles, Tag, AlertTriangle, Eye, ArrowUpRight, ArrowDownRight, Scale, CheckCircle, AlertCircle } from 'lucide-react';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
+import { Modal } from './ui/Modal';
 import { StockTableSkeleton } from './ui/SkeletonLoader';
 import { supabase, fetchAllStockItems, warmupConnection } from '../lib/supabase';
 import { queryOptimizer } from '../lib/queryOptimizer';
@@ -29,7 +30,19 @@ interface DatabaseLogEntry {
   jumlah: number;
   type: 'IN' | 'OUT' | 'MOVE';
   rak: string;
+  tgl_scan?: string;
+  user_name?: string;
+  log_update_user?: string;
   created_at: string;
+}
+
+interface TglScanBreakdown {
+  tgl_scan: string;
+  totalIn: number;
+  totalOut: number;
+  selisih: number;
+  inCount: number;
+  outCount: number;
 }
 
 // Debounce hook untuk search
@@ -208,6 +221,11 @@ export function Dashboard() {
   const [dataLoaded, setDataLoaded] = useState(false);
   const [totalProductStock, setTotalProductStock] = useState<number>(0);
   const [conversions, setConversions] = useState<SKUConversion[]>(() => skuConversionService.getCachedConversions());
+
+  // Detail Selisih Stok modal states
+  const [detailSelisihOpen, setDetailSelisihOpen] = useState(false);
+  const [detailSelisihRak, setDetailSelisihRak] = useState('');
+  const [allLogsForProduct, setAllLogsForProduct] = useState<DatabaseLogEntry[]>([]);
 
   // Check if the currently searched product has a registered conversion rule
   const activeConversion = useMemo(() => {
@@ -482,6 +500,9 @@ export function Dashboard() {
       }
 
       console.log(`   - Found ${allLogs.length} log entries (Mode: ${readMode})`);
+
+      // Save allLogs to state for Detail Selisih modal
+      setAllLogsForProduct(allLogs as DatabaseLogEntry[]);
 
       // Jika tidak ada data sama sekali, return kosong
       if (items.length === 0 && allLogs.length === 0) {
@@ -1022,7 +1043,8 @@ export function Dashboard() {
                           </div>
                         </th>
                         <th className="px-6 py-4 text-center text-sm font-semibold border-r border-blue-500">Tersedia</th>
-                        <th className="px-6 py-4 text-center text-sm font-semibold">Lokasi Rak</th>
+                        <th className="px-6 py-4 text-center text-sm font-semibold border-r border-blue-500">Lokasi Rak</th>
+                        <th className="px-4 py-4 text-center text-sm font-semibold">Aksi</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1055,8 +1077,24 @@ export function Dashboard() {
                               {stock.tersedia.toLocaleString()}
                             </span>
                           </td>
-                          <td className="px-6 py-4 text-sm text-center">
+                          <td className="px-6 py-4 text-sm text-center border-r border-gray-200">
                             {renderFormattedLokasiRak(stock.lokasi_rak)}
+                          </td>
+                          <td className="px-4 py-4 text-center">
+                            <button
+                              onClick={() => {
+                                setDetailSelisihRak(stock.lokasi_rak || '');
+                                setDetailSelisihOpen(true);
+                              }}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 cursor-pointer ${
+                                stock.tersedia < 0
+                                  ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
+                                  : 'bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100'
+                              }`}
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                              Detail
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -1116,11 +1154,31 @@ export function Dashboard() {
                           <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Tersedia</span>
                           <span className={`inline-flex px-5 py-2.5 rounded-xl font-black text-[20px] ${stock.tersedia > 0
                             ? 'bg-blue-600 text-white'
-                            : 'bg-gray-200 text-gray-600'
+                            : stock.tersedia < 0
+                              ? 'bg-rose-500 text-white'
+                              : 'bg-gray-200 text-gray-600'
                             }`}>
                             {stock.tersedia.toLocaleString()}
                           </span>
                         </div>
+                      </div>
+
+                      {/* Lihat Detail Button - Mobile */}
+                      <div className="pt-2 border-t border-gray-100">
+                        <button
+                          onClick={() => {
+                            setDetailSelisihRak(stock.lokasi_rak || '');
+                            setDetailSelisihOpen(true);
+                          }}
+                          className={`w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 cursor-pointer ${
+                            stock.tersedia < 0
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
+                              : 'bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100'
+                          }`}
+                        >
+                          <Eye className="h-4 w-4" />
+                          Lihat Detail Stok per Tgl Scan
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -1184,6 +1242,236 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* ========================================= */}
+      {/* MODAL: Detail Selisih Stok per Tgl Scan   */}
+      {/* ========================================= */}
+      <Modal
+        isOpen={detailSelisihOpen}
+        onClose={() => setDetailSelisihOpen(false)}
+        title="Detail Stok per Tanggal Scan"
+        subtitle={`${selectedProduct || ''} — Rak: ${detailSelisihRak || '-'}`}
+        size="4xl"
+      >
+        {(() => {
+          // Compute breakdown per tgl_scan for the selected rak
+          const rakKey = (detailSelisihRak || '').trim().toLowerCase();
+          const logsForRak = allLogsForProduct.filter(
+            l => (l.rak || '').trim().toLowerCase() === rakKey
+          );
+
+          const groupMap = new Map<string, TglScanBreakdown>();
+          logsForRak.forEach(log => {
+            const tglScan = (log.tgl_scan || '(Tanpa Tgl Scan)').toString().trim();
+            const typeUpper = (log.type || '').toUpperCase();
+            const qty = Number(log.jumlah || 0);
+
+            if (!groupMap.has(tglScan)) {
+              groupMap.set(tglScan, { tgl_scan: tglScan, totalIn: 0, totalOut: 0, selisih: 0, inCount: 0, outCount: 0 });
+            }
+            const g = groupMap.get(tglScan)!;
+            if (typeUpper === 'IN') {
+              g.totalIn += qty;
+              g.inCount++;
+            } else if (typeUpper === 'OUT') {
+              g.totalOut += qty;
+              g.outCount++;
+            }
+          });
+
+          // Calculate selisih
+          groupMap.forEach(g => { g.selisih = g.totalIn - g.totalOut; });
+
+          const breakdowns = Array.from(groupMap.values()).sort((a, b) => {
+            // Sort minus first, then by tgl_scan descending
+            if (a.selisih < 0 && b.selisih >= 0) return -1;
+            if (a.selisih >= 0 && b.selisih < 0) return 1;
+            return b.tgl_scan.localeCompare(a.tgl_scan);
+          });
+
+          const totalIn = breakdowns.reduce((s, b) => s + b.totalIn, 0);
+          const totalOut = breakdowns.reduce((s, b) => s + b.totalOut, 0);
+          const totalSelisih = totalIn - totalOut;
+          const minusCount = breakdowns.filter(b => b.selisih < 0).length;
+
+          return (
+            <div className="space-y-4">
+              {/* Stats Overview */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-emerald-50 border border-emerald-200/80 rounded-2xl p-3.5 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-md shadow-emerald-500/20">
+                    <ArrowUpRight className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">Total Masuk</div>
+                    <div className="text-lg font-black text-emerald-900">{totalIn.toLocaleString()}</div>
+                  </div>
+                </div>
+                <div className="bg-rose-50 border border-rose-200/80 rounded-2xl p-3.5 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shadow-md shadow-rose-500/20">
+                    <ArrowDownRight className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-rose-700 uppercase tracking-wider">Total Keluar</div>
+                    <div className="text-lg font-black text-rose-900">{totalOut.toLocaleString()}</div>
+                  </div>
+                </div>
+                <div className={`border rounded-2xl p-3.5 flex items-center gap-3 ${totalSelisih < 0 ? 'bg-red-50 border-red-200/80' : 'bg-blue-50 border-blue-200/80'}`}>
+                  <div className={`w-9 h-9 rounded-xl text-white flex items-center justify-center shadow-md ${totalSelisih < 0 ? 'bg-red-600 shadow-red-500/20' : 'bg-blue-600 shadow-blue-500/20'}`}>
+                    <Scale className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className={`text-[10px] font-bold uppercase tracking-wider ${totalSelisih < 0 ? 'text-red-700' : 'text-blue-700'}`}>Saldo</div>
+                    <div className={`text-lg font-black ${totalSelisih < 0 ? 'text-red-900' : 'text-blue-900'}`}>{totalSelisih.toLocaleString()}</div>
+                  </div>
+                </div>
+                <div className={`border rounded-2xl p-3.5 flex items-center gap-3 ${minusCount > 0 ? 'bg-amber-50 border-amber-200/80' : 'bg-emerald-50 border-emerald-200/80'}`}>
+                  <div className={`w-9 h-9 rounded-xl text-white flex items-center justify-center shadow-md ${minusCount > 0 ? 'bg-amber-600 shadow-amber-500/20' : 'bg-emerald-600 shadow-emerald-500/20'}`}>
+                    {minusCount > 0 ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle className="h-4 w-4" />}
+                  </div>
+                  <div>
+                    <div className={`text-[10px] font-bold uppercase tracking-wider ${minusCount > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>Tgl Minus</div>
+                    <div className={`text-lg font-black ${minusCount > 0 ? 'text-amber-900' : 'text-emerald-900'}`}>{minusCount} <span className="text-xs font-semibold">tanggal</span></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Info Banner */}
+              {minusCount > 0 && (
+                <div className="bg-gradient-to-r from-rose-50 to-red-50 border border-rose-200 rounded-xl p-3.5 flex items-start gap-3">
+                  <AlertCircle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+                  <p className="text-xs text-rose-800 leading-relaxed">
+                    Ditemukan <strong>{minusCount} tanggal scan</strong> yang memiliki <strong>stok keluar lebih besar dari masuk</strong> (ditandai merah). 
+                    Ini yang menyebabkan defisit pada rak <strong>{detailSelisihRak}</strong>. Silakan verifikasi dengan tim gudang untuk tanggal-tanggal tersebut.
+                  </p>
+                </div>
+              )}
+
+              {/* Breakdown Table */}
+              <div className="border border-gray-200 rounded-2xl overflow-hidden max-h-[420px] overflow-y-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-gray-100 text-gray-700 font-bold sticky top-0 z-10 border-b border-gray-200">
+                    <tr>
+                      <th className="py-3 px-4 w-10 text-center">No</th>
+                      <th className="py-3 px-4">Tgl Scan</th>
+                      <th className="py-3 px-4 text-center">Jumlah IN</th>
+                      <th className="py-3 px-4 text-center">Transaksi IN</th>
+                      <th className="py-3 px-4 text-center">Jumlah OUT</th>
+                      <th className="py-3 px-4 text-center">Transaksi OUT</th>
+                      <th className="py-3 px-4 text-center">Selisih</th>
+                      <th className="py-3 px-4 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 bg-white">
+                    {breakdowns.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="py-10 text-center text-gray-400 font-medium">
+                          Tidak ada data log untuk rak ini.
+                        </td>
+                      </tr>
+                    ) : (
+                      breakdowns.map((b, idx) => (
+                        <tr key={b.tgl_scan} className={`transition-colors ${
+                          b.selisih < 0
+                            ? 'bg-rose-50/70 hover:bg-rose-100/70'
+                            : 'hover:bg-blue-50/50'
+                        }`}>
+                          <td className="py-3 px-4 text-center text-gray-400 font-mono text-[11px]">{idx + 1}</td>
+                          <td className="py-3 px-4 font-bold text-gray-900 text-[12px]">{b.tgl_scan}</td>
+                          <td className="py-3 px-4 text-center">
+                            <span className={`inline-block px-2.5 py-1 rounded-lg font-black text-[11px] ${
+                              b.totalIn > 0 ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-gray-100 text-gray-400'
+                            }`}>
+                              {b.totalIn.toLocaleString()}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-center text-gray-500 text-[11px] font-semibold">{b.inCount}x</td>
+                          <td className="py-3 px-4 text-center">
+                            <span className={`inline-block px-2.5 py-1 rounded-lg font-black text-[11px] ${
+                              b.totalOut > 0 ? 'bg-rose-100 text-rose-700 border border-rose-200' : 'bg-gray-100 text-gray-400'
+                            }`}>
+                              {b.totalOut.toLocaleString()}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-center text-gray-500 text-[11px] font-semibold">{b.outCount}x</td>
+                          <td className="py-3 px-4 text-center">
+                            <span className={`inline-block px-3 py-1 rounded-full font-black text-[12px] ${
+                              b.selisih < 0
+                                ? 'bg-red-500 text-white'
+                                : b.selisih > 0
+                                  ? 'bg-emerald-500 text-white'
+                                  : 'bg-gray-200 text-gray-600'
+                            }`}>
+                              {b.selisih > 0 ? '+' : ''}{b.selisih.toLocaleString()}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            {b.selisih < 0 ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 text-rose-700 border border-rose-200 font-bold rounded-lg text-[10px] uppercase tracking-wide">
+                                <AlertTriangle className="h-3 w-3" /> Minus
+                              </span>
+                            ) : b.selisih === 0 ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold rounded-lg text-[10px] uppercase tracking-wide">
+                                <CheckCircle className="h-3 w-3" /> Seimbang
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 font-bold rounded-lg text-[10px] uppercase tracking-wide">
+                                <CheckCircle className="h-3 w-3" /> Surplus
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                  {breakdowns.length > 0 && (
+                    <tfoot className="bg-gray-50 border-t-2 border-gray-200">
+                      <tr className="font-black text-[12px]">
+                        <td colSpan={2} className="py-3 px-4 text-right text-gray-600 uppercase tracking-wider">TOTAL</td>
+                        <td className="py-3 px-4 text-center">
+                          <span className="inline-block px-3 py-1 bg-emerald-100 text-emerald-800 rounded-lg border border-emerald-200">
+                            {totalIn.toLocaleString()}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-center text-gray-500">{breakdowns.reduce((s, b) => s + b.inCount, 0)}x</td>
+                        <td className="py-3 px-4 text-center">
+                          <span className="inline-block px-3 py-1 bg-rose-100 text-rose-800 rounded-lg border border-rose-200">
+                            {totalOut.toLocaleString()}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-center text-gray-500">{breakdowns.reduce((s, b) => s + b.outCount, 0)}x</td>
+                        <td className="py-3 px-4 text-center">
+                          <span className={`inline-block px-3 py-1 rounded-full font-black ${
+                            totalSelisih < 0 ? 'bg-red-500 text-white' : totalSelisih > 0 ? 'bg-emerald-500 text-white' : 'bg-gray-300 text-gray-700'
+                          }`}>
+                            {totalSelisih > 0 ? '+' : ''}{totalSelisih.toLocaleString()}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4"></td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+                <span className="text-xs text-gray-500">
+                  Menampilkan <strong>{breakdowns.length}</strong> tanggal scan di rak <strong>{detailSelisihRak}</strong>
+                </span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setDetailSelisihOpen(false)}
+                  className="h-10 px-5 rounded-xl font-bold"
+                >
+                  Tutup
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
     </>
   );
 }

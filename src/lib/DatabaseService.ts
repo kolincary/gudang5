@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { collection, getDocs, query as firestoreQuery, where, orderBy, limit, doc, setDoc, writeBatch, deleteDoc, getDoc, increment } from 'firebase/firestore';
 import { db } from './firebase';
+import { skuConversionService } from '../services/skuConversionService';
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
@@ -235,6 +236,18 @@ export const DatabaseService = {
       if (outItems.length === 0) return;
 
       const batch = writeBatch(db);
+
+      // Fetch conversion map to reverse accurately in PCS
+      const conversions = skuConversionService.getCachedConversions();
+      const convMap = new Map<string, { sku_pcs: string; qty: number }>();
+      conversions.forEach(c => {
+        if (c.sku_konversi && c.sku_pcs) {
+          convMap.set(c.sku_konversi.trim().toLowerCase(), {
+            sku_pcs: c.sku_pcs.trim(),
+            qty: Number(c.qty) || 1
+          });
+        }
+      });
       
       const aggregated = new Map<string, {
          qtyToDeduct: number,
@@ -252,22 +265,27 @@ export const DatabaseService = {
         const yearMonth = dateStr.substring(0, 7);
         const todayKey = dateStr;
 
-        if (!aggregated.has(item.sku)) {
-           aggregated.set(item.sku, { qtyToDeduct: 0, monthlyDeducts: new Map() });
+        const rawSku = (item.sku || '').trim();
+        const conv = convMap.get(rawSku.toLowerCase());
+        const finalSku = conv ? conv.sku_pcs : rawSku;
+        const finalQty = conv ? (Number(item.jumlah) || 0) * conv.qty : (Number(item.jumlah) || 0);
+
+        if (!aggregated.has(finalSku)) {
+           aggregated.set(finalSku, { qtyToDeduct: 0, monthlyDeducts: new Map() });
         }
         
-        const skuData = aggregated.get(item.sku)!;
-        skuData.qtyToDeduct += Number(item.jumlah);
+        const skuData = aggregated.get(finalSku)!;
+        skuData.qtyToDeduct += finalQty;
 
         if (!skuData.monthlyDeducts.has(yearMonth)) {
             skuData.monthlyDeducts.set(yearMonth, { total: 0, daily: new Map() });
         }
 
         const monthData = skuData.monthlyDeducts.get(yearMonth)!;
-        monthData.total += Number(item.jumlah);
+        monthData.total += finalQty;
         
         const currentDaily = monthData.daily.get(todayKey) || 0;
-        monthData.daily.set(todayKey, currentDaily + Number(item.jumlah));
+        monthData.daily.set(todayKey, currentDaily + finalQty);
       }
 
       for (const [sku, skuData] of aggregated.entries()) {
@@ -880,15 +898,32 @@ export const DatabaseService = {
       const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
       const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-      // Aggregate items by SKU to minimize writes
+      // Fetch conversion map to convert accurately to PCS
+      const conversions = skuConversionService.getCachedConversions();
+      const convMap = new Map<string, { sku_pcs: string; qty: number }>();
+      conversions.forEach(c => {
+        if (c.sku_konversi && c.sku_pcs) {
+          convMap.set(c.sku_konversi.trim().toLowerCase(), {
+            sku_pcs: c.sku_pcs.trim(),
+            qty: Number(c.qty) || 1
+          });
+        }
+      });
+
+      // Aggregate items by converted SKU to minimize writes
       const aggregated = new Map<string, { qty: number; gudang: string; rak: string; sub_rak: string }>();
       for (const item of items) {
-        const existing = aggregated.get(item.sku);
+        const rawSku = (item.sku || '').trim();
+        const conv = convMap.get(rawSku.toLowerCase());
+        const finalSku = conv ? conv.sku_pcs : rawSku;
+        const finalQty = conv ? (Number(item.jumlah) || 0) * conv.qty : (Number(item.jumlah) || 0);
+
+        const existing = aggregated.get(finalSku);
         if (existing) {
-          existing.qty += item.jumlah;
+          existing.qty += finalQty;
         } else {
-          aggregated.set(item.sku, {
-            qty: item.jumlah,
+          aggregated.set(finalSku, {
+            qty: finalQty,
             gudang: item.gudang || '',
             rak: item.rak || '',
             sub_rak: item.sub_rak || ''

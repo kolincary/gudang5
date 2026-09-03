@@ -128,6 +128,25 @@ interface SnapshotFilter {
   endTime: string;
 }
 
+export interface RedistributionMove {
+  id: string;
+  sku: string;
+  actionType: 'FIX_RAK' | 'FIX_TGL_SCAN' | 'FIX_RAK_DAN_TGL';
+  fromRak: string;
+  toRak: string;
+  fromTgl: string;
+  toTgl: string;
+  jumlah: number;
+  keterangan: string;
+}
+
+const parseDateToTime = (dateStr: string): number => {
+  const norm = formatDateDisplay(dateStr);
+  if (!norm) return 0;
+  const time = new Date(norm).getTime();
+  return isNaN(time) ? 0 : time;
+};
+
 // --- KOMPONEN BARU: FILTER POPOVER ---
 const FilterPopover: React.FC<{
   column: { key: FilterableColumn; name: string; };
@@ -723,6 +742,7 @@ export function DataGudang() {
           balance: number;
           tglScanRaw: string;
           normalizedTglScan: string;
+          tglScanTime: number;
           rak: string;
           outRows: any[];
         }>();
@@ -739,6 +759,7 @@ export function DataGudang() {
               balance: 0,
               tglScanRaw: (log.tgl_scan || '').trim(),
               normalizedTglScan: normTglScan,
+              tglScanTime: parseDateToTime(normTglScan),
               rak: (log.rak || '').trim(),
               outRows: []
             });
@@ -753,55 +774,117 @@ export function DataGudang() {
             g.outRows.push({
               id: log.id,
               jumlah: qty,
-              tglScan: log.tgl_scan || ''
+              rak: (log.rak || '').trim(),
+              sub_rak: (log.sub_rak || log.rak || '').trim(),
+              tglScan: (log.tgl_scan || '').trim()
             });
           }
         });
 
-        // Redistribute per Rak
-        const rakKeys = Array.from(new Set(Array.from(groups.values()).map(g => g.rak.toUpperCase())));
+        const groupList = Array.from(groups.values());
+        const deficitGroups = groupList.filter(g => g.balance < 0);
+        const surplusGroups = groupList.filter(g => g.balance > 0);
 
-        rakKeys.forEach(rakName => {
-          const rakGroups = Array.from(groups.entries())
-            .filter(([, g]) => g.rak.toUpperCase() === rakName);
+        // PHASE 1: Cross-Rak Fix for the EXACT SAME Tgl Scan (e.g. IN at B7 on 2025-09-12, OUT at UTAMA on 2025-09-12)
+        deficitGroups.forEach(negG => {
+          if (negG.balance >= 0) return;
 
-          const surpluses = rakGroups
-            .filter(([, g]) => g.balance > 0)
-            .sort((a, b) => b[1].balance - a[1].balance);
+          const sameDateSurplus = surplusGroups.find(
+            posG => posG.balance > 0 && posG.normalizedTglScan === negG.normalizedTglScan && posG.rak.toUpperCase() !== negG.rak.toUpperCase()
+          );
 
-          const deficits = rakGroups
-            .filter(([, g]) => g.balance < 0);
-
-          deficits.forEach(([, negG]) => {
+          if (sameDateSurplus) {
             const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
-
             for (const row of rows) {
-              if (negG.balance >= 0) break;
-
-              const targetEntry = surpluses.find(([, tg]) => tg.balance > 0);
-              if (targetEntry) {
-                const [, targetG] = targetEntry;
-
+              if (negG.balance >= 0 || sameDateSurplus.balance <= 0) break;
+              if (row.jumlah <= sameDateSurplus.balance || negG.balance + row.jumlah <= 0) {
                 moves.push({
                   id: row.id,
                   sku: normSku,
-                  rak: negG.rak,
+                  actionType: 'FIX_RAK',
+                  fromRak: negG.rak,
+                  toRak: sameDateSurplus.rak,
                   fromTgl: negG.tglScanRaw,
-                  toTgl: targetG.tglScanRaw,
-                  jumlah: row.jumlah
+                  toTgl: sameDateSurplus.tglScanRaw,
+                  jumlah: row.jumlah,
+                  keterangan: `Perbaiki Rak: ${negG.rak} → ${sameDateSurplus.rak} (Tgl Scan: ${negG.normalizedTglScan})`
                 });
 
                 negG.balance += row.jumlah;
-                targetG.balance -= row.jumlah;
-                surpluses.sort((a, b) => b[1].balance - a[1].balance);
+                sameDateSurplus.balance -= row.jumlah;
               }
             }
-          });
+          }
+        });
+
+        // PHASE 2: Same Rak, Nearest Date Proximity (Chronological date proximity within the same Rak)
+        deficitGroups.forEach(negG => {
+          if (negG.balance >= 0) return;
+
+          const sameRakSurpluses = surplusGroups
+            .filter(posG => posG.balance > 0 && posG.rak.toUpperCase() === negG.rak.toUpperCase())
+            .sort((a, b) => Math.abs(a.tglScanTime - negG.tglScanTime) - Math.abs(b.tglScanTime - negG.tglScanTime));
+
+          for (const posG of sameRakSurpluses) {
+            if (negG.balance >= 0) break;
+            const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
+
+            for (const row of rows) {
+              if (negG.balance >= 0 || posG.balance <= 0) break;
+              moves.push({
+                id: row.id,
+                sku: normSku,
+                actionType: 'FIX_TGL_SCAN',
+                fromRak: negG.rak,
+                toRak: posG.rak,
+                fromTgl: negG.tglScanRaw,
+                toTgl: posG.tglScanRaw,
+                jumlah: row.jumlah,
+                keterangan: `Perbaiki Tgl Scan di Rak ${negG.rak}: ${negG.tglScanRaw} → ${posG.tglScanRaw}`
+              });
+
+              negG.balance += row.jumlah;
+              posG.balance -= row.jumlah;
+            }
+          }
+        });
+
+        // PHASE 3: Cross-Rak, Nearest Date Proximity (Fallback if any remaining)
+        deficitGroups.forEach(negG => {
+          if (negG.balance >= 0) return;
+
+          const crossSurpluses = surplusGroups
+            .filter(posG => posG.balance > 0)
+            .sort((a, b) => Math.abs(a.tglScanTime - negG.tglScanTime) - Math.abs(b.tglScanTime - negG.tglScanTime));
+
+          for (const posG of crossSurpluses) {
+            if (negG.balance >= 0) break;
+            const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
+
+            for (const row of rows) {
+              if (negG.balance >= 0 || posG.balance <= 0) break;
+              moves.push({
+                id: row.id,
+                sku: normSku,
+                actionType: 'FIX_RAK_DAN_TGL',
+                fromRak: negG.rak,
+                toRak: posG.rak,
+                fromTgl: negG.tglScanRaw,
+                toTgl: posG.tglScanRaw,
+                jumlah: row.jumlah,
+                keterangan: `Perbaiki Rak & Tgl: ${negG.rak} (${negG.tglScanRaw}) → ${posG.rak} (${posG.tglScanRaw})`
+              });
+
+              negG.balance += row.jumlah;
+              posG.balance -= row.jumlah;
+            }
+          }
         });
       });
 
       if (moves.length === 0) {
-        showToast(`Analisis selesai! Semua saldo pada ${uniqueSkus.length} SKU terpilih sudah seimbang / tidak ada kapasitas perbaikan.`, 'info');
+        showToast(`Analisis selesai! Semua saldo pada ${uniqueSkus.length} SKU terpilih sudah seimbang / tidak ada selisih.`, 'info');
+        setSelectedIds(new Set());
       } else {
         setRedistributeMoves(moves);
         setPreviewSearchTerm('');
@@ -820,19 +903,29 @@ export function DataGudang() {
 
     try {
       setIsExecutingBalanceFix(true);
-      showToast(`Memproses ${redistributeMoves.length} pembaruan perbaikan saldo...`, 'info');
+      showToast(`Memproses ${redistributeMoves.length} pembaruan perbaikan saldo & rak...`, 'info');
 
       const batchSize = 50;
       let successCount = 0;
 
       for (let i = 0; i < redistributeMoves.length; i += batchSize) {
         const batch = redistributeMoves.slice(i, i + batchSize);
-        const promises = batch.map(move =>
-          supabase
+        const promises = batch.map(move => {
+          const updatePayload: Record<string, any> = {
+            log_update_user: 'DEVMODE: Smart Balance Fix'
+          };
+          if (move.toTgl !== move.fromTgl) {
+            updatePayload.tgl_scan = move.toTgl;
+          }
+          if (move.toRak !== move.fromRak) {
+            updatePayload.rak = move.toRak;
+            updatePayload.sub_rak = move.toRak;
+          }
+          return supabase
             .from('database_log')
-            .update({ tgl_scan: move.toTgl })
-            .eq('id', move.id)
-        );
+            .update(updatePayload)
+            .eq('id', move.id);
+        });
 
         const results = await Promise.all(promises);
         results.forEach(res => {
@@ -843,6 +936,7 @@ export function DataGudang() {
       showToast(`Sukses memperbarui ${successCount} data log! Memuat ulang stok...`, 'success');
       setIsRedistributePreviewOpen(false);
       setRedistributeMoves([]);
+      setSelectedIds(new Set());
       loadStockData(true);
     } catch (error: any) {
       console.error('Error executing redistribution:', error);
@@ -859,9 +953,11 @@ export function DataGudang() {
     return redistributeMoves.filter(
       m =>
         m.sku.toLowerCase().includes(term) ||
-        m.rak.toLowerCase().includes(term) ||
+        m.fromRak.toLowerCase().includes(term) ||
+        m.toRak.toLowerCase().includes(term) ||
         m.fromTgl.toLowerCase().includes(term) ||
-        m.toTgl.toLowerCase().includes(term)
+        m.toTgl.toLowerCase().includes(term) ||
+        m.keterangan.toLowerCase().includes(term)
     );
   }, [redistributeMoves, previewSearchTerm]);
 
@@ -2932,7 +3028,10 @@ export function DataGudang() {
         <Modal
           isOpen={isRedistributePreviewOpen}
           onClose={() => {
-            if (!isExecutingBalanceFix) setIsRedistributePreviewOpen(false);
+            if (!isExecutingBalanceFix) {
+              setIsRedistributePreviewOpen(false);
+              setSelectedIds(new Set());
+            }
           }}
           title="Preview Perbaikan Saldo (Lebih Potong)"
           subtitle="Analisis & rekomendasi pemindahan data log OUT untuk menyeimbangkan stok minus"
@@ -2976,7 +3075,7 @@ export function DataGudang() {
             <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-3.5 flex items-start gap-3">
               <AlertCircle className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
               <p className="text-xs text-blue-800 leading-relaxed">
-                Sistem menemukan riwayat transaksi <strong>OUT</strong> pada tanggal scan yang mengalami defisit (minus) dan merekomendasikan pemindahan ke tanggal scan yang memiliki saldo surplus (tersedia) di rak yang sama.
+                Sistem menganalisis transaksi <strong>OUT</strong> yang menyebabkan defisit (minus) dan mencocokkannya secara cerdas: memprioritaskan <strong>perbaikan Rak</strong> untuk tanggal scan yang sama, lalu <strong>perbaikan Tanggal Scan</strong> terdekat di rak yang bersangkutan.
               </p>
             </div>
 
@@ -2987,23 +3086,23 @@ export function DataGudang() {
                 type="text"
                 value={previewSearchTerm}
                 onChange={(e) => setPreviewSearchTerm(e.target.value)}
-                placeholder="Cari SKU, Rak, atau Tanggal..."
+                placeholder="Cari SKU, Rak, Tanggal, atau Keterangan..."
                 className="w-full pl-10 pr-4 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-gray-800"
               />
             </div>
 
             {/* Table of Recommended Moves */}
-            <div className="border border-gray-200 rounded-2xl overflow-hidden max-h-[380px] overflow-y-auto">
+            <div className="border border-gray-200 rounded-2xl overflow-hidden max-h-[420px] overflow-y-auto">
               <table className="w-full text-left text-xs border-collapse">
                 <thead className="bg-gray-100 text-gray-700 font-bold sticky top-0 z-10 border-b border-gray-200">
                   <tr>
-                    <th className="py-2.5 px-3 w-12 text-center">No</th>
+                    <th className="py-2.5 px-3 w-10 text-center">No</th>
                     <th className="py-2.5 px-3">SKU</th>
-                    <th className="py-2.5 px-3 text-center">Rak</th>
-                    <th className="py-2.5 px-3 text-center">Dari Tgl Scan (Defisit)</th>
-                    <th className="py-2.5 px-3 text-center w-8"></th>
-                    <th className="py-2.5 px-3 text-center">Ke Tgl Scan (Surplus)</th>
-                    <th className="py-2.5 px-3 text-right">Qty</th>
+                    <th className="py-2.5 px-3 text-center">Jenis Perbaikan</th>
+                    <th className="py-2.5 px-3 text-center">Perubahan Rak</th>
+                    <th className="py-2.5 px-3 text-center">Perubahan Tgl Scan</th>
+                    <th className="py-2.5 px-3 text-center">Qty</th>
+                    <th className="py-2.5 px-3">Keterangan</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 bg-white">
@@ -3016,28 +3115,66 @@ export function DataGudang() {
                   ) : (
                     filteredMoves.map((move, idx) => (
                       <tr key={move.id || idx} className="hover:bg-blue-50/50 transition-colors">
-                        <td className="py-2 px-3 text-center text-gray-400 font-mono text-[11px]">{idx + 1}</td>
-                        <td className="py-2 px-3 font-bold text-gray-800 font-mono">{move.sku}</td>
-                        <td className="py-2 px-3 text-center">
-                          <span className="inline-block px-2 py-0.5 bg-gray-100 text-gray-700 font-bold rounded-md text-[11px]">
-                            {move.rak}
+                        <td className="py-2.5 px-3 text-center text-gray-400 font-mono text-[11px]">{idx + 1}</td>
+                        <td className="py-2.5 px-3 font-black text-gray-900 font-mono text-[11px]">{move.sku}</td>
+                        <td className="py-2.5 px-3 text-center">
+                          {move.actionType === 'FIX_RAK' && (
+                            <span className="inline-block px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 font-bold rounded-lg text-[10px] tracking-wide uppercase">
+                              Pindah Rak
+                            </span>
+                          )}
+                          {move.actionType === 'FIX_TGL_SCAN' && (
+                            <span className="inline-block px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 font-bold rounded-lg text-[10px] tracking-wide uppercase">
+                              Pindah Tgl Scan
+                            </span>
+                          )}
+                          {move.actionType === 'FIX_RAK_DAN_TGL' && (
+                            <span className="inline-block px-2.5 py-1 bg-purple-50 text-purple-700 border border-purple-200 font-bold rounded-lg text-[10px] tracking-wide uppercase">
+                              Pindah Rak & Tgl
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          {move.fromRak.toUpperCase() !== move.toRak.toUpperCase() ? (
+                            <div className="flex items-center justify-center gap-1.5 font-bold">
+                              <span className="px-2 py-0.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-md text-[11px]">
+                                {move.fromRak}
+                              </span>
+                              <span className="text-gray-400">→</span>
+                              <span className="px-2 py-0.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-md text-[11px]">
+                                {move.toRak}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="inline-block px-2 py-0.5 bg-gray-100 text-gray-700 font-bold rounded-md text-[11px]">
+                              {move.fromRak}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          {move.fromTgl !== move.toTgl ? (
+                            <div className="flex items-center justify-center gap-1.5 font-semibold">
+                              <span className="px-2 py-0.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-md text-[10px]">
+                                {move.fromTgl || '(Kosong)'}
+                              </span>
+                              <span className="text-gray-400">→</span>
+                              <span className="px-2 py-0.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-md text-[10px]">
+                                {move.toTgl || '(Kosong)'}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="inline-block px-2 py-0.5 bg-gray-50 border border-gray-200 text-gray-700 rounded-md text-[10px]">
+                              {move.fromTgl || '(Kosong)'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-black text-blue-700">
+                          <span className="inline-block px-2.5 py-0.5 bg-blue-50 text-blue-700 font-black rounded-full border border-blue-200 text-[11px]">
+                            {move.jumlah}
                           </span>
                         </td>
-                        <td className="py-2 px-3 text-center">
-                          <span className="inline-block px-2.5 py-1 bg-rose-50 border border-rose-200 text-rose-700 font-semibold rounded-lg text-[11px]">
-                            {move.fromTgl || '(Kosong)'}
-                          </span>
-                        </td>
-                        <td className="py-2 px-1 text-center text-gray-400 font-bold">
-                          →
-                        </td>
-                        <td className="py-2 px-3 text-center">
-                          <span className="inline-block px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 font-semibold rounded-lg text-[11px]">
-                            {move.toTgl || '(Kosong)'}
-                          </span>
-                        </td>
-                        <td className="py-2 px-3 text-right font-black text-blue-700">
-                          {move.jumlah}
+                        <td className="py-2.5 px-3 text-gray-600 text-[11px] font-medium">
+                          {move.keterangan}
                         </td>
                       </tr>
                     ))
@@ -3055,7 +3192,10 @@ export function DataGudang() {
                 <Button
                   type="button"
                   variant="secondary"
-                  onClick={() => setIsRedistributePreviewOpen(false)}
+                  onClick={() => {
+                    setIsRedistributePreviewOpen(false);
+                    setSelectedIds(new Set());
+                  }}
                   disabled={isExecutingBalanceFix}
                   className="h-10 px-5 rounded-xl font-bold"
                 >

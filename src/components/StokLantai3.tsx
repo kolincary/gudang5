@@ -226,10 +226,54 @@ export function StokLantai3() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
 
+  const [conversions, setConversions] = useState(() => skuConversionService.getCachedConversions());
+
+  useEffect(() => {
+    skuConversionService.fetchConversions().then(setConversions);
+    const unsubscribe = skuConversionService.subscribe(() => {
+      setConversions(skuConversionService.getCachedConversions());
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const getConvertedInfo = (item: { nama_produk: string; qty: number; qty_lama_terpakai?: number; packing?: string }) => {
+    const rawSku = (item.nama_produk || '').trim();
+    const conv = skuConversionService.findConversion(rawSku);
+    if (conv && conv.sku_pcs && conv.qty > 0) {
+      const mult = Number(conv.qty) || 1;
+      const pcsQty = (item.qty || 0) * mult;
+      const pcsLama = (item.qty_lama_terpakai || 0) * mult;
+      const pcsAktual = pcsQty - pcsLama;
+      return {
+        isConverted: true,
+        displayName: conv.sku_pcs,
+        rawSku: rawSku,
+        multiplier: mult,
+        qty: pcsQty,
+        qty_lama_terpakai: pcsLama,
+        qty_aktual: pcsAktual,
+        packing: conv.satuan_packing || item.packing || ''
+      };
+    }
+    const aktual = (item.qty || 0) - (item.qty_lama_terpakai || 0);
+    return {
+      isConverted: false,
+      displayName: activeProducts.get(rawSku) || rawSku,
+      rawSku: rawSku,
+      multiplier: 1,
+      qty: item.qty || 0,
+      qty_lama_terpakai: item.qty_lama_terpakai || 0,
+      qty_aktual: aktual,
+      packing: activePackingData.get(rawSku) || item.packing || ''
+    };
+  };
+
   const filteredTransaksiData = useMemo(() => {
     return transaksiData.filter(item => {
+      const conv = skuConversionService.findConversion(item.nama_produk);
+      const searchTarget = `${item.nama_produk} ${conv?.sku_pcs || ''} ${item.keterangan}`.toLowerCase();
       const matchSearch = historySearch === '' || 
-        item.nama_produk.toLowerCase().includes(historySearch.toLowerCase());
+        searchTarget.includes(historySearch.toLowerCase());
       
       const matchDate = historyDateFilter === '' || item.tanggal === historyDateFilter;
       
@@ -239,7 +283,7 @@ export function StokLantai3() {
       
       return matchSearch && matchDate && matchType && matchKet;
     });
-  }, [transaksiData, historySearch, historyDateFilter, historyTypeFilter, historyKetFilter]);
+  }, [transaksiData, historySearch, historyDateFilter, historyTypeFilter, historyKetFilter, conversions]);
 
   const handleActionWithPin = (action: () => void, expectedPin?: string, description?: string) => {
     setPendingAction(() => action);
@@ -338,7 +382,10 @@ export function StokLantai3() {
     if (selectedProductIds.size === 0) return;
     
     const selectedData = stokData.filter(item => selectedProductIds.has(item.id));
-    const textData = selectedData.map(item => `${item.nama_produk}\t${item.qty || 0}`).join('\n');
+    const textData = selectedData.map(item => {
+      const info = getConvertedInfo(item);
+      return `${info.displayName}\t${info.qty || 0}`;
+    }).join('\n');
     
     try {
       await navigator.clipboard.writeText(textData);
@@ -354,16 +401,22 @@ export function StokLantai3() {
     
     const selectedData = stokData.filter(item => selectedProductIds.has(item.id));
     
-    const headers = ['Nama Produk', 'Qty', 'Satuan', 'Packing', 'Rak', 'Sub Rak', 'Status SO'];
-    const rows = selectedData.map(item => [
-      `"${item.nama_produk}"`,
-      item.qty || 0,
-      `"${item.satuan || ''}"`,
-      `"${item.packing || ''}"`,
-      `"${item.rak || ''}"`,
-      `"${item.sub_rak || ''}"`,
-      item.sudah_so ? 'Sudah SO' : 'Belum SO'
-    ]);
+    const headers = ['Nama Produk (PCS)', 'Nama Produk Asli', 'Qty (PCS)', 'Stok Lama Terpakai (PCS)', 'Stok Aktual (PCS)', 'Satuan', 'Packing', 'Rak', 'Sub Rak', 'Status SO'];
+    const rows = selectedData.map(item => {
+      const info = getConvertedInfo(item);
+      return [
+        `"${info.displayName}"`,
+        `"${info.rawSku}"`,
+        info.qty,
+        info.qty_lama_terpakai,
+        info.qty_aktual,
+        `"${item.satuan || 'PCS'}"`,
+        `"${info.packing}"`,
+        `"${item.rak || ''}"`,
+        `"${item.sub_rak || ''}"`,
+        item.sudah_so ? 'Sudah SO' : 'Belum SO'
+      ];
+    });
     
     const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -514,6 +567,11 @@ export function StokLantai3() {
 
       snapshot.docs.forEach(docSnap => {
         const data = docSnap.data();
+        const rawSku = data.nama_produk || '';
+        const conv = skuConversionService.findConversion(rawSku);
+        const mult = conv ? Number(conv.qty) || 1 : 1;
+        const displaySku = conv?.sku_pcs || rawSku;
+
         if (data.harian) {
           Object.keys(data.harian).forEach(dateKey => {
             const dayData = data.harian[dateKey];
@@ -522,8 +580,8 @@ export function StokLantai3() {
                 id: `${docSnap.id}_${dateKey}_in`,
                 doc_id: docSnap.id,
                 out_key: 'in',
-                nama_produk: data.nama_produk || '',
-                qty: dayData.in,
+                nama_produk: displaySku,
+                qty: dayData.in * mult,
                 tipe: 'transfer_masuk',
                 gudang: GUDANG_LABEL,
                 rak: '',
@@ -540,8 +598,8 @@ export function StokLantai3() {
                 id: `${docSnap.id}_${dateKey}_retur`,
                 doc_id: docSnap.id,
                 out_key: 'retur',
-                nama_produk: data.nama_produk || '',
-                qty: dayData.retur,
+                nama_produk: displaySku,
+                qty: dayData.retur * mult,
                 tipe: 'retur',
                 gudang: GUDANG_LABEL,
                 rak: '',
@@ -558,8 +616,8 @@ export function StokLantai3() {
                 id: `${docSnap.id}_${dateKey}_cancel`,
                 doc_id: docSnap.id,
                 out_key: 'retur',
-                nama_produk: data.nama_produk || '',
-                qty: dayData.cancel,
+                nama_produk: displaySku,
+                qty: dayData.cancel * mult,
                 tipe: 'cancel',
                 gudang: GUDANG_LABEL,
                 rak: '',
@@ -576,8 +634,8 @@ export function StokLantai3() {
                 id: `${docSnap.id}_${dateKey}_out`,
                 doc_id: docSnap.id,
                 out_key: 'out',
-                nama_produk: data.nama_produk || '',
-                qty: -dayData.out,
+                nama_produk: displaySku,
+                qty: -dayData.out * mult,
                 tipe: 'pembelian_customer',
                 gudang: GUDANG_LABEL,
                 rak: '',
@@ -594,8 +652,8 @@ export function StokLantai3() {
                 id: `${docSnap.id}_${dateKey}_sisa_stok`,
                 doc_id: docSnap.id,
                 out_key: 'sisa_stok',
-                nama_produk: data.nama_produk || '',
-                qty: dayData.sisa_stok,
+                nama_produk: displaySku,
+                qty: dayData.sisa_stok * mult,
                 tipe: 'sisa_stok',
                 gudang: GUDANG_LABEL,
                 rak: '',
@@ -623,10 +681,10 @@ export function StokLantai3() {
   };
 
   const getStatus = (item: StokLantai3Item): string => {
-    const aktual = item.qty - (item.qty_lama_terpakai || 0);
-    if (aktual < 0) return 'minus';
-    if (item.qty === 0 && aktual === 0) return 'habis';
-    if (aktual < 10) return 'low';
+    const info = getConvertedInfo(item);
+    if (info.qty_aktual < 0) return 'minus';
+    if (info.qty === 0 && info.qty_aktual === 0) return 'habis';
+    if (info.qty_aktual < 10) return 'low';
     return 'tersedia';
   };
 
@@ -665,8 +723,12 @@ export function StokLantai3() {
     // Get unique values for the column
     const uniqueValues = Array.from(new Set(
       stokData.map(item => {
+        const info = getConvertedInfo(item);
         if (showFilterPopup === 'status') return getStatus(item);
         if (showFilterPopup === 'sudah_so') return item.sudah_so ? 'Sudah SO' : 'Belum SO';
+        if (showFilterPopup === 'nama_produk') return info.displayName;
+        if (showFilterPopup === 'qty') return String(info.qty);
+        if (showFilterPopup === 'packing') return info.packing;
         const val = item[showFilterPopup as keyof StokLantai3Item];
         return val ? String(val) : '';
       })
@@ -718,21 +780,27 @@ export function StokLantai3() {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(item => {
+        const info = getConvertedInfo(item);
         const namaProduk = (item.nama_produk || '').toLowerCase();
+        const displayNama = (info.displayName || '').toLowerCase();
         const rak = (item.rak || '').toLowerCase();
         const subRak = (item.sub_rak || '').toLowerCase();
-        return namaProduk.includes(query) || rak.includes(query) || subRak.includes(query);
+        return namaProduk.includes(query) || displayNama.includes(query) || rak.includes(query) || subRak.includes(query);
       });
     }
 
     if (filters.nama_produk.length > 0) {
-      filtered = filtered.filter(item =>
-        filters.nama_produk.includes(activeProducts.get(item.nama_produk) || item.nama_produk)
-      );
+      filtered = filtered.filter(item => {
+        const info = getConvertedInfo(item);
+        return filters.nama_produk.includes(info.displayName) || filters.nama_produk.includes(item.nama_produk);
+      });
     }
 
     if (filters.qty.length > 0) {
-      filtered = filtered.filter(item => filters.qty.includes(item.qty));
+      filtered = filtered.filter(item => {
+        const info = getConvertedInfo(item);
+        return filters.qty.includes(info.qty);
+      });
     }
 
     if (filters.satuan.length > 0) {
@@ -740,7 +808,10 @@ export function StokLantai3() {
     }
 
     if (filters.packing.length > 0) {
-      filtered = filtered.filter(item => filters.packing.includes(item.packing || ''));
+      filtered = filtered.filter(item => {
+        const info = getConvertedInfo(item);
+        return filters.packing.includes(info.packing);
+      });
     }
 
     if (filters.rak.length > 0) {
@@ -882,22 +953,34 @@ export function StokLantai3() {
     setSelectedItem(item);
 
     try {
-      const q = query(collection(db, TRX_COL), where("nama_produk", "==", item.nama_produk));
-      const snapshot = await getDocs(q);
+      const conv = skuConversionService.findConversion(item.nama_produk);
+      const searchSkus = [item.nama_produk];
+      if (conv && conv.sku_pcs && conv.sku_pcs !== item.nama_produk) {
+        searchSkus.push(conv.sku_pcs);
+      }
+
+      const promises = searchSkus.map(sku => getDocs(query(collection(db, TRX_COL), where("nama_produk", "==", sku))));
+      const snapshots = await Promise.all(promises);
       const formattedData: TransaksiLantai3[] = [];
 
-      snapshot.docs.forEach(docSnap => {
-        const data = docSnap.data();
-        if (data.nama_produk === item.nama_produk) {
-          // Expand the horizontal harian map into individual rows
+      snapshots.forEach(snapshot => {
+        snapshot.docs.forEach(docSnap => {
+          const data = docSnap.data();
+          const rawSku = data.nama_produk || '';
+          const rowConv = skuConversionService.findConversion(rawSku) || conv;
+          const mult = rowConv ? Number(rowConv.qty) || 1 : 1;
+          const displaySku = rowConv?.sku_pcs || rawSku;
+
           const harian = data.harian || {};
           for (const [dateKey, values] of Object.entries(harian)) {
-            const dayData = values as { in?: number; out?: number; retur?: number };
+            const dayData = values as { in?: number; out?: number; retur?: number; cancel?: number; sisa_stok?: number };
             if (dayData.in && dayData.in > 0) {
               formattedData.push({
                 id: `${docSnap.id}_${dateKey}_in`,
-                nama_produk: data.nama_produk,
-                qty: dayData.in,
+                doc_id: docSnap.id,
+                out_key: 'in',
+                nama_produk: displaySku,
+                qty: dayData.in * mult,
                 tipe: 'transfer_masuk',
                 gudang: GUDANG_LABEL,
                 rak: '', sub_rak: '',
@@ -910,8 +993,10 @@ export function StokLantai3() {
             if (dayData.retur && dayData.retur > 0) {
               formattedData.push({
                 id: `${docSnap.id}_${dateKey}_retur`,
-                nama_produk: data.nama_produk,
-                qty: dayData.retur,
+                doc_id: docSnap.id,
+                out_key: 'retur',
+                nama_produk: displaySku,
+                qty: dayData.retur * mult,
                 tipe: 'retur',
                 gudang: GUDANG_LABEL,
                 rak: '', sub_rak: '',
@@ -924,8 +1009,10 @@ export function StokLantai3() {
             if (dayData.cancel && dayData.cancel > 0) {
               formattedData.push({
                 id: `${docSnap.id}_${dateKey}_cancel`,
-                nama_produk: data.nama_produk,
-                qty: dayData.cancel,
+                doc_id: docSnap.id,
+                out_key: 'retur',
+                nama_produk: displaySku,
+                qty: dayData.cancel * mult,
                 tipe: 'cancel',
                 gudang: GUDANG_LABEL,
                 rak: '', sub_rak: '',
@@ -938,8 +1025,10 @@ export function StokLantai3() {
             if (dayData.out && dayData.out > 0) {
               formattedData.push({
                 id: `${docSnap.id}_${dateKey}_out`,
-                nama_produk: data.nama_produk,
-                qty: -dayData.out,
+                doc_id: docSnap.id,
+                out_key: 'out',
+                nama_produk: displaySku,
+                qty: -dayData.out * mult,
                 tipe: 'pembelian_customer',
                 gudang: GUDANG_LABEL,
                 rak: '', sub_rak: '',
@@ -952,8 +1041,10 @@ export function StokLantai3() {
             if (dayData.sisa_stok && dayData.sisa_stok > 0) {
               formattedData.push({
                 id: `${docSnap.id}_${dateKey}_sisa_stok`,
-                nama_produk: data.nama_produk,
-                qty: dayData.sisa_stok,
+                doc_id: docSnap.id,
+                out_key: 'sisa_stok',
+                nama_produk: displaySku,
+                qty: dayData.sisa_stok * mult,
                 tipe: 'sisa_stok',
                 gudang: GUDANG_LABEL,
                 rak: '', sub_rak: '',
@@ -964,7 +1055,7 @@ export function StokLantai3() {
               });
             }
           }
-        }
+        });
       });
 
       // Sort by date descending
@@ -1527,13 +1618,22 @@ export function StokLantai3() {
   };
 
   const handleExportCSV = () => {
-    const headers = ['Nama Produk', 'Qty', 'Satuan', 'Packing', 'Rak'];
+    const headers = ['Nama Produk (PCS)', 'Nama Produk Asli', 'Qty (PCS)', 'Stok Lama Terpakai (PCS)', 'Stok Aktual (PCS)', 'Satuan', 'Packing', 'Rak', 'Sub Rak'];
     const csvContent = [
       headers.join(','),
       ...filteredStok.map(item => {
-        const displayName = activeProducts.get(item.nama_produk) || item.nama_produk;
-        const displayPacking = activePackingData.get(item.nama_produk) || item.packing;
-        return [displayName, item.qty, item.satuan, displayPacking, item.rak, item.sub_rak]
+        const info = getConvertedInfo(item);
+        return [
+          info.displayName,
+          info.rawSku,
+          info.qty,
+          info.qty_lama_terpakai,
+          info.qty_aktual,
+          item.satuan || 'PCS',
+          info.packing,
+          item.rak,
+          item.sub_rak
+        ]
           .map(val => `"${val}"`)
           .join(',');
       })
@@ -1543,16 +1643,16 @@ export function StokLantai3() {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `stok_lantai3_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `stok_${activeTab}_${new Date().toISOString().split('T')[0]}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  const totalStok = stokData.reduce((sum, item) => sum + item.qty, 0);
+  const totalStok = stokData.reduce((sum, item) => sum + getConvertedInfo(item).qty, 0);
   const totalProduk = stokData.length;
-  const stokMinus = stokData.filter(item => (item.qty - (item.qty_lama_terpakai || 0)) < 0).length;
+  const stokMinus = stokData.filter(item => getConvertedInfo(item).qty_aktual < 0).length;
 
   return (
     <div className="space-y-6">
@@ -1936,6 +2036,7 @@ export function StokLantai3() {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {paginatedStok.map((item, index) => {
                     const isSelected = selectedProductIds.has(item.id);
+                    const convInfo = getConvertedInfo(item);
                     return (
                     <tr key={item.id} className={`hover:bg-gray-50 ${isSelected ? 'bg-blue-50/60' : ''}`}>
                       <td className="px-4 py-3 w-10">
@@ -1950,7 +2051,21 @@ export function StokLantai3() {
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-900">{(currentPage - 1) * itemsPerPage + index + 1}</td>
                       <td className="px-4 py-3 text-sm text-gray-900">
-                        {activeProducts.get(item.nama_produk) || item.nama_produk}
+                        <div className="flex flex-col">
+                          <div className="flex items-center gap-1.5 font-bold text-gray-900 font-mono">
+                            <span>{convInfo.displayName}</span>
+                            {convInfo.isConverted && (
+                              <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-black bg-blue-100 text-blue-800 border border-blue-200">
+                                PCS
+                              </span>
+                            )}
+                          </div>
+                          {convInfo.isConverted && (
+                            <span className="text-[11px] text-gray-400 font-mono">
+                              Asal: {item.nama_produk} (×{convInfo.multiplier})
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-center">
                         {item.sudah_so ? (
@@ -1961,23 +2076,23 @@ export function StokLantai3() {
                           <span className="text-gray-400 text-xs italic">-</span>
                         )}
                       </td>
-                      <td className={`px-4 py-3 text-sm text-center font-semibold ${item.qty < 0 ? 'text-red-600' : item.qty === 0 ? 'text-gray-500' : 'text-green-600'}`}>
-                        {item.qty.toLocaleString()}
+                      <td className={`px-4 py-3 text-sm text-center font-semibold ${convInfo.qty < 0 ? 'text-red-600' : convInfo.qty === 0 ? 'text-gray-500' : 'text-green-600'}`}>
+                        {convInfo.qty.toLocaleString()}
                       </td>
                       <td className="px-4 py-3 text-sm text-center font-medium text-orange-600">
-                        {(item.qty_lama_terpakai || 0).toLocaleString()}
+                        {convInfo.qty_lama_terpakai.toLocaleString()}
                       </td>
-                      <td className={`px-4 py-3 text-sm text-center font-bold ${item.qty - (item.qty_lama_terpakai || 0) < 0 ? 'text-red-600' : 'text-blue-600'}`}>
-                        {(item.qty - (item.qty_lama_terpakai || 0)).toLocaleString()}
+                      <td className={`px-4 py-3 text-sm text-center font-bold ${convInfo.qty_aktual < 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                        {convInfo.qty_aktual.toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 text-sm text-gray-600 text-center">{activePackingData.get(item.nama_produk) || item.packing}</td>
+                      <td className="px-4 py-3 text-sm text-gray-600 text-center">{convInfo.packing}</td>
                       <td className="px-4 py-3 text-sm text-gray-600 text-center">{item.rak}</td>
                       <td className="px-4 py-3 text-center">
-                        {(item.qty - (item.qty_lama_terpakai || 0)) < 0 ? (
+                        {convInfo.qty_aktual < 0 ? (
                           <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">Minus</span>
-                        ) : item.qty === 0 && (item.qty - (item.qty_lama_terpakai || 0)) === 0 ? (
+                        ) : convInfo.qty === 0 && convInfo.qty_aktual === 0 ? (
                           <span className="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800">Habis</span>
-                        ) : (item.qty - (item.qty_lama_terpakai || 0)) < 10 ? (
+                        ) : convInfo.qty_aktual < 10 ? (
                           <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">Low</span>
                         ) : (
                           <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">Tersedia</span>
@@ -2301,23 +2416,40 @@ export function StokLantai3() {
       <Modal
         isOpen={showItemHistoryModal}
         onClose={() => setShowItemHistoryModal(false)}
-        title={`Riwayat Transaksi: ${selectedItem?.nama_produk || ''}`}
+        title={selectedItem ? (() => {
+          const convInfo = getConvertedInfo(selectedItem);
+          return `Riwayat Transaksi: ${convInfo.displayName}${convInfo.isConverted ? ` (PCS - Asal: ${convInfo.rawSku})` : ''}`;
+        })() : 'Riwayat Transaksi'}
         size="5xl"
       >
         <div className="space-y-4">
-          {selectedItem && (
+          {selectedItem && (() => {
+            const convInfo = getConvertedInfo(selectedItem);
+            return (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-xs text-blue-600 font-medium">Nama Produk</p>
-                  <p className="text-sm font-bold text-blue-900">
-                    {activeProducts.get(selectedItem.nama_produk) || selectedItem.nama_produk}
-                  </p>
+                  <div className="flex flex-col">
+                    <p className="text-sm font-bold text-blue-900 font-mono">
+                      {convInfo.displayName}
+                      {convInfo.isConverted && (
+                        <span className="ml-2 inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-black bg-blue-100 text-blue-800 border border-blue-200">
+                          PCS (×{convInfo.multiplier})
+                        </span>
+                      )}
+                    </p>
+                    {convInfo.isConverted && (
+                      <p className="text-xs text-gray-500 font-mono">
+                        Asal: {convInfo.rawSku}
+                      </p>
+                    )}
+                  </div>
                 </div>
                 <div>
-                  <p className="text-xs text-blue-600 font-medium">Stok Saat Ini</p>
-                  <p className={`text-sm font-bold ${selectedItem.qty < 0 ? 'text-red-600' : selectedItem.qty === 0 ? 'text-gray-600' : 'text-green-600'}`}>
-                    {selectedItem.qty.toLocaleString()} {selectedItem.satuan}
+                  <p className="text-xs text-blue-600 font-medium">Stok Saat Ini (PCS)</p>
+                  <p className={`text-sm font-bold ${convInfo.qty < 0 ? 'text-red-600' : convInfo.qty === 0 ? 'text-gray-600' : 'text-green-600'}`}>
+                    {convInfo.qty.toLocaleString()} PCS
                   </p>
                 </div>
                 <div>
@@ -2326,11 +2458,12 @@ export function StokLantai3() {
                 </div>
                 <div>
                   <p className="text-xs text-blue-600 font-medium">Packing</p>
-                  <p className="text-sm font-bold text-blue-900">{activePackingData.get(selectedItem.nama_produk) || selectedItem.packing}</p>
+                  <p className="text-sm font-bold text-blue-900">{convInfo.packing}</p>
                 </div>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {itemHistory.length === 0 ? (
             <div className="text-center py-8">

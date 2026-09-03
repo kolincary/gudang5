@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
@@ -8,6 +8,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { saveExportHistory } from '../lib/exportHistoryService';
 import { ExportHistoryModal } from './ExportHistoryModal';
+import { skuConversionService } from '../services/skuConversionService';
 
 export interface DatabaseLogEntry {
   id: string;
@@ -25,6 +26,8 @@ export interface DatabaseLogEntry {
   is_adjustment?: boolean;
   created_at?: string;
   tgl_normalized?: string;
+  sku_pcs?: string;
+  jumlah_pcs?: number;
 }
 
 interface ImportProgress {
@@ -51,6 +54,63 @@ function useDebounce<T>(value: T, delay: number): T {
 
   return debouncedValue;
 }
+
+// --- Helper: Format Date Display ---
+// Ensure strict YYYY-MM-DD display regardless of stored format
+export const formatDateDisplay = (dateStr: string): string => {
+  if (!dateStr) return '';
+  let cleanStr = dateStr.trim();
+
+  // Jika string berisi jam (ada spasi atau T), ambil hanya tanggalnya
+  if (cleanStr.includes(' ') || cleanStr.includes('T')) {
+    cleanStr = cleanStr.split(/[ T]/)[0];
+  }
+
+  // Check for YYYY-MM-DD or YYYY-M-D and normalize to YYYY-MM-DD
+  if (/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.test(cleanStr)) {
+    const match = cleanStr.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (match) {
+      return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+    }
+  }
+
+  // Check for DD/MM/YYYY or DD-MM-YYYY
+  if (/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.test(cleanStr)) {
+    const match = cleanStr.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (match) {
+      let day = match[1];
+      let month = match[2];
+      const year = match[3];
+      if (parseInt(month) > 12 && parseInt(day) <= 12) {
+        [day, month] = [month, day];
+      }
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+  }
+
+  return cleanStr;
+};
+
+// --- Helper: Normalize Date Filter ---
+export const normalizeFilterDate = (dateStr: string): string => {
+  if (!dateStr) return '';
+  const cleanStr = dateStr.trim();
+  if (/^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/.test(cleanStr)) {
+    const parts = cleanStr.split(/[\/-]/);
+    let day = parseInt(parts[0]);
+    let month = parseInt(parts[1]);
+    const year = parts[2];
+
+    if (month > 12 && day <= 12) {
+      const temp = day;
+      day = month;
+      month = temp;
+    }
+
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+  return cleanStr;
+};
 
 export interface DatabaseLogProps {
   initialGudangFilter?: string;
@@ -204,6 +264,87 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
     setIsManualDateModalOpen(false);
   };
+
+  // --- TRANSFER MUTASI PAIRING ---
+  interface TransferPairDetail {
+    pairId: string;
+    role: 'OUT_ORIGIN' | 'IN_DEST';
+    partnerId: string;
+    partnerRak: string;
+    partnerSubRak?: string;
+    partnerType: 'IN' | 'OUT';
+    sku: string;
+    qty: number;
+    tgl: string;
+    waktu: string;
+    tglScan: string;
+  }
+
+  const transferPairs = useMemo(() => {
+    const pairMap = new Map<string, TransferPairDetail>();
+
+    // Filter candidate transfer entries
+    const candidates = filteredEntries.filter(
+      entry => (entry.gudang || '').toUpperCase().includes('TRANSFER') || (entry.type === 'MOVE')
+    );
+
+    // Group by unique signature: SKU + Normalized Tgl + Waktu + Normalized Tgl Scan + Qty
+    const grouped = new Map<string, DatabaseLogEntry[]>();
+    candidates.forEach(entry => {
+      const normSku = (entry.sku || '').trim().toUpperCase();
+      const normTgl = formatDateDisplay(entry.tgl) || (entry.tgl || '').trim();
+      const normWaktu = (entry.waktu || '').trim();
+      const normTglScan = formatDateDisplay(entry.tgl_scan) || (entry.tgl_scan || '').trim();
+      const qty = Number(entry.jumlah || 0);
+      const key = `${normSku}|${normTgl}|${normWaktu}|${normTglScan}|${qty}`;
+
+      if (!grouped.has(key)) {
+        grouped.set(key, []);
+      }
+      grouped.get(key)!.push(entry);
+    });
+
+    grouped.forEach((entries, key) => {
+      const outItems = entries.filter(e => (e.type || '').toUpperCase() === 'OUT');
+      const inItems = entries.filter(e => (e.type || '').toUpperCase() === 'IN');
+
+      const minPairs = Math.min(outItems.length, inItems.length);
+      for (let i = 0; i < minPairs; i++) {
+        const outItem = outItems[i];
+        const inItem = inItems[i];
+
+        pairMap.set(outItem.id, {
+          pairId: key,
+          role: 'OUT_ORIGIN',
+          partnerId: inItem.id,
+          partnerRak: inItem.rak,
+          partnerSubRak: inItem.sub_rak,
+          partnerType: 'IN',
+          sku: outItem.sku,
+          qty: outItem.jumlah,
+          tgl: outItem.tgl,
+          waktu: outItem.waktu,
+          tglScan: outItem.tgl_scan
+        });
+
+        pairMap.set(inItem.id, {
+          pairId: key,
+          role: 'IN_DEST',
+          partnerId: outItem.id,
+          partnerRak: outItem.rak,
+          partnerSubRak: outItem.sub_rak,
+          partnerType: 'OUT',
+          sku: inItem.sku,
+          qty: inItem.jumlah,
+          tgl: inItem.tgl,
+          waktu: inItem.waktu,
+          tglScan: inItem.tgl_scan
+        });
+      }
+    });
+
+    return pairMap;
+  }, [filteredEntries]);
 
   // --- STOCK BALANCE ANALYSIS STATE ---
   interface BalanceAnalysisResult {
@@ -680,70 +821,6 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
   };
 
-  // --- Helper: Format Date Display ---
-  // Ensure strict YYYY-MM-DD display regardless of stored format
-  const formatDateDisplay = (dateStr: string): string => {
-    if (!dateStr) return '';
-    let cleanStr = dateStr.trim();
-
-    // Jika string berisi jam (ada spasi atau T), ambil hanya tanggalnya
-    if (cleanStr.includes(' ') || cleanStr.includes('T')) {
-      cleanStr = cleanStr.split(/[ T]/)[0];
-    }
-
-    // New: Check for YYYY-MM-DD or YYYY-M-D and normalize to YYYY-MM-DD
-    if (/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.test(cleanStr)) {
-      const match = cleanStr.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-      if (match) {
-        return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
-      }
-    }
-
-    // Check for DD/MM/YYYY or DD-MM-YYYY
-    if (/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.test(cleanStr)) {
-      const match = cleanStr.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-      if (match) {
-        let day = match[1];
-        let month = match[2];
-        const year = match[3];
-        // Simple heuristic: if month part is > 12, it must be the day (US format MM/DD/YYYY)
-        if (parseInt(month) > 12 && parseInt(day) <= 12) {
-          [day, month] = [month, day];
-        }
-        return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      }
-    }
-
-    return cleanStr;
-  };
-
-  // --- Helper: Normalize Date Filter ---
-  const normalizeFilterDate = (dateStr: string): string => {
-    if (!dateStr) return '';
-    const cleanStr = dateStr.trim();
-    // Check DD/MM/YYYY or MM/DD/YYYY
-    if (/^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/.test(cleanStr)) {
-      const parts = cleanStr.split(/[\/-]/);
-      let day = parseInt(parts[0]);
-      let month = parseInt(parts[1]);
-      const year = parts[2];
-
-      // If month is > 12, it must be the day (so input was MM-DD-YYYY)
-      if (month > 12 && day <= 12) {
-        // Swap
-        const temp = day;
-        day = month;
-        month = temp;
-      }
-      // If first part > 12, it must be day (DD-MM-YYYY) - already handled by default assignment but good to be explicit mentally
-      // Default assumption is DD-MM-YYYY, so if parts[1] is valid month, we accept it.
-      // If both <= 12, we assume DD-MM-YYYY as per Indonesian standard.
-
-      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    }
-    return cleanStr;
-  };
-
   const [isMigrating, setIsMigrating] = useState(false);
   const [isRepairing, setIsRepairing] = useState(false);
   const [migrationProgress, setMigrationProgress] = useState({ current: 0, total: 0 });
@@ -796,6 +873,50 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     } finally {
       setIsRepairing(false);
     }
+  };
+
+  const sortLogRows = (items: any[]) => {
+    const isAscending = sortConfig ? sortConfig.direction === 'asc' : false;
+    return [...items].sort((a, b) => {
+      if (sortConfig) {
+        const key = sortConfig.key === 'tgl' ? 'tgl_normalized' : sortConfig.key;
+        const aVal = a[key] ?? '';
+        const bVal = b[key] ?? '';
+        if (aVal !== bVal) {
+          if (aVal < bVal) return isAscending ? -1 : 1;
+          if (aVal > bVal) return isAscending ? 1 : -1;
+        }
+      } else {
+        // Default sort: tgl_normalized DESC
+        const aTgl = a.tgl_normalized || a.tgl || '';
+        const bTgl = b.tgl_normalized || b.tgl || '';
+        if (aTgl !== bTgl) {
+          return aTgl > bTgl ? -1 : 1;
+        }
+        // waktu DESC
+        const aWaktu = a.waktu || '';
+        const bWaktu = b.waktu || '';
+        if (aWaktu !== bWaktu) {
+          return aWaktu > bWaktu ? -1 : 1;
+        }
+      }
+
+      // If tgl and waktu are identical:
+      // In physical transfer sequence:
+      // 1. OUT from source rak (happens first)
+      // 2. IN to destination rak (happens second / latest)
+      // For DESC sorting (latest on top): IN comes before OUT (so bottom-up reads OUT -> IN).
+      // For ASC sorting (oldest on top): OUT comes before IN (so top-down reads OUT -> IN).
+      const aType = (a.type || '').toUpperCase();
+      const bType = (b.type || '').toUpperCase();
+      if (aType !== bType) {
+        if (aType === 'IN' && bType === 'OUT') return isAscending ? 1 : -1;
+        if (aType === 'OUT' && bType === 'IN') return isAscending ? -1 : 1;
+      }
+
+      // Fallback stable tie-breaker by id
+      return isAscending ? (a.id > b.id ? 1 : -1) : (a.id > b.id ? -1 : 1);
+    });
   };
 
   const loadLogEntries = async (page = 1, perPage = itemsPerPage, currentFilters = filters, specificSelectedIds?: Set<string>) => {
@@ -916,38 +1037,13 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         }
         
         // Sorting manual di client
-        allSelectedData.sort((a, b) => {
-          let aVal, bVal;
-          if (sortConfig) {
-            const key = sortConfig.key === 'tgl' ? 'tgl_normalized' : sortConfig.key;
-            aVal = a[key];
-            bVal = b[key];
-          } else {
-            // Default sort: tgl_normalized DESC, waktu DESC, id DESC
-            if (a.tgl_normalized !== b.tgl_normalized) {
-              return a.tgl_normalized > b.tgl_normalized ? -1 : 1;
-            }
-            if (a.waktu !== b.waktu) {
-              return a.waktu > b.waktu ? -1 : 1;
-            }
-            return a.id > b.id ? -1 : 1;
-          }
-          
-          if (aVal === bVal) {
-             return a.id > b.id ? -1 : 1;
-          }
-          
-          const ascending = sortConfig ? sortConfig.direction === 'asc' : false;
-          if (aVal < bVal) return ascending ? -1 : 1;
-          if (aVal > bVal) return ascending ? 1 : -1;
-          return 0;
-        });
+        const sortedSelected = sortLogRows(allSelectedData);
         
         // Pagination manual di client
-        const count = allSelectedData.length;
+        const count = sortedSelected.length;
         const from = (safePage - 1) * safePerPage;
         const to = from + safePerPage;
-        const pagedData = allSelectedData.slice(from, to);
+        const pagedData = sortedSelected.slice(from, to);
         
         const mappedData = pagedData.map((item: any) => ({
           ...item,
@@ -978,7 +1074,10 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         user: item.user_name
       }));
 
-      setFilteredEntries(mappedData);
+      // Apply transfer-aware chronological sorting
+      const sortedData = sortLogRows(mappedData);
+
+      setFilteredEntries(sortedData);
       setTotalCount(count || 0);
       setDataLoaded(true);
 
@@ -3105,68 +3204,155 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                         </tr>
                       </thead>
                       <tbody>
-                        {dataLoaded && filteredEntries.map((entry, index) => (
-                          <tr key={entry.id} className={`${selectedIds.has(entry.id) ? 'bg-blue-200' : entry.is_adjustment ? 'bg-amber-50' : index % 2 === 0 ? 'bg-blue-50' : 'bg-white'} hover:bg-blue-100 border-b border-gray-200 transition-colors`}>
-                            <td className="px-3 py-2 text-center border-r border-gray-200 w-12">
-                              <input
-                                type="checkbox"
-                                checked={selectedIds.has(entry.id)}
-                                onChange={() => handleCheckboxChange(entry.id)}
-                                className="w-4 h-4 cursor-pointer"
-                              />
-                            </td>
-                            <td className="px-4 py-2 text-sm text-center border-r border-gray-200">{formatDateDisplay(entry.tgl)}</td>
-                            <td className="px-4 py-2 text-sm text-center border-r border-gray-200">{entry.waktu}</td>
-                            <td className="px-4 py-2 text-sm border-r border-gray-200">
-                              <div className="flex items-center justify-between">
-                                <span className={entry.is_adjustment ? 'font-bold text-amber-800' : ''}>{entry.sku}</span>
-                                {entry.is_adjustment && (
-                                  <span className="flex items-center gap-1 bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-full font-bold ml-2 shadow-sm border border-amber-200 shrink-0">
-                                    <Tag className="h-2.5 w-2.5" />
-                                    PENYESUAIAN
+                        {dataLoaded && filteredEntries.map((entry, index) => {
+                          const pair = transferPairs.get(entry.id);
+                          const isSelected = selectedIds.has(entry.id);
+
+                          // Row styling: Selected > Transfer Pair > Adjustment > Zebra
+                          const rowClass = isSelected
+                            ? 'bg-blue-200 hover:bg-blue-300'
+                            : pair
+                              ? pair.role === 'OUT_ORIGIN'
+                                ? 'bg-purple-50/90 hover:bg-purple-100/90 border-l-4 border-l-purple-600'
+                                : 'bg-indigo-50/90 hover:bg-indigo-100/90 border-l-4 border-l-indigo-600'
+                              : entry.is_adjustment
+                                ? 'bg-amber-50 hover:bg-amber-100'
+                                : index % 2 === 0
+                                  ? 'bg-blue-50/40 hover:bg-blue-100/60'
+                                  : 'bg-white hover:bg-blue-50';
+
+                          return (
+                            <tr key={entry.id} className={`${rowClass} border-b border-gray-200 transition-colors`}>
+                              <td className="px-3 py-2 text-center border-r border-gray-200 w-12">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => handleCheckboxChange(entry.id)}
+                                  className="w-4 h-4 cursor-pointer"
+                                />
+                              </td>
+                              <td className="px-4 py-2 text-sm text-center border-r border-gray-200 font-medium">
+                                {formatDateDisplay(entry.tgl)}
+                              </td>
+                              <td className="px-4 py-2 text-sm text-center border-r border-gray-200 font-mono">
+                                {entry.waktu}
+                              </td>
+                              <td className="px-4 py-2 text-sm border-r border-gray-200 font-mono">
+                                <div className="flex items-center justify-between">
+                                  <span className={entry.is_adjustment ? 'font-bold text-amber-800' : 'font-semibold text-gray-900'}>{entry.sku}</span>
+                                  {entry.is_adjustment && (
+                                    <span className="flex items-center gap-1 bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-full font-bold ml-2 shadow-sm border border-amber-200 shrink-0">
+                                      <Tag className="h-2.5 w-2.5" />
+                                      PENYESUAIAN
+                                    </span>
+                                  )}
+                                </div>
+                                {(() => {
+                                  const conv = entry.sku_pcs
+                                    ? { sku_pcs: entry.sku_pcs, qty: entry.jumlah_pcs ? Math.round(entry.jumlah_pcs / (entry.jumlah || 1)) : 1 }
+                                    : skuConversionService.findConversion(entry.sku);
+                                  if (!conv || !conv.sku_pcs) return null;
+                                  const finalQtyPcs = entry.jumlah_pcs !== undefined && entry.jumlah_pcs !== null
+                                    ? entry.jumlah_pcs
+                                    : (entry.jumlah * Number(conv.qty || 1));
+                                  return (
+                                    <div className="mt-1 flex items-center gap-1.5 bg-blue-50/90 border border-blue-200/80 rounded px-1.5 py-0.5 text-[11px] text-blue-900 font-sans shadow-xs">
+                                      <span className="font-extrabold text-blue-700 bg-blue-100/90 px-1 rounded text-[9px] uppercase tracking-wider">➔ PCS</span>
+                                      <span className="font-mono font-bold text-blue-950 truncate max-w-[200px]" title={conv.sku_pcs}>{conv.sku_pcs}</span>
+                                      <span className="font-black text-blue-700 ml-auto whitespace-nowrap">({finalQtyPcs} Pcs)</span>
+                                    </div>
+                                  );
+                                })()}
+                              </td>
+                              <td className="px-4 py-2 text-sm text-center border-r border-gray-200 font-black text-gray-900">
+                                {entry.jumlah}
+                              </td>
+                              <td className="px-4 py-2 text-center border-r border-gray-200">
+                                {pair ? (
+                                  <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-black shadow-sm ${
+                                    entry.type === 'OUT'
+                                      ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                      : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                  }`}>
+                                    <ArrowRightLeft className="h-3 w-3" />
+                                    {entry.type === 'OUT' ? 'OUT (MUTASI)' : 'IN (MUTASI)'}
+                                  </span>
+                                ) : (
+                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                    entry.type === 'IN' ? 'bg-green-100 text-green-800' :
+                                    entry.type === 'OUT' ? 'bg-red-100 text-red-800' :
+                                    'bg-blue-100 text-blue-800'
+                                  }`}>
+                                    {entry.type}
                                   </span>
                                 )}
-                              </div>
-                            </td>
-                            <td className="px-4 py-2 text-sm text-center border-r border-gray-200">{entry.jumlah}</td>
-                            <td className="px-4 py-2 text-center border-r border-gray-200">
-                              <span className={`px-2 py-1 rounded text-xs font-medium ${entry.type === 'IN' ? 'bg-green-100 text-green-800' :
-                                entry.type === 'OUT' ? 'bg-red-100 text-red-800' :
-                                  'bg-blue-100 text-blue-800'
-                                }`}>
-                                {entry.type}
-                              </span>
-                            </td>
-                            <td className="px-4 py-2 text-sm border-r border-gray-200">{entry.gudang}</td>
-                            <td className="px-4 py-2 text-sm border-r border-gray-200">{entry.rak}</td>
-                            <td
-                              className="px-4 py-2 text-sm border-r border-gray-200 cursor-pointer hover:bg-blue-200 transition-colors"
-                              onClick={() => setFilters({ ...filters, tglScan: entry.tgl_scan || '' })}
-                              title="Klik untuk filter Tgl Scan"
-                            >
-                              {formatDateDisplay(entry.tgl_scan)}
-                            </td>
-                            <td className="px-4 py-2 text-sm border-r border-gray-200">{entry.user}</td>
-                            <td className="px-4 py-2 text-sm border-r border-gray-200">{entry.sub_rak}</td>
-                            <td className="px-4 py-2 text-sm border-r border-gray-200">{entry.log_update_user}</td>
-                            <td className="px-4 py-2 text-center">
-                              <div className="flex justify-center space-x-2">
-                                <Button
-                                  onClick={() => handleEdit(entry)}
-                                  className="h-8 w-8 p-0 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 rounded-lg transition-all border border-blue-200 backdrop-blur-sm flex items-center justify-center"
-                                >
-                                  <Edit2 className="h-4 w-4" />
-                                </Button>
-                                <Button
-                                  onClick={() => handleDelete(entry.id)}
-                                  className="h-8 w-8 p-0 bg-red-500/10 hover:bg-red-500/20 text-red-600 rounded-lg transition-all border border-red-200 backdrop-blur-sm flex items-center justify-center"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                              </td>
+                              <td className="px-4 py-2 text-sm border-r border-gray-200">
+                                {pair ? (
+                                  <div className="flex flex-col gap-0.5">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-black bg-purple-600 text-white shadow-sm w-fit">
+                                      <ArrowRightLeft className="h-3 w-3" />
+                                      TRANSFER
+                                    </span>
+                                    <span className="text-[10px] text-purple-700 font-bold whitespace-nowrap">
+                                      {pair.role === 'OUT_ORIGIN' ? '↗ Dari Rak Asal' : '↘ Ke Rak Tujuan'}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  entry.gudang
+                                )}
+                              </td>
+                              <td className="px-4 py-2 text-sm border-r border-gray-200">
+                                {pair ? (
+                                  <div>
+                                    <span className="font-black text-gray-900">{entry.rak}</span>
+                                    <div className="text-[10px] font-bold flex items-center gap-1 mt-0.5 whitespace-nowrap">
+                                      {pair.role === 'OUT_ORIGIN' ? (
+                                        <>
+                                          <span className="text-purple-700">Pindah ➔</span>
+                                          <span className="bg-purple-200/80 text-purple-900 px-1.5 py-0.2 rounded font-mono font-black">{pair.partnerRak}</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <span className="text-indigo-700">Terima 🠔</span>
+                                          <span className="bg-indigo-200/80 text-indigo-900 px-1.5 py-0.2 rounded font-mono font-black">{pair.partnerRak}</span>
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  entry.rak
+                                )}
+                              </td>
+                              <td
+                                className="px-4 py-2 text-sm border-r border-gray-200 cursor-pointer hover:bg-blue-200 transition-colors font-medium"
+                                onClick={() => setFilters({ ...filters, tglScan: entry.tgl_scan || '' })}
+                                title="Klik untuk filter Tgl Scan"
+                              >
+                                {formatDateDisplay(entry.tgl_scan)}
+                              </td>
+                              <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600">{entry.user}</td>
+                              <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600">{entry.sub_rak}</td>
+                              <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600 font-mono text-xs">{entry.log_update_user}</td>
+                              <td className="px-4 py-2 text-center">
+                                <div className="flex justify-center space-x-2">
+                                  <Button
+                                    onClick={() => handleEdit(entry)}
+                                    className="h-8 w-8 p-0 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 rounded-lg transition-all border border-blue-200 backdrop-blur-sm flex items-center justify-center"
+                                  >
+                                    <Edit2 className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    onClick={() => handleDelete(entry.id)}
+                                    className="h-8 w-8 p-0 bg-red-500/10 hover:bg-red-500/20 text-red-600 rounded-lg transition-all border border-red-200 backdrop-blur-sm flex items-center justify-center"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -3183,99 +3369,151 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       <span className="font-bold text-sm">Pilih Semua di Halaman Ini</span>
                     </div>
                     <div className="divide-y divide-gray-200">
-                      {dataLoaded && filteredEntries.map((entry, index) => (
-                        <div
-                          key={entry.id}
-                          className={`p-4 ${selectedIds.has(entry.id) ? 'bg-blue-100' : entry.is_adjustment ? 'bg-amber-50' : 'bg-white'} active:bg-blue-50 transition-colors relative`}
-                        >
-                          <div className="flex items-start gap-3">
-                            <div className="pt-1">
-                              <input
-                                type="checkbox"
-                                checked={selectedIds.has(entry.id)}
-                                onChange={() => handleCheckboxChange(entry.id)}
-                                className="w-5 h-5 cursor-pointer rounded"
-                              />
-                            </div>
-                            <div className="flex-1 space-y-3">
-                              {/* Baris 1: SKU dan Type */}
-                              <div className="flex justify-between items-start">
-                                <div>
-                                  <h4 className={`text-base font-bold text-gray-900 ${entry.is_adjustment ? 'text-amber-900' : ''}`}>
-                                    {entry.sku}
-                                  </h4>
-                                  {entry.is_adjustment && (
-                                    <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-800 text-[10px] px-2 py-0.5 rounded-full font-bold mt-1 border border-amber-200 shadow-sm">
-                                      <Tag className="h-2.5 w-2.5" />
-                                      PENYESUAIAN
-                                    </span>
-                                  )}
-                                </div>
-                                <span className={`px-3 py-1 rounded-full text-xs font-bold shadow-sm ${entry.type === 'IN' ? 'bg-green-100 text-green-800 border border-green-200' :
-                                  entry.type === 'OUT' ? 'bg-red-100 text-red-800 border border-red-200' :
-                                    'bg-blue-100 text-blue-800 border border-blue-200'
-                                  }`}>
-                                  {entry.type}
+                      {dataLoaded && filteredEntries.map((entry, index) => {
+                        const pair = transferPairs.get(entry.id);
+                        const isSelected = selectedIds.has(entry.id);
+
+                        return (
+                          <div
+                            key={entry.id}
+                            className={`p-4 ${
+                              isSelected
+                                ? 'bg-blue-100'
+                                : pair
+                                  ? pair.role === 'OUT_ORIGIN'
+                                    ? 'bg-purple-50/80 border-l-4 border-l-purple-600'
+                                    : 'bg-indigo-50/80 border-l-4 border-l-indigo-600'
+                                  : entry.is_adjustment
+                                    ? 'bg-amber-50'
+                                    : 'bg-white'
+                            } active:bg-blue-50 transition-colors relative`}
+                          >
+                            {pair && (
+                              <div className="mb-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center justify-between shadow-sm">
+                                <span className="flex items-center gap-1.5">
+                                  <ArrowRightLeft className="h-3.5 w-3.5" />
+                                  {pair.role === 'OUT_ORIGIN'
+                                    ? `MUTASI KELUAR: ${entry.rak} ➔ ${pair.partnerRak}`
+                                    : `MUTASI MASUK: ${entry.rak} 🠔 ${pair.partnerRak}`}
+                                </span>
+                                <span className="bg-white/20 px-2 py-0.5 rounded text-[10px] font-black">
+                                  {pair.qty} PCS
                                 </span>
                               </div>
-
-                              {/* Baris 2: Qty, Rak, Gudang */}
-                              <div className="grid grid-cols-2 gap-4 bg-gray-50/80 p-3 rounded-lg border border-gray-100">
-                                <div>
-                                  <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Jumlah</p>
-                                  <p className="text-sm font-bold text-gray-800">{entry.jumlah} Unit</p>
-                                </div>
-                                <div>
-                                  <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Lokasi Rak</p>
-                                  <p className="text-sm font-bold text-blue-600">{entry.rak}</p>
-                                </div>
-                                <div>
-                                  <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Gudang</p>
-                                  <p className="text-sm font-medium text-gray-700">{entry.gudang}</p>
-                                </div>
-                                <div>
-                                  <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Sub Rak</p>
-                                  <p className="text-sm font-medium text-gray-700">{entry.sub_rak || '-'}</p>
-                                </div>
+                            )}
+                            <div className="flex items-start gap-3">
+                              <div className="pt-1">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => handleCheckboxChange(entry.id)}
+                                  className="w-5 h-5 cursor-pointer rounded"
+                                />
                               </div>
+                              <div className="flex-1 space-y-3">
+                                {/* Baris 1: SKU dan Type */}
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <h4 className={`text-base font-bold text-gray-900 ${entry.is_adjustment ? 'text-amber-900' : ''}`}>
+                                      {entry.sku}
+                                    </h4>
+                                    {entry.is_adjustment && (
+                                      <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-800 text-[10px] px-2 py-0.5 rounded-full font-bold mt-1 border border-amber-200 shadow-sm">
+                                        <Tag className="h-2.5 w-2.5" />
+                                        PENYESUAIAN
+                                      </span>
+                                    )}
+                                    {(() => {
+                                      const conv = entry.sku_pcs
+                                        ? { sku_pcs: entry.sku_pcs, qty: entry.jumlah_pcs ? Math.round(entry.jumlah_pcs / (entry.jumlah || 1)) : 1 }
+                                        : skuConversionService.findConversion(entry.sku);
+                                      if (!conv || !conv.sku_pcs) return null;
+                                      const finalQtyPcs = entry.jumlah_pcs !== undefined && entry.jumlah_pcs !== null
+                                        ? entry.jumlah_pcs
+                                        : (entry.jumlah * Number(conv.qty || 1));
+                                      return (
+                                        <div className="mt-1.5 flex items-center gap-1.5 bg-blue-50/90 border border-blue-200/80 rounded-md px-2 py-1 text-xs">
+                                          <span className="font-extrabold text-blue-700 bg-blue-100 px-1.5 py-0.2 rounded text-[10px] uppercase">➔ PCS</span>
+                                          <span className="font-mono font-bold text-blue-950 truncate max-w-[180px]">{conv.sku_pcs}</span>
+                                          <span className="font-black text-blue-700 ml-auto whitespace-nowrap">({finalQtyPcs} Pcs)</span>
+                                        </div>
+                                      );
+                                    })()}
+                                  </div>
+                                  <span className={`px-3 py-1 rounded-full text-xs font-bold shadow-sm ${
+                                    entry.type === 'IN' ? 'bg-green-100 text-green-800 border border-green-200' :
+                                    entry.type === 'OUT' ? 'bg-red-100 text-red-800 border border-red-200' :
+                                    'bg-blue-100 text-blue-800 border border-blue-200'
+                                  }`}>
+                                    {entry.type}
+                                  </span>
+                                </div>
 
-                              {/* Baris 3: Tanggal & User */}
-                              <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
-                                <div className="flex items-center text-gray-500">
-                                  <Calendar className="h-3 w-3 mr-1" />
-                                  <span>{formatDateDisplay(entry.tgl)} ({entry.waktu})</span>
+                                {/* Baris 2: Qty, Rak, Gudang */}
+                                <div className="grid grid-cols-2 gap-4 bg-gray-50/80 p-3 rounded-lg border border-gray-100">
+                                  <div>
+                                    <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Jumlah</p>
+                                    <p className="text-sm font-bold text-gray-800">{entry.jumlah} Unit</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Lokasi Rak</p>
+                                    <p className="text-sm font-bold text-blue-600">
+                                      {entry.rak}
+                                      {pair && (
+                                        <span className="block text-[10px] text-purple-700 font-semibold">
+                                          {pair.role === 'OUT_ORIGIN' ? `➔ ke ${pair.partnerRak}` : `🠔 dari ${pair.partnerRak}`}
+                                        </span>
+                                      )}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Gudang</p>
+                                    <p className="text-sm font-medium text-gray-700">{entry.gudang}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Sub Rak</p>
+                                    <p className="text-sm font-medium text-gray-700">{entry.sub_rak || '-'}</p>
+                                  </div>
                                 </div>
-                                <div className="flex items-center text-indigo-600 font-medium">
-                                  <RefreshCw className="h-3 w-3 mr-1" />
-                                  <span>Scan: {formatDateDisplay(entry.tgl_scan)}</span>
-                                </div>
-                                <div className="flex items-center text-gray-500">
-                                  <User className="h-3 w-3 mr-1" />
-                                  <span>By: {entry.user}</span>
-                                </div>
-                              </div>
 
-                              {/* Tombol Aksi Mobile */}
-                              <div className="flex justify-end gap-2 pt-2">
-                                <Button
-                                  onClick={() => handleEdit(entry)}
-                                  className="h-9 px-4 bg-blue-50 text-blue-600 rounded-lg font-bold text-xs flex items-center justify-center border border-blue-100 flex-1"
-                                >
-                                  <Edit2 className="h-3.5 w-3.5 mr-1.5" />
-                                  Edit
-                                </Button>
-                                <Button
-                                  onClick={() => handleDelete(entry.id)}
-                                  className="h-9 px-4 bg-red-50 text-red-600 rounded-lg font-bold text-xs flex items-center justify-center border border-red-100 flex-1"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-                                  Hapus
-                                </Button>
+                                {/* Baris 3: Tanggal & User */}
+                                <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
+                                  <div className="flex items-center text-gray-500">
+                                    <Calendar className="h-3 w-3 mr-1" />
+                                    <span>{formatDateDisplay(entry.tgl)} ({entry.waktu})</span>
+                                  </div>
+                                  <div className="flex items-center text-indigo-600 font-medium">
+                                    <RefreshCw className="h-3 w-3 mr-1" />
+                                    <span>Scan: {formatDateDisplay(entry.tgl_scan)}</span>
+                                  </div>
+                                  <div className="flex items-center text-gray-500">
+                                    <User className="h-3 w-3 mr-1" />
+                                    <span>By: {entry.user}</span>
+                                  </div>
+                                </div>
+
+                                {/* Tombol Aksi Mobile */}
+                                <div className="flex justify-end gap-2 pt-2">
+                                  <Button
+                                    onClick={() => handleEdit(entry)}
+                                    className="h-9 px-4 bg-blue-50 text-blue-600 rounded-lg font-bold text-xs flex items-center justify-center border border-blue-100 flex-1"
+                                  >
+                                    <Edit2 className="h-3.5 w-3.5 mr-1.5" />
+                                    Edit
+                                  </Button>
+                                  <Button
+                                    onClick={() => handleDelete(entry.id)}
+                                    className="h-9 px-4 bg-red-50 text-red-600 rounded-lg font-bold text-xs flex items-center justify-center border border-red-100 flex-1"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                                    Hapus
+                                  </Button>
+                                </div>
                               </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
