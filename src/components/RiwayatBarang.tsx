@@ -1357,14 +1357,12 @@ export function RiwayatBarang() {
     }
     try {
       setLoading(true);
-      const startDate = parseDateFlexible(effectiveStart);
-      const endDate = parseDateFlexible(effectiveEnd);
-      if (!startDate || !endDate) {
+      const startISO = formatDateToISO(effectiveStart);
+      const endISO = formatDateToISO(effectiveEnd);
+      if (!startISO || !endISO) {
         showToast('Format tanggal tidak valid. Gunakan format DD/MM/YYYY, DD-MM-YYYY, atau YYYY-MM-DD', 'error');
         return;
       }
-      // Generate list of dates to filter by 'tgl' column
-      const dateList = getDatesInRange(startDate, endDate);
 
       // Calculate range for pagination
       const from = (currentPage - 1) * itemsPerPage;
@@ -1374,7 +1372,8 @@ export function RiwayatBarang() {
         .from('database_log')
         .select('*', { count: 'exact' })
         .not('gudang', 'in', '("VERIFY","UNVERIFY")')
-        .in('tgl', dateList); // Base filter
+        .gte('tgl_normalized', startISO)
+        .lte('tgl_normalized', endISO);
 
       // Apply conditional filters BEFORE sorting/pagination
       if (filters.barang) {
@@ -1402,7 +1401,7 @@ export function RiwayatBarang() {
 
       // Apply sorting and pagination AFTER all filters
       query = query
-        .order('tgl', { ascending: false })
+        .order('tgl_normalized', { ascending: false })
         .order('waktu', { ascending: false })
         .order('id', { ascending: false }) // Tie-breaker for stability
         .range(from, to);
@@ -1456,11 +1455,9 @@ export function RiwayatBarang() {
     // Show toast for transparency
     showToast('Sedang menyiapkan data export...', 'info');
 
-    const startDate = parseDateFlexible(effectiveStart);
-    const endDate = parseDateFlexible(effectiveEnd);
-    if (!startDate || !endDate) return [];
-
-    const dateList = getDatesInRange(startDate, endDate);
+    const startISO = formatDateToISO(effectiveStart);
+    const endISO = formatDateToISO(effectiveEnd);
+    if (!startISO || !endISO) return [];
 
     let allData: any[] = [];
     let from = 0;
@@ -1472,7 +1469,8 @@ export function RiwayatBarang() {
         .from('database_log')
         .select('*')
         .not('gudang', 'in', '("VERIFY","UNVERIFY")')
-        .in('tgl', dateList); // Base filter
+        .gte('tgl_normalized', startISO)
+        .lte('tgl_normalized', endISO);
 
       // Apply conditional filters BEFORE sorting/pagination
       if (filters.barang) query = query.eq('sku', filters.barang);
@@ -1490,7 +1488,7 @@ export function RiwayatBarang() {
 
       // Apply sorting and pagination AFTER all filters
       query = query
-        .order('tgl', { ascending: false })
+        .order('tgl_normalized', { ascending: false })
         .order('waktu', { ascending: false })
         .order('id', { ascending: false }) // Tie-breaker
         .range(from, from + pageSize - 1);

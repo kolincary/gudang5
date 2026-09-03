@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Search, ChevronLeft, ChevronRight, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle } from 'lucide-react';
 import { EntriDataModal } from './EntriDataModal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
@@ -13,6 +13,42 @@ import { performStockSync } from '../services/stockSyncService';
 import { verifyPin } from '../lib/pinValidator';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { DatabaseService } from '../lib/DatabaseService';
+
+export interface RedistributionMove {
+  id: string;
+  sku: string;
+  rak: string;
+  fromTgl: string;
+  toTgl: string;
+  jumlah: number;
+}
+
+const formatDateDisplay = (dateStr: string): string => {
+  if (!dateStr) return '';
+  let cleanStr = dateStr.trim();
+  if (cleanStr.includes(' ') || cleanStr.includes('T')) {
+    cleanStr = cleanStr.split(/[ T]/)[0];
+  }
+  if (/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.test(cleanStr)) {
+    const match = cleanStr.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (match) {
+      return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+    }
+  }
+  if (/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.test(cleanStr)) {
+    const match = cleanStr.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (match) {
+      let day = match[1];
+      let month = match[2];
+      const year = match[3];
+      if (parseInt(month) > 12 && parseInt(day) <= 12) {
+        [day, month] = [month, day];
+      }
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+  }
+  return cleanStr;
+};
 
 
 // Global Cache for instant load & PIN Session
@@ -268,6 +304,30 @@ export function DataGudang() {
   const [currentPageColumnOptions, setCurrentPageColumnOptions] = useState<Record<string, (string | number)[]>>({}); // Untuk kolom kalkulasi
   const filterIconRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const rackDropdownRef = useRef<HTMLDivElement>(null);
+  const rackInputRef = useRef<HTMLInputElement>(null);
+
+  // --- MULTI-SKU BALANCE REDISTRIBUTION STATE ---
+  const [isAnalyzingBalance, setIsAnalyzingBalance] = useState(false);
+  const [isExecutingBalanceFix, setIsExecutingBalanceFix] = useState(false);
+  const [isRedistributePreviewOpen, setIsRedistributePreviewOpen] = useState(false);
+  const [redistributeMoves, setRedistributeMoves] = useState<RedistributionMove[]>([]);
+  const [previewSearchTerm, setPreviewSearchTerm] = useState('');
+
+  // Click outside to close rack dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        rackDropdownRef.current &&
+        !rackDropdownRef.current.contains(event.target as Node) &&
+        rackInputRef.current &&
+        !rackInputRef.current.contains(event.target as Node)
+      ) {
+        setShowRackDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // --- PIN PROTECTION STATE ---
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
@@ -573,23 +633,237 @@ export function DataGudang() {
 
   const loadUniqueRacks = async () => {
     try {
-      const { data, error } = await supabase
-        .from('stock_items')
-        .select('rak')
-        .eq('status', 'Aktif')
-        .not('rak', 'is', null);
+      const [racksRes, stockRacksRes] = await Promise.all([
+        supabase
+          .from('rack_locations')
+          .select('nama')
+          .eq('status', 'Aktif')
+          .order('nama', { ascending: true }),
+        supabase
+          .from('stock_items')
+          .select('rak')
+          .not('rak', 'is', null)
+          .limit(2000)
+      ]);
 
-      if (error) {
-        console.error('Error loading unique racks:', error);
-        return;
-      }
+      const allRacks = new Set<string>();
+      (racksRes.data || []).forEach((r: any) => {
+        if (r.nama && r.nama.trim()) allRacks.add(r.nama.trim());
+      });
+      (stockRacksRes.data || []).forEach((r: any) => {
+        if (r.rak && r.rak.trim()) allRacks.add(r.rak.trim());
+      });
 
-      const racks = [...new Set((data || []).map(item => item.rak).filter(Boolean))].sort();
-      setUniqueRacks(racks);
+      const sortedRacks = Array.from(allRacks).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+      );
+      setUniqueRacks(sortedRacks);
     } catch (error) {
       console.error('Error loading unique racks:', error);
     }
   };
+
+  // Multi-SKU Balance Check & Redistribution Logic (Like Database Log)
+  const handleCheckBalanceSelected = async () => {
+    if (selectedIds.size === 0) {
+      showToast('Pilih setidaknya 1 SKU untuk cek saldo.', 'warning');
+      return;
+    }
+
+    // Extract selected SKUs
+    const selectedSkus = Array.from(selectedIds)
+      .map(id => stockData.find(item => item.id === id)?.nama_produk)
+      .filter((sku): sku is string => Boolean(sku && sku.trim()));
+
+    const uniqueSkus = Array.from(new Set(selectedSkus));
+    if (uniqueSkus.length === 0) {
+      showToast('Tidak ada SKU terpilih yang valid.', 'warning');
+      return;
+    }
+
+    try {
+      setIsAnalyzingBalance(true);
+      showToast(`Menganalisis saldo stok untuk ${uniqueSkus.length} SKU...`, 'info');
+
+      // Fetch logs in chunks of 50 SKUs to avoid URL size limit
+      const batchSize = 50;
+      let allLogs: any[] = [];
+
+      for (let i = 0; i < uniqueSkus.length; i += batchSize) {
+        const skuChunk = uniqueSkus.slice(i, i + batchSize);
+        const { data, error } = await supabase
+          .from('database_log')
+          .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah')
+          .in('sku', skuChunk)
+          .or('type.ilike.%IN%,type.ilike.%OUT%')
+          .order('id', { ascending: true });
+
+        if (error) throw error;
+        if (data) allLogs.push(...data);
+      }
+
+      if (allLogs.length === 0) {
+        showToast('Tidak ditemukan riwayat log transaksi untuk SKU terpilih.', 'warning');
+        return;
+      }
+
+      // Group logs by SKU
+      const skuGroups = new Map<string, any[]>();
+      allLogs.forEach(log => {
+        const normSku = (log.sku || '').trim().toUpperCase();
+        if (!skuGroups.has(normSku)) skuGroups.set(normSku, []);
+        skuGroups.get(normSku)!.push(log);
+      });
+
+      const moves: RedistributionMove[] = [];
+
+      skuGroups.forEach((logs, normSku) => {
+        // Group into (rak|tgl_scan)
+        const groups = new Map<string, {
+          balance: number;
+          tglScanRaw: string;
+          normalizedTglScan: string;
+          rak: string;
+          outRows: any[];
+        }>();
+
+        logs.forEach(log => {
+          const normRak = (log.rak || '').trim().toUpperCase();
+          const normTglScan = formatDateDisplay(log.tgl_scan) || 'No Date';
+          const normType = (log.type || '').trim().toUpperCase();
+          const finalType = normType.includes('IN') ? 'IN' : 'OUT';
+          const key = `${normRak}|${normTglScan}`;
+
+          if (!groups.has(key)) {
+            groups.set(key, {
+              balance: 0,
+              tglScanRaw: (log.tgl_scan || '').trim(),
+              normalizedTglScan: normTglScan,
+              rak: (log.rak || '').trim(),
+              outRows: []
+            });
+          }
+
+          const g = groups.get(key)!;
+          const qty = Number(log.jumlah || 0);
+          if (finalType === 'IN') {
+            g.balance += qty;
+          } else {
+            g.balance -= qty;
+            g.outRows.push({
+              id: log.id,
+              jumlah: qty,
+              tglScan: log.tgl_scan || ''
+            });
+          }
+        });
+
+        // Redistribute per Rak
+        const rakKeys = Array.from(new Set(Array.from(groups.values()).map(g => g.rak.toUpperCase())));
+
+        rakKeys.forEach(rakName => {
+          const rakGroups = Array.from(groups.entries())
+            .filter(([, g]) => g.rak.toUpperCase() === rakName);
+
+          const surpluses = rakGroups
+            .filter(([, g]) => g.balance > 0)
+            .sort((a, b) => b[1].balance - a[1].balance);
+
+          const deficits = rakGroups
+            .filter(([, g]) => g.balance < 0);
+
+          deficits.forEach(([, negG]) => {
+            const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
+
+            for (const row of rows) {
+              if (negG.balance >= 0) break;
+
+              const targetEntry = surpluses.find(([, tg]) => tg.balance > 0);
+              if (targetEntry) {
+                const [, targetG] = targetEntry;
+
+                moves.push({
+                  id: row.id,
+                  sku: normSku,
+                  rak: negG.rak,
+                  fromTgl: negG.tglScanRaw,
+                  toTgl: targetG.tglScanRaw,
+                  jumlah: row.jumlah
+                });
+
+                negG.balance += row.jumlah;
+                targetG.balance -= row.jumlah;
+                surpluses.sort((a, b) => b[1].balance - a[1].balance);
+              }
+            }
+          });
+        });
+      });
+
+      if (moves.length === 0) {
+        showToast(`Analisis selesai! Semua saldo pada ${uniqueSkus.length} SKU terpilih sudah seimbang / tidak ada kapasitas perbaikan.`, 'info');
+      } else {
+        setRedistributeMoves(moves);
+        setPreviewSearchTerm('');
+        setIsRedistributePreviewOpen(true);
+      }
+    } catch (error: any) {
+      console.error('Error analyzing balance for selected SKUs:', error);
+      showToast(`Gagal melakukan analisis saldo: ${error.message}`, 'error');
+    } finally {
+      setIsAnalyzingBalance(false);
+    }
+  };
+
+  const handleExecuteRedistribute = async () => {
+    if (redistributeMoves.length === 0) return;
+
+    try {
+      setIsExecutingBalanceFix(true);
+      showToast(`Memproses ${redistributeMoves.length} pembaruan perbaikan saldo...`, 'info');
+
+      const batchSize = 50;
+      let successCount = 0;
+
+      for (let i = 0; i < redistributeMoves.length; i += batchSize) {
+        const batch = redistributeMoves.slice(i, i + batchSize);
+        const promises = batch.map(move =>
+          supabase
+            .from('database_log')
+            .update({ tgl_scan: move.toTgl })
+            .eq('id', move.id)
+        );
+
+        const results = await Promise.all(promises);
+        results.forEach(res => {
+          if (!res.error) successCount++;
+        });
+      }
+
+      showToast(`Sukses memperbarui ${successCount} data log! Memuat ulang stok...`, 'success');
+      setIsRedistributePreviewOpen(false);
+      setRedistributeMoves([]);
+      loadStockData(true);
+    } catch (error: any) {
+      console.error('Error executing redistribution:', error);
+      showToast('Terjadi kesalahan saat mengeksekusi perbaikan saldo.', 'error');
+    } finally {
+      setIsExecutingBalanceFix(false);
+    }
+  };
+
+  // Filtered redistribution moves for preview modal
+  const filteredMoves = useMemo(() => {
+    if (!previewSearchTerm) return redistributeMoves;
+    const term = previewSearchTerm.toLowerCase();
+    return redistributeMoves.filter(
+      m =>
+        m.sku.toLowerCase().includes(term) ||
+        m.rak.toLowerCase().includes(term) ||
+        m.fromTgl.toLowerCase().includes(term) ||
+        m.toTgl.toLowerCase().includes(term)
+    );
+  }, [redistributeMoves, previewSearchTerm]);
 
   // Memoized filtered racks for dropdown
   const filteredRacks = useMemo(() => {
@@ -1940,15 +2214,30 @@ export function DataGudang() {
                 </div>
                 <div className="flex items-center gap-2 lg:gap-3">
                   <button
+                    onClick={handleCheckBalanceSelected}
+                    disabled={isAnalyzingBalance}
+                    className="h-9 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-2 border border-emerald-400 cursor-pointer"
+                    title="Analisis dan Perbaiki Saldo Lebih Potong untuk SKU terpilih"
+                  >
+                    {isAnalyzingBalance ? (
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Scale className="h-4 w-4" />
+                    )}
+                    <span className="text-xs lg:text-sm">
+                      {isAnalyzingBalance ? 'Menganalisis...' : 'Cek Saldo'}
+                    </span>
+                  </button>
+                  <button
                     onClick={handleOpenBulkEdit}
-                    className="h-9 px-4 bg-white hover:bg-gray-50 text-blue-700 font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-2"
+                    className="h-9 px-4 bg-white hover:bg-gray-50 text-blue-700 font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-2 cursor-pointer"
                   >
                     <Edit2 className="h-4 w-4" />
                     <span className="text-xs lg:text-sm">Edit</span>
                   </button>
                   <button
                     onClick={handleDeleteBulkClick}
-                    className="h-9 px-4 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 flex items-center gap-2 border border-rose-400"
+                    className="h-9 px-4 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 flex items-center gap-2 border border-rose-400 cursor-pointer"
                   >
                     <Trash2 className="h-4 w-4" />
                     <span className="text-xs lg:text-sm">Hapus</span>
@@ -1959,7 +2248,7 @@ export function DataGudang() {
                       const e = { target: { checked: false } } as React.ChangeEvent<HTMLInputElement>;
                       handleSelectAll(e);
                     }} 
-                    className="h-9 w-9 flex items-center justify-center hover:bg-white/20 rounded-full transition-colors text-white"
+                    className="h-9 w-9 flex items-center justify-center hover:bg-white/20 rounded-full transition-colors text-white cursor-pointer"
                     title="Batal Pilih"
                   >
                     <X className="h-5 w-5" />
@@ -2020,6 +2309,7 @@ export function DataGudang() {
                 <div className="relative lg:col-span-3">
                   <Warehouse className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
                   <input
+                    ref={rackInputRef}
                     type="text"
                     value={rackSearchTerm}
                     onChange={(e) => handleRackInputChange(e.target.value)}
@@ -2637,6 +2927,163 @@ export function DataGudang() {
           title="Konfirmasi Hapus Massal"
           message={`Apakah Anda yakin ingin menghapus ${bulkDeleteConfirm.count} data yang dipilih? Tindakan ini tidak dapat dibatalkan.`}
         />
+
+        {/* Preview Modal Perbaikan Saldo (Lebih Potong) Multi-SKU */}
+        <Modal
+          isOpen={isRedistributePreviewOpen}
+          onClose={() => {
+            if (!isExecutingBalanceFix) setIsRedistributePreviewOpen(false);
+          }}
+          title="Preview Perbaikan Saldo (Lebih Potong)"
+          subtitle="Analisis & rekomendasi pemindahan data log OUT untuk menyeimbangkan stok minus"
+          size="4xl"
+        >
+          <div className="space-y-4">
+            {/* Stats Overview */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="bg-amber-50 border border-amber-200/80 rounded-2xl p-4 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold shadow-md shadow-amber-500/20">
+                  <Scale className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-amber-700 uppercase tracking-wider">Total Pemindahan</div>
+                  <div className="text-xl font-black text-amber-900">{redistributeMoves.length} <span className="text-xs font-semibold text-amber-700">Baris Log</span></div>
+                </div>
+              </div>
+
+              <div className="bg-blue-50 border border-blue-200/80 rounded-2xl p-4 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold shadow-md shadow-blue-500/20">
+                  <Database className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-blue-700 uppercase tracking-wider">SKU Diperbaiki</div>
+                  <div className="text-xl font-black text-blue-900">{new Set(redistributeMoves.map(m => m.sku)).size} <span className="text-xs font-semibold text-blue-700">Master SKU</span></div>
+                </div>
+              </div>
+
+              <div className="bg-emerald-50 border border-emerald-200/80 rounded-2xl p-4 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold shadow-md shadow-emerald-500/20">
+                  <CheckCircle className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider">Total Kuantitas</div>
+                  <div className="text-xl font-black text-emerald-900">{redistributeMoves.reduce((s, m) => s + m.jumlah, 0).toLocaleString()} <span className="text-xs font-semibold text-emerald-700">PCS</span></div>
+                </div>
+              </div>
+            </div>
+
+            {/* Notice / Info */}
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-3.5 flex items-start gap-3">
+              <AlertCircle className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
+              <p className="text-xs text-blue-800 leading-relaxed">
+                Sistem menemukan riwayat transaksi <strong>OUT</strong> pada tanggal scan yang mengalami defisit (minus) dan merekomendasikan pemindahan ke tanggal scan yang memiliki saldo surplus (tersedia) di rak yang sama.
+              </p>
+            </div>
+
+            {/* Search within Preview */}
+            <div className="relative">
+              <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+              <input
+                type="text"
+                value={previewSearchTerm}
+                onChange={(e) => setPreviewSearchTerm(e.target.value)}
+                placeholder="Cari SKU, Rak, atau Tanggal..."
+                className="w-full pl-10 pr-4 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-gray-800"
+              />
+            </div>
+
+            {/* Table of Recommended Moves */}
+            <div className="border border-gray-200 rounded-2xl overflow-hidden max-h-[380px] overflow-y-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-gray-100 text-gray-700 font-bold sticky top-0 z-10 border-b border-gray-200">
+                  <tr>
+                    <th className="py-2.5 px-3 w-12 text-center">No</th>
+                    <th className="py-2.5 px-3">SKU</th>
+                    <th className="py-2.5 px-3 text-center">Rak</th>
+                    <th className="py-2.5 px-3 text-center">Dari Tgl Scan (Defisit)</th>
+                    <th className="py-2.5 px-3 text-center w-8"></th>
+                    <th className="py-2.5 px-3 text-center">Ke Tgl Scan (Surplus)</th>
+                    <th className="py-2.5 px-3 text-right">Qty</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {filteredMoves.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-8 text-center text-gray-400 font-medium">
+                        Tidak ada data rekomendasi yang sesuai dengan pencarian.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredMoves.map((move, idx) => (
+                      <tr key={move.id || idx} className="hover:bg-blue-50/50 transition-colors">
+                        <td className="py-2 px-3 text-center text-gray-400 font-mono text-[11px]">{idx + 1}</td>
+                        <td className="py-2 px-3 font-bold text-gray-800 font-mono">{move.sku}</td>
+                        <td className="py-2 px-3 text-center">
+                          <span className="inline-block px-2 py-0.5 bg-gray-100 text-gray-700 font-bold rounded-md text-[11px]">
+                            {move.rak}
+                          </span>
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          <span className="inline-block px-2.5 py-1 bg-rose-50 border border-rose-200 text-rose-700 font-semibold rounded-lg text-[11px]">
+                            {move.fromTgl || '(Kosong)'}
+                          </span>
+                        </td>
+                        <td className="py-2 px-1 text-center text-gray-400 font-bold">
+                          →
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          <span className="inline-block px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 font-semibold rounded-lg text-[11px]">
+                            {move.toTgl || '(Kosong)'}
+                          </span>
+                        </td>
+                        <td className="py-2 px-3 text-right font-black text-blue-700">
+                          {move.jumlah}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+              <span className="text-xs text-gray-500">
+                Menampilkan <strong>{filteredMoves.length}</strong> dari <strong>{redistributeMoves.length}</strong> pemindahan
+              </span>
+              <div className="flex items-center gap-3">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setIsRedistributePreviewOpen(false)}
+                  disabled={isExecutingBalanceFix}
+                  className="h-10 px-5 rounded-xl font-bold"
+                >
+                  Batal
+                </Button>
+                <button
+                  type="button"
+                  onClick={handleExecuteRedistribute}
+                  disabled={isExecutingBalanceFix || redistributeMoves.length === 0}
+                  className="h-10 px-6 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold rounded-xl shadow-lg shadow-emerald-600/20 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {isExecutingBalanceFix ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      <span>Menerapkan ({redistributeMoves.length})...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="h-4 w-4" />
+                      <span>Terapkan Perbaikan ({redistributeMoves.length})</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+
         {/* PIN Modal Protection */}
         <Modal
           isOpen={isPinModalOpen}

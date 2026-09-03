@@ -21,7 +21,7 @@ import {
   ArrowDown,
   Copy,
   RefreshCw,
-  Calculator,
+  Boxes,
   PackageCheck
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -400,27 +400,27 @@ export function KonversiPCS() {
       <div className="space-y-6">
         {/* PREMIUM IMMERSIVE HEADER */}
         <div className="flex flex-col mb-8 lg:mb-12 uppercase">
-          <div className="bg-gradient-to-br from-indigo-700 via-blue-800 to-slate-900 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-indigo-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
-            <div className="absolute -top-12 -right-12 text-white opacity-5">
-              <Calculator className="w-72 h-72 lg:w-[480px] lg:h-[480px]" />
+          <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-slate-900 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+            <div className="absolute -top-12 -right-12 text-white opacity-5 pointer-events-none">
+              <Boxes className="w-72 h-72 lg:w-[480px] lg:h-[480px]" />
             </div>
-            <div className="absolute top-1/4 left-1/4 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl animate-pulse"></div>
-            <div className="absolute bottom-1/4 right-1/4 w-24 h-24 bg-blue-500/10 rounded-3xl rotate-45 blur-2xl"></div>
+            <div className="absolute top-1/4 left-1/4 w-32 h-32 bg-blue-500/10 rounded-full blur-3xl animate-pulse"></div>
+            <div className="absolute bottom-1/4 right-1/4 w-24 h-24 bg-indigo-500/10 rounded-3xl rotate-45 blur-2xl"></div>
             
             <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-end lg:justify-between gap-8 uppercase text-left">
               <div className="max-w-2xl">
                 <div className="flex items-center gap-2 mb-3 lg:mb-4 opacity-90">
-                  <div className="w-10 h-[2px] bg-indigo-400 rounded-full"></div>
-                  <span className="text-[10px] lg:text-[12px] font-black tracking-[0.4em] text-indigo-100">Formula & Auto Multiplier</span>
+                  <div className="w-10 h-[2px] bg-blue-400 rounded-full"></div>
+                  <span className="text-[10px] lg:text-[12px] font-black tracking-[0.4em] text-blue-100">Formula & Auto Multiplier</span>
                 </div>
                 <h1 className="text-[34px] lg:text-[54px] font-black text-white tracking-tighter leading-[0.9] mb-3 uppercase">
-                  Konversi <span className="text-indigo-400">PCS</span>
+                  Konversi <span className="text-blue-300">PCS</span>
                 </h1>
-                <div className="text-indigo-100/80 font-medium text-[14px] lg:text-[18px] leading-relaxed max-w-[90%] normal-case flex items-center gap-3">
+                <div className="text-blue-100/80 font-medium text-[14px] lg:text-[18px] leading-relaxed max-w-[90%] normal-case flex items-center gap-3">
                   <div className="px-3 py-1 bg-white/10 rounded-full backdrop-blur-sm flex items-center gap-2">
                     <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
                     </span>
                     <span className="text-[11px] font-bold tracking-widest uppercase">{conversions.length.toLocaleString()} Formula Terdaftar</span>
                   </div>
@@ -456,7 +456,7 @@ export function KonversiPCS() {
                     resetSingleForm();
                     setIsFormOpen(true);
                   }}
-                  className="h-12 px-6 bg-white hover:bg-indigo-50 text-indigo-700 font-black rounded-2xl shadow-[0_8px_25px_rgba(255,255,255,0.2)] transition-all active:scale-95 flex items-center justify-center gap-2.5 border-none"
+                  className="h-12 px-6 bg-white hover:bg-blue-50 text-blue-700 font-black rounded-2xl shadow-[0_8px_25px_rgba(255,255,255,0.2)] transition-all active:scale-95 flex items-center justify-center gap-2.5 border-none"
                 >
                   <Plus className="h-4 w-4" />
                   <span className="uppercase text-xs font-black">Tambah Konversi</span>
@@ -466,147 +466,157 @@ export function KonversiPCS() {
           </div>
         </div>
 
-        {/* SEARCH BAR */}
-        <div className="bg-indigo-600 text-white p-3 rounded-lg flex items-center space-x-4 shadow-sm">
-          <div className="flex items-center space-x-2 flex-1">
-            <span className="font-medium">Search</span>
-            <div className="relative w-96 max-w-full">
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full px-3 py-1.5 pr-8 text-black rounded border-0 focus:outline-none focus:ring-2 focus:ring-indigo-300 font-semibold text-xs"
-                placeholder="Cari SKU Konversi, SKU PCS, atau Packing..."
-              />
-              <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
-                {searchTerm ? (
+        {/* UNIFIED SEARCH & TABLE WRAPPER (CONNECTED & BLUE THEME) */}
+        <div className="bg-white shadow-[0_8px_30px_rgba(0,0,0,0.04)] rounded-[20px] border border-blue-100 flex flex-col relative overflow-hidden mb-8">
+          
+          {/* Connected Blue Search Toolbar */}
+          <div className="bg-blue-600 p-4 lg:p-5 relative z-10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-3 flex-1">
+              <span className="text-white font-bold text-sm tracking-wide hidden sm:inline">Search</span>
+              <div className="relative flex-1 max-w-md">
+                <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  className="w-full pl-10 pr-10 py-2.5 text-sm text-gray-800 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all font-medium placeholder-gray-400 shadow-sm"
+                  placeholder="Cari SKU Konversi, SKU PCS, atau Packing..."
+                />
+                {searchTerm && (
                   <button
-                    onClick={() => setSearchTerm('')}
-                    className="text-gray-500 hover:text-gray-700 transition-colors"
+                    onClick={() => {
+                      setSearchTerm('');
+                      setCurrentPage(1);
+                    }}
+                    className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-full transition-colors text-gray-400 hover:text-gray-600"
                   >
-                    <X className="h-4 w-4" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
-                ) : (
-                  <Search className="h-4 w-4 text-gray-400" />
                 )}
               </div>
             </div>
-          </div>
-        </div>
 
-        {/* TABLE CARD */}
-        <Card className="shadow-lg border-0 rounded-2xl overflow-hidden">
-          <CardContent className="p-0">
+            {/* Total Count Badge */}
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-bold text-white/90 bg-white/10 px-3.5 py-2 rounded-xl backdrop-blur-sm border border-white/20">
+                {sortedConversions.length} Formula Ditemukan
+              </span>
+            </div>
+          </div>
+
+          {/* Table Content */}
+          <div className="overflow-x-auto">
             {loading && (
               <div className="flex items-center justify-center p-8 space-x-3">
-                <RefreshCw className="h-5 w-5 text-indigo-600 animate-spin" />
-                <div className="text-indigo-600 font-bold text-sm">Memuat data konversi...</div>
+                <RefreshCw className="h-5 w-5 text-blue-600 animate-spin" />
+                <div className="text-blue-600 font-bold text-sm">Memuat data konversi...</div>
               </div>
             )}
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-indigo-600 text-white">
-                  <tr>
-                    <th className="px-4 py-3.5 text-center text-xs font-black uppercase tracking-wider w-[5%] border-r border-indigo-500">
-                      No
-                    </th>
-                    <th
-                      className="px-4 py-3.5 text-left text-xs font-black uppercase tracking-wider border-r border-indigo-500 cursor-pointer hover:bg-indigo-700 transition-colors w-[30%]"
-                      onClick={() => handleSort('sku_konversi')}
+            <table className="w-full">
+              <thead className="bg-blue-600 text-white">
+                <tr>
+                  <th className="px-4 py-3.5 text-center text-xs font-black uppercase tracking-wider w-[5%] border-r border-blue-500/40">
+                    No
+                  </th>
+                  <th
+                    className="px-4 py-3.5 text-left text-xs font-black uppercase tracking-wider border-r border-blue-500/40 cursor-pointer hover:bg-blue-700 transition-colors w-[30%]"
+                    onClick={() => handleSort('sku_konversi')}
+                  >
+                    <div className="flex items-center justify-between">
+                      SKU Konversi (Pack / Box) {getSortIcon('sku_konversi')}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3.5 text-left text-xs font-black uppercase tracking-wider border-r border-blue-500/40 cursor-pointer hover:bg-blue-700 transition-colors w-[30%]"
+                    onClick={() => handleSort('sku_pcs')}
+                  >
+                    <div className="flex items-center justify-between">
+                      SKU PCS (Target Pcs) {getSortIcon('sku_pcs')}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3.5 text-center text-xs font-black uppercase tracking-wider border-r border-blue-500/40 cursor-pointer hover:bg-blue-700 transition-colors w-[15%]"
+                    onClick={() => handleSort('satuan_packing')}
+                  >
+                    <div className="flex items-center justify-center">
+                      Satuan Packing {getSortIcon('satuan_packing')}
+                    </div>
+                  </th>
+                  <th
+                    className="px-4 py-3.5 text-center text-xs font-black uppercase tracking-wider border-r border-blue-500/40 cursor-pointer hover:bg-blue-700 transition-colors w-[10%]"
+                    onClick={() => handleSort('qty')}
+                  >
+                    <div className="flex items-center justify-center">
+                      Qty (Pcs) {getSortIcon('qty')}
+                    </div>
+                  </th>
+                  <th className="px-4 py-3.5 text-center text-xs font-black uppercase tracking-wider w-[10%]">
+                    Aksi
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 bg-white">
+                {currentItems.length > 0 ? (
+                  currentItems.map((item, index) => (
+                    <tr
+                      key={item.id}
+                      className={`${index % 2 === 0 ? 'bg-blue-50/20' : 'bg-white'} hover:bg-blue-50/60 transition-colors`}
                     >
-                      <div className="flex items-center justify-between">
-                        SKU Konversi (Pack / Box) {getSortIcon('sku_konversi')}
-                      </div>
-                    </th>
-                    <th
-                      className="px-4 py-3.5 text-left text-xs font-black uppercase tracking-wider border-r border-indigo-500 cursor-pointer hover:bg-indigo-700 transition-colors w-[30%]"
-                      onClick={() => handleSort('sku_pcs')}
-                    >
-                      <div className="flex items-center justify-between">
-                        SKU PCS (Target Pcs) {getSortIcon('sku_pcs')}
-                      </div>
-                    </th>
-                    <th
-                      className="px-4 py-3.5 text-center text-xs font-black uppercase tracking-wider border-r border-indigo-500 cursor-pointer hover:bg-indigo-700 transition-colors w-[15%]"
-                      onClick={() => handleSort('satuan_packing')}
-                    >
-                      <div className="flex items-center justify-center">
-                        Satuan Packing {getSortIcon('satuan_packing')}
-                      </div>
-                    </th>
-                    <th
-                      className="px-4 py-3.5 text-center text-xs font-black uppercase tracking-wider border-r border-indigo-500 cursor-pointer hover:bg-indigo-700 transition-colors w-[10%]"
-                      onClick={() => handleSort('qty')}
-                    >
-                      <div className="flex items-center justify-center">
-                        Qty (Pcs) {getSortIcon('qty')}
-                      </div>
-                    </th>
-                    <th className="px-4 py-3.5 text-center text-xs font-black uppercase tracking-wider w-[10%]">
-                      Aksi
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {currentItems.length > 0 ? (
-                    currentItems.map((item, index) => (
-                      <tr
-                        key={item.id}
-                        className={`${index % 2 === 0 ? 'bg-indigo-50/30' : 'bg-white'} hover:bg-indigo-50/70 transition-colors`}
-                      >
-                        <td className="px-4 py-3.5 text-xs text-center font-bold text-gray-500 border-r border-gray-100">
-                          {(currentPage - 1) * itemsPerPage + index + 1}
-                        </td>
-                        <td className="px-4 py-3.5 text-xs font-black text-gray-900 border-r border-gray-100 font-mono">
-                          <span className="bg-indigo-100 text-indigo-800 px-2.5 py-1 rounded-md">
-                            {item.sku_konversi}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3.5 text-xs font-bold text-blue-900 border-r border-gray-100 font-mono">
-                          <span className="bg-blue-50 text-blue-800 px-2.5 py-1 rounded-md">
-                            {item.sku_pcs}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3.5 text-xs text-center border-r border-gray-100 font-bold text-rose-600">
-                          <span className="bg-rose-50 px-2.5 py-1 rounded-md border border-rose-100">
-                            {item.satuan_packing || '-'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3.5 text-xs text-center border-r border-gray-100">
-                          <span className="inline-flex items-center justify-center bg-emerald-500 text-white font-black px-3 py-1 rounded-full text-xs shadow-sm">
-                            × {item.qty}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3.5 text-center">
-                          <div className="flex justify-center space-x-1.5">
-                            <Button
-                              onClick={() => handleEdit(item)}
-                              className="h-8 w-8 p-0 flex items-center justify-center bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 rounded-lg transition-all active:scale-90 border-none"
-                            >
-                              <Edit2 className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              onClick={() => handleDelete(item.id, item.sku_konversi)}
-                              className="h-8 w-8 p-0 flex items-center justify-center bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 rounded-lg transition-all active:scale-90 border-none"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={6} className="text-center py-12 text-gray-500 text-sm">
-                        {searchTerm ? 'Tidak ditemukan data konversi yang cocok' : 'Belum ada data konversi terdaftar'}
+                      <td className="px-4 py-3.5 text-xs text-center font-bold text-gray-500 border-r border-gray-100">
+                        {(currentPage - 1) * itemsPerPage + index + 1}
+                      </td>
+                      <td className="px-4 py-3.5 text-xs font-black text-gray-900 border-r border-gray-100 font-mono">
+                        <span className="bg-blue-50 text-blue-900 px-2.5 py-1 rounded-md border border-blue-100/60">
+                          {item.sku_konversi}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-xs font-bold text-blue-900 border-r border-gray-100 font-mono">
+                        <span className="bg-indigo-50 text-indigo-900 px-2.5 py-1 rounded-md border border-indigo-100/60">
+                          {item.sku_pcs}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-xs text-center border-r border-gray-100 font-bold text-rose-600">
+                        <span className="bg-rose-50 px-2.5 py-1 rounded-md border border-rose-100">
+                          {item.satuan_packing || '-'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-xs text-center border-r border-gray-100">
+                        <span className="inline-flex items-center justify-center bg-emerald-500 text-white font-black px-3 py-1 rounded-full text-xs shadow-sm">
+                          × {item.qty}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <div className="flex justify-center space-x-1.5">
+                          <Button
+                            onClick={() => handleEdit(item)}
+                            className="h-8 w-8 p-0 flex items-center justify-center bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 rounded-lg transition-all active:scale-90 border-none"
+                          >
+                            <Edit2 className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            onClick={() => handleDelete(item.id, item.sku_konversi)}
+                            className="h-8 w-8 p-0 flex items-center justify-center bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 rounded-lg transition-all active:scale-90 border-none"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="text-center py-12 text-gray-500 text-sm">
+                      {searchTerm ? 'Tidak ditemukan data konversi yang cocok' : 'Belum ada data konversi terdaftar'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
         {/* PAGINATION */}
         <div className="flex flex-wrap items-center justify-between gap-4 mt-4">
@@ -636,7 +646,7 @@ export function KonversiPCS() {
               <ChevronLeft className="h-4 w-4 mr-1.5" />
               Sebelumnya
             </Button>
-            <div className="text-xs text-gray-700 font-bold px-3.5 py-2 bg-indigo-50 text-indigo-800 rounded-lg">
+            <div className="text-xs text-gray-700 font-bold px-3.5 py-2 bg-blue-50 text-blue-800 rounded-lg">
               Halaman {currentPage} dari {totalPages}
             </div>
             <Button
