@@ -1708,11 +1708,6 @@ export function InputBarangKeluar() {
                     }
                 }
 
-                const cleanSkuName = (row.nama_produk || '').trim();
-                const conv = skuConversionService.findConversion(cleanSkuName);
-                const skuPcs = conv ? conv.sku_pcs : null;
-                const jumlahPcs = conv ? finalJumlah * (Number(conv.qty) || 1) : null;
-
                 return {
                     tgl: formattedDate,
                     waktu: row.waktu,
@@ -1726,8 +1721,7 @@ export function InputBarangKeluar() {
                     user_name: row.user_name || userEmail,
                     unique_code: row.unique_code || null,
                     log_update_user: '',
-                    is_adjustment: isAdjustment,
-                    ...(skuPcs ? { sku_pcs: skuPcs, jumlah_pcs: jumlahPcs } : {})
+                    is_adjustment: isAdjustment
                 };
             });
             let insertedData: any = null;
