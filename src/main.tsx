@@ -11,7 +11,7 @@ const syncSupabaseFromFirestore = async () => {
   try {
     const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 1500));
     const fetchPromise = (async () => {
-      const docRef = doc(db, 'system_config', 'supabase_active_config');
+      const docRef = doc(db, 'stock-lt3', 'supabase_active_config');
       const snap = await getDoc(docRef);
       if (snap.exists()) {
         const data = snap.data();

@@ -288,11 +288,11 @@ export class MultiDbManager {
 
       // 2. Simpan di Firestore untuk siaran real-time ke semua user
       try {
-        const configDocRef = doc(db, 'system_config', FIRESTORE_CONFIG_DOC);
+        const configDocRef = doc(db, 'stock-lt3', FIRESTORE_CONFIG_DOC);
         await setDoc(configDocRef, dataToSave, { merge: true });
 
-        const appSettingsRef = doc(db, 'app_settings', 'supabase_config');
-        await setDoc(appSettingsRef, dataToSave, { merge: true });
+        const appSettingsRef = doc(db, 'system_config', FIRESTORE_CONFIG_DOC);
+        await setDoc(appSettingsRef, dataToSave, { merge: true }).catch(() => {});
       } catch (fsErr) {
         console.warn('Warning: Firestore broadcast encountered an issue, but local switch is active:', fsErr);
       }
@@ -342,7 +342,7 @@ export class MultiDbManager {
   }
 
   public listenToConfigChanges(onUpdate: (config: SupabaseBroadcastConfig) => void): Unsubscribe {
-    const configDocRef = doc(db, 'system_config', FIRESTORE_CONFIG_DOC);
+    const configDocRef = doc(db, 'stock-lt3', FIRESTORE_CONFIG_DOC);
     return onSnapshot(configDocRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data() as SupabaseBroadcastConfig;
