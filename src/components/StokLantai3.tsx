@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Building, Download, Upload, FileSpreadsheet, History, Package, TrendingDown, Search, Calendar, X, XCircle, RefreshCw, Loader2, Filter, ChevronLeft, ChevronRight, Trash2, Lock, Copy, CheckSquare, FileText, CheckCircle, Layers, Calculator, Sparkles } from 'lucide-react';
@@ -163,8 +163,6 @@ export function StokLantai3() {
   const THEME = activeTab === 'lantai3' ? 'blue' : 'indigo';
   const TITLE = activeTab === 'lantai3' ? 'STOK LANTAI 3' : 'STOK BUNDLING';
   const [stokData, setStokData] = useState<StokLantai3Item[]>([]);
-  const [filteredStok, setFilteredStok] = useState<StokLantai3Item[]>([]);
-  const [paginatedStok, setPaginatedStok] = useState<StokLantai3Item[]>([]);
   const [transaksiData, setTransaksiData] = useState<TransaksiLantai3[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -205,6 +203,9 @@ export function StokLantai3() {
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
   const { userEmail, userRole } = useAuth();
 
+  // Memory Cache for Month Transactions (Instant Switching)
+  const monthTrxCacheRef = useRef<Map<string, TransaksiLantai3[]>>(new Map());
+
   // --- PIN PROTECTION STATE ---
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
@@ -236,9 +237,21 @@ export function StokLantai3() {
     return () => unsubscribe();
   }, []);
 
-  const getConvertedInfo = (item: { nama_produk: string; qty: number; qty_lama_terpakai?: number; packing?: string }) => {
+  // Fast precomputed conversion map for O(1) lookup
+  const conversionMap = useMemo(() => {
+    const map = new Map<string, any>();
+    conversions.forEach(c => {
+      if (c.sku_asal) {
+        map.set(c.sku_asal.trim().toUpperCase(), c);
+      }
+    });
+    return map;
+  }, [conversions]);
+
+  const getConvertedInfo = useCallback((item: { nama_produk: string; qty: number; qty_lama_terpakai?: number; packing?: string }) => {
     const rawSku = (item.nama_produk || '').trim();
-    const conv = skuConversionService.findConversion(rawSku);
+    const upperSku = rawSku.toUpperCase();
+    const conv = conversionMap.get(upperSku) || skuConversionService.findConversion(rawSku);
     if (conv && conv.sku_pcs && conv.qty > 0) {
       const mult = Number(conv.qty) || 1;
       const pcsQty = (item.qty || 0) * mult;
@@ -266,24 +279,122 @@ export function StokLantai3() {
       qty_aktual: aktual,
       packing: activePackingData.get(rawSku) || item.packing || ''
     };
-  };
+  }, [conversionMap, activeProducts, activePackingData]);
+
+  // Pre-calculate full converted dataset once per data/conversion change
+  const convertedStokData = useMemo(() => {
+    return stokData.map(item => {
+      const convInfo = getConvertedInfo(item);
+      const status = convInfo.qty_aktual < 0 ? 'minus' : (convInfo.qty === 0 && convInfo.qty_aktual === 0 ? 'habis' : (convInfo.qty_aktual < 10 ? 'low' : 'tersedia'));
+      return {
+        ...item,
+        convInfo,
+        status,
+        soStatus: item.sudah_so ? 'Sudah SO' : 'Belum SO'
+      };
+    });
+  }, [stokData, getConvertedInfo]);
+
+  // Fast Memoized Summary Statistics (Instant 0ms calculation)
+  const summaryStats = useMemo(() => {
+    let totalQty = 0;
+    let minusCount = 0;
+    for (let i = 0; i < convertedStokData.length; i++) {
+      totalQty += convertedStokData[i].convInfo.qty;
+      if (convertedStokData[i].convInfo.qty_aktual < 0) {
+        minusCount++;
+      }
+    }
+    return {
+      totalStok: totalQty,
+      totalProduk: convertedStokData.length,
+      stokMinus: minusCount
+    };
+  }, [convertedStokData]);
+
+  const { totalStok, totalProduk, stokMinus } = summaryStats;
+
+  // Memoized Filtered Dataset (Instant reactivity)
+  const filteredStok = useMemo(() => {
+    let result = convertedStokData;
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      result = result.filter(item => {
+        const raw = (item.nama_produk || '').toLowerCase();
+        const display = (item.convInfo.displayName || '').toLowerCase();
+        const rak = (item.rak || '').toLowerCase();
+        const subRak = (item.sub_rak || '').toLowerCase();
+        return raw.includes(q) || display.includes(q) || rak.includes(q) || subRak.includes(q);
+      });
+    }
+
+    if (filters.nama_produk.length > 0) {
+      const setNama = new Set(filters.nama_produk);
+      result = result.filter(item => setNama.has(item.convInfo.displayName) || setNama.has(item.nama_produk));
+    }
+
+    if (filters.qty.length > 0) {
+      const setQty = new Set(filters.qty);
+      result = result.filter(item => setQty.has(item.convInfo.qty));
+    }
+
+    if (filters.satuan.length > 0) {
+      const setSatuan = new Set(filters.satuan);
+      result = result.filter(item => setSatuan.has(item.satuan || ''));
+    }
+
+    if (filters.packing.length > 0) {
+      const setPacking = new Set(filters.packing);
+      result = result.filter(item => setPacking.has(item.convInfo.packing));
+    }
+
+    if (filters.rak.length > 0) {
+      const setRak = new Set(filters.rak);
+      result = result.filter(item => setRak.has(item.rak || ''));
+    }
+
+    if (filters.sub_rak.length > 0) {
+      const setSubRak = new Set(filters.sub_rak);
+      result = result.filter(item => setSubRak.has(item.sub_rak || ''));
+    }
+
+    if (filters.status.length > 0) {
+      const setStatus = new Set(filters.status);
+      result = result.filter(item => setStatus.has(item.status));
+    }
+
+    if (filters.sudah_so && filters.sudah_so.length > 0) {
+      const setSo = new Set(filters.sudah_so);
+      result = result.filter(item => setSo.has(item.soStatus));
+    }
+
+    return result;
+  }, [convertedStokData, searchQuery, filters]);
+
+  // Memoized Paginated Dataset
+  const paginatedStok = useMemo(() => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    return filteredStok.slice(startIndex, startIndex + itemsPerPage);
+  }, [filteredStok, currentPage, itemsPerPage]);
 
   const filteredTransaksiData = useMemo(() => {
+    if (!transaksiData.length) return [];
+    const searchLower = historySearch.toLowerCase().trim();
+    const ketLower = historyKetFilter.toLowerCase().trim();
+
     return transaksiData.filter(item => {
-      const conv = skuConversionService.findConversion(item.nama_produk);
-      const searchTarget = `${item.nama_produk} ${conv?.sku_pcs || ''} ${item.keterangan}`.toLowerCase();
-      const matchSearch = historySearch === '' || 
-        searchTarget.includes(historySearch.toLowerCase());
-      
-      const matchDate = historyDateFilter === '' || item.tanggal === historyDateFilter;
-      
-      const matchType = historyTypeFilter === '' || item.tipe === historyTypeFilter;
-      
-      const matchKet = historyKetFilter === '' || item.keterangan.toLowerCase().includes(historyKetFilter.toLowerCase());
-      
-      return matchSearch && matchDate && matchType && matchKet;
+      if (searchLower) {
+        const prod = item.nama_produk.toLowerCase();
+        const ket = item.keterangan.toLowerCase();
+        if (!prod.includes(searchLower) && !ket.includes(searchLower)) return false;
+      }
+      if (historyDateFilter && item.tanggal !== historyDateFilter) return false;
+      if (historyTypeFilter && item.tipe !== historyTypeFilter) return false;
+      if (ketLower && !item.keterangan.toLowerCase().includes(ketLower)) return false;
+      return true;
     });
-  }, [transaksiData, historySearch, historyDateFilter, historyTypeFilter, historyKetFilter, conversions]);
+  }, [transaksiData, historySearch, historyDateFilter, historyTypeFilter, historyKetFilter]);
 
   const handleActionWithPin = (action: () => void, expectedPin?: string, description?: string) => {
     setPendingAction(() => action);
@@ -543,22 +654,18 @@ export function StokLantai3() {
   }, [activeTab]);
 
   useEffect(() => {
-    filterStokData();
-  }, [searchQuery, stokData, filters]);
-
-  useEffect(() => {
-    paginateData();
-  }, [filteredStok, currentPage, itemsPerPage]);
-
-  useEffect(() => {
     setSelectedProductIds(new Set());
     setCurrentPage(1);
   }, [searchQuery, filters, itemsPerPage]);
 
 
 
-  const loadTransaksiData = async (monthVal = selectedHistoryMonth) => {
+  const loadTransaksiData = async (monthVal = selectedHistoryMonth, forceRefresh = false) => {
     try {
+      if (!forceRefresh && monthTrxCacheRef.current.has(monthVal)) {
+        setTransaksiData(monthTrxCacheRef.current.get(monthVal)!);
+        return;
+      }
       setLoadingHistory(true);
       
       const q = query(collection(db, TRX_COL), where("bulan", "==", monthVal));
@@ -567,8 +674,9 @@ export function StokLantai3() {
 
       snapshot.docs.forEach(docSnap => {
         const data = docSnap.data();
-        const rawSku = data.nama_produk || '';
-        const conv = skuConversionService.findConversion(rawSku);
+        const rawSku = (data.nama_produk || '').trim();
+        const upperSku = rawSku.toUpperCase();
+        const conv = conversionMap.get(upperSku) || skuConversionService.findConversion(rawSku);
         const mult = conv ? Number(conv.qty) || 1 : 1;
         const displaySku = conv?.sku_pcs || rawSku;
 
@@ -671,6 +779,7 @@ export function StokLantai3() {
 
       // Sort by tanggal descending
       formattedData.sort((a, b) => b.tanggal.localeCompare(a.tanggal));
+      monthTrxCacheRef.current.set(monthVal, formattedData);
       setTransaksiData(formattedData);
       console.log(`✅ Loaded ${formattedData.length} transaksi docs from Firestore transaksi_lantai3`);
     } catch (error) {
@@ -722,14 +831,16 @@ export function StokLantai3() {
     
     // Get unique values for the column
     const uniqueValues = Array.from(new Set(
-      stokData.map(item => {
-        const info = getConvertedInfo(item);
-        if (showFilterPopup === 'status') return getStatus(item);
-        if (showFilterPopup === 'sudah_so') return item.sudah_so ? 'Sudah SO' : 'Belum SO';
-        if (showFilterPopup === 'nama_produk') return info.displayName;
-        if (showFilterPopup === 'qty') return String(info.qty);
-        if (showFilterPopup === 'packing') return info.packing;
-        const val = item[showFilterPopup as keyof StokLantai3Item];
+      convertedStokData.map(item => {
+        if (showFilterPopup === 'status') return item.status;
+        if (showFilterPopup === 'sudah_so') return item.soStatus;
+        if (showFilterPopup === 'nama_produk') return item.convInfo.displayName;
+        if (showFilterPopup === 'qty') return String(item.convInfo.qty);
+        if (showFilterPopup === 'satuan') return item.satuan || '';
+        if (showFilterPopup === 'packing') return item.convInfo.packing;
+        if (showFilterPopup === 'rak') return item.rak || '';
+        if (showFilterPopup === 'sub_rak') return item.sub_rak || '';
+        const val = (item as any)[showFilterPopup];
         return val ? String(val) : '';
       })
     )).filter(Boolean).sort();
@@ -772,74 +883,6 @@ export function StokLantai3() {
 
   const getActiveFilterCount = (key: keyof typeof filters) => {
     return filters[key]?.length || 0;
-  };
-
-  const filterStokData = () => {
-    let filtered = [...stokData];
-
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(item => {
-        const info = getConvertedInfo(item);
-        const namaProduk = (item.nama_produk || '').toLowerCase();
-        const displayNama = (info.displayName || '').toLowerCase();
-        const rak = (item.rak || '').toLowerCase();
-        const subRak = (item.sub_rak || '').toLowerCase();
-        return namaProduk.includes(query) || displayNama.includes(query) || rak.includes(query) || subRak.includes(query);
-      });
-    }
-
-    if (filters.nama_produk.length > 0) {
-      filtered = filtered.filter(item => {
-        const info = getConvertedInfo(item);
-        return filters.nama_produk.includes(info.displayName) || filters.nama_produk.includes(item.nama_produk);
-      });
-    }
-
-    if (filters.qty.length > 0) {
-      filtered = filtered.filter(item => {
-        const info = getConvertedInfo(item);
-        return filters.qty.includes(info.qty);
-      });
-    }
-
-    if (filters.satuan.length > 0) {
-      filtered = filtered.filter(item => filters.satuan.includes(item.satuan || ''));
-    }
-
-    if (filters.packing.length > 0) {
-      filtered = filtered.filter(item => {
-        const info = getConvertedInfo(item);
-        return filters.packing.includes(info.packing);
-      });
-    }
-
-    if (filters.rak.length > 0) {
-      filtered = filtered.filter(item => filters.rak.includes(item.rak || ''));
-    }
-
-    if (filters.sub_rak.length > 0) {
-      filtered = filtered.filter(item => filters.sub_rak.includes(item.sub_rak || ''));
-    }
-
-    if (filters.status.length > 0) {
-      filtered = filtered.filter(item => filters.status.includes(getStatus(item)));
-    }
-
-    if (filters.sudah_so && filters.sudah_so.length > 0) {
-      filtered = filtered.filter(item => {
-        const val = item.sudah_so ? 'Sudah SO' : 'Belum SO';
-        return filters.sudah_so.includes(val);
-      });
-    }
-
-    setFilteredStok(filtered);
-  };
-
-  const paginateData = () => {
-    const startIndex = (currentPage - 1) * itemsPerPage;
-    const endIndex = startIndex + itemsPerPage;
-    setPaginatedStok(filteredStok.slice(startIndex, endIndex));
   };
 
   const totalPages = Math.ceil(filteredStok.length / itemsPerPage);
@@ -1649,10 +1692,6 @@ export function StokLantai3() {
     link.click();
     document.body.removeChild(link);
   };
-
-  const totalStok = stokData.reduce((sum, item) => sum + getConvertedInfo(item).qty, 0);
-  const totalProduk = stokData.length;
-  const stokMinus = stokData.filter(item => getConvertedInfo(item).qty_aktual < 0).length;
 
   return (
     <div className="space-y-6">

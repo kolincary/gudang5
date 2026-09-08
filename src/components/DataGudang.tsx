@@ -258,6 +258,7 @@ export function DataGudang() {
   const [editingItem, setEditingItem] = useState<StockReport | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isSelectingAllPages, setIsSelectingAllPages] = useState(false);
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
   const [bulkEditItems, setBulkEditItems] = useState<StockReport[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -1288,14 +1289,30 @@ export function DataGudang() {
     }
   };
 
-  const handleSelectAll = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.checked) {
-      const allIds = new Set(stockData.map(item => item.id));
-      setSelectedIds(allIds);
-    } else {
-      setSelectedIds(new Set());
-    }
-  }, [stockData]);
+  const isCurrentPageAllSelected = useMemo(() => {
+    return stockData.length > 0 && stockData.every(item => selectedIds.has(item.id));
+  }, [stockData, selectedIds]);
+
+  const isCurrentPageSomeSelected = useMemo(() => {
+    return stockData.some(item => selectedIds.has(item.id)) && !isCurrentPageAllSelected;
+  }, [stockData, selectedIds, isCurrentPageAllSelected]);
+
+  const currentPageSelectedCount = useMemo(() => {
+    return stockData.filter(item => selectedIds.has(item.id)).length;
+  }, [stockData, selectedIds]);
+
+  const handleSelectAll = useCallback((e?: React.ChangeEvent<HTMLInputElement>) => {
+    const shouldSelectAll = e ? e.target.checked : !isCurrentPageAllSelected;
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (shouldSelectAll) {
+        stockData.forEach(item => next.add(item.id));
+      } else {
+        stockData.forEach(item => next.delete(item.id));
+      }
+      return next;
+    });
+  }, [stockData, isCurrentPageAllSelected]);
 
   const handleSelectRow = useCallback((id: string) => {
     setSelectedIds(prev => {
@@ -1309,9 +1326,96 @@ export function DataGudang() {
     });
   }, []);
 
-  const handleOpenBulkEdit = useCallback(() => {
+  const handleSelectAllAcrossPages = async () => {
+    try {
+      setIsSelectingAllPages(true);
+      showToast('Mengambil semua data sesuai filter aktif...', 'info');
+
+      let query = supabase
+        .from('stock_items')
+        .select('id')
+        .eq('status', 'Aktif');
+
+      // Apply search filter
+      if (debouncedSearchTerm) {
+        query = query.or(`nama_produk.ilike.%${debouncedSearchTerm}%,rak.ilike.%${debouncedSearchTerm}%`);
+      }
+
+      // Apply rack filter
+      if (debouncedRackFilter && debouncedRackFilter !== 'Semua Rak') {
+        query = query.ilike('rak', `%${debouncedRackFilter}%`);
+      }
+
+      // Apply Minus Filter
+      if (showMinusOnly) {
+        query = query.lt('tersedia', 0);
+      }
+
+      // Apply non-calculated column filters
+      for (const key in filters) {
+        const filterKey = key as FilterableColumn;
+        if (!['masuk', 'keluar', 'tersedia'].includes(filterKey)) {
+          const selectedValues = filters[filterKey];
+          if (selectedValues && selectedValues.size > 0) {
+            query = query.in(filterKey, Array.from(selectedValues));
+          }
+        }
+      }
+
+      let allIds: string[] = [];
+      let page = 0;
+      const pageSize = 1000;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data, error } = await query.range(page * pageSize, (page + 1) * pageSize - 1);
+        if (error) throw error;
+        if (data && data.length > 0) {
+          data.forEach((row: any) => allIds.push(row.id));
+          if (data.length < pageSize) {
+            hasMore = false;
+          } else {
+            page++;
+          }
+        } else {
+          hasMore = false;
+        }
+      }
+
+      setSelectedIds(new Set(allIds));
+      showToast(`Berhasil memilih ${allIds.length.toLocaleString()} data di semua halaman!`, 'success');
+    } catch (err: any) {
+      console.error('Error selecting all across pages:', err);
+      showToast(`Gagal memilih semua data: ${err.message || 'Terjadi kesalahan'}`, 'error');
+    } finally {
+      setIsSelectingAllPages(false);
+    }
+  };
+
+  const handleOpenBulkEdit = useCallback(async () => {
     if (selectedIds.size === 0) return;
-    const itemsToEdit = stockData.filter(item => selectedIds.has(item.id));
+    let itemsToEdit = stockData.filter(item => selectedIds.has(item.id));
+    
+    if (itemsToEdit.length < selectedIds.size) {
+      const selectedIdArray = Array.from(selectedIds);
+      const cachedItems = allStockItemsRef.current.filter(item => selectedIds.has(item.id));
+      const foundMap = new Map<string, StockReport>();
+      itemsToEdit.forEach(i => foundMap.set(i.id, i));
+      cachedItems.forEach(i => foundMap.set(i.id, i));
+
+      const missingIds = selectedIdArray.filter(id => !foundMap.has(id));
+      if (missingIds.length > 0) {
+        for (let i = 0; i < missingIds.length; i += 500) {
+          const chunk = missingIds.slice(i, i + 500);
+          const { data } = await supabase.from('stock_items').select('*').in('id', chunk);
+          if (data) {
+            data.forEach((item: any) => foundMap.set(item.id, item));
+          }
+        }
+      }
+      itemsToEdit = Array.from(foundMap.values());
+    }
+
     setBulkEditItems(itemsToEdit);
     setIsBulkEditModalOpen(true);
   }, [selectedIds, stockData]);
@@ -1552,40 +1656,256 @@ export function DataGudang() {
     }
   };
 
-  const handleExport = useCallback(() => {
+  const handleExport = useCallback(async (isOnlySelectedParam?: boolean) => {
     try {
+      const isOnlySelected = typeof isOnlySelectedParam === 'boolean'
+        ? isOnlySelectedParam
+        : (selectedIds.size > 0);
+
+      setExportProgress({
+        isExporting: true,
+        progress: 10,
+        total: 0,
+        current: 0,
+        stage: 'fetching',
+        message: isOnlySelected
+          ? `Memuat ${selectedIds.size} data terpilih untuk export...`
+          : 'Memuat seluruh data sesuai filter aktif untuk export...'
+      });
+
+      let itemsToExport: any[] = [];
+
+      if (isOnlySelected && selectedIds.size > 0) {
+        const idArray = Array.from(selectedIds);
+        const batchSize = 500;
+        for (let i = 0; i < idArray.length; i += batchSize) {
+          const chunk = idArray.slice(i, i + batchSize);
+          const { data, error } = await supabase
+            .from('stock_items')
+            .select('*')
+            .in('id', chunk);
+
+          if (error) throw error;
+          if (data) itemsToExport.push(...data);
+
+          setExportProgress(prev => ({
+            ...prev,
+            progress: Math.min(40, Math.floor((itemsToExport.length / idArray.length) * 40)),
+            current: itemsToExport.length,
+            total: idArray.length,
+            message: `Memuat data terpilih: ${itemsToExport.length} / ${idArray.length}...`
+          }));
+        }
+      } else {
+        // Export all matching active filters across all pages
+        let query = supabase
+          .from('stock_items')
+          .select('*')
+          .eq('status', 'Aktif')
+          .order(sortConfig.key === 'nama_produk' ? 'nama_produk' : 'created_at', { ascending: sortConfig.direction === 'asc' });
+
+        if (debouncedSearchTerm) {
+          query = query.or(`nama_produk.ilike.%${debouncedSearchTerm}%,rak.ilike.%${debouncedSearchTerm}%`);
+        }
+        if (debouncedRackFilter && debouncedRackFilter !== 'Semua Rak') {
+          query = query.ilike('rak', `%${debouncedRackFilter}%`);
+        }
+        if (showMinusOnly) {
+          query = query.lt('tersedia', 0);
+        }
+        for (const key in filters) {
+          const filterKey = key as FilterableColumn;
+          if (!['masuk', 'keluar', 'tersedia'].includes(filterKey)) {
+            const selectedValues = filters[filterKey];
+            if (selectedValues && selectedValues.size > 0) {
+              query = query.in(filterKey, Array.from(selectedValues));
+            }
+          }
+        }
+
+        const totalExpected = paginationInfo.totalCount || 1000;
+        let page = 0;
+        const pageSize = 1000;
+        let hasMore = true;
+
+        while (hasMore) {
+          const from = page * pageSize;
+          const to = from + pageSize - 1;
+          const { data, error } = await query.range(from, to);
+          if (error) throw error;
+
+          if (data && data.length > 0) {
+            itemsToExport.push(...data);
+            setExportProgress(prev => ({
+              ...prev,
+              progress: Math.min(40, Math.floor((itemsToExport.length / totalExpected) * 40)),
+              current: itemsToExport.length,
+              total: totalExpected,
+              message: `Memuat data filter: ${itemsToExport.length} baris...`
+            }));
+            if (data.length < pageSize) {
+              hasMore = false;
+            } else {
+              page++;
+            }
+          } else {
+            hasMore = false;
+          }
+        }
+      }
+
+      if (itemsToExport.length === 0) {
+        showToast('Tidak ada data yang ditemukan untuk diexport.', 'warning');
+        setExportProgress({ isExporting: false, progress: 0, total: 0, current: 0, stage: '', message: '' });
+        return;
+      }
+
+      // Calculate masuk & keluar from database_log
+      setExportProgress({
+        isExporting: true,
+        progress: 45,
+        total: itemsToExport.length,
+        current: 0,
+        stage: 'calculating',
+        message: `Menghitung transaksi log untuk ${itemsToExport.length.toLocaleString()} data...`
+      });
+
+      const uniqueSkus = Array.from(new Set(itemsToExport.map(i => i.nama_produk)));
+      const logBatchSize = 100;
+      let allLogs: any[] = [];
+
+      for (let i = 0; i < uniqueSkus.length; i += logBatchSize) {
+        const skuChunk = uniqueSkus.slice(i, i + logBatchSize);
+        let logQuery = supabase
+          .from('database_log')
+          .select('sku, rak, type, jumlah, created_at')
+          .in('sku', skuChunk)
+          .in('type', ['IN', 'OUT']);
+
+        if (snapshotFilter.enabled) {
+          const startDateTime = `${snapshotFilter.startDate}T${snapshotFilter.startTime}`;
+          const endDateTime = `${snapshotFilter.endDate}T${snapshotFilter.endTime}`;
+          logQuery = logQuery.gte('created_at', startDateTime).lte('created_at', endDateTime);
+        }
+
+        const { data: logData, error: logErr } = await logQuery;
+        if (!logErr && logData) {
+          allLogs.push(...logData);
+        }
+
+        const calcProgress = 45 + Math.floor(((i + skuChunk.length) / uniqueSkus.length) * 35);
+        setExportProgress(prev => ({
+          ...prev,
+          progress: Math.min(80, calcProgress),
+          current: i + skuChunk.length,
+          total: uniqueSkus.length,
+          message: `Menghitung kalkulasi stok: ${i + skuChunk.length} / ${uniqueSkus.length} SKU...`
+        }));
+      }
+
+      // Group logs by SKU|Rak
+      const logMap = new Map<string, { masuk: number, keluar: number }>();
+      allLogs.forEach(log => {
+        const key = `${log.sku}|${log.rak}`;
+        if (!logMap.has(key)) logMap.set(key, { masuk: 0, keluar: 0 });
+        const current = logMap.get(key)!;
+        if (log.type === 'IN') current.masuk += (log.jumlah || 0);
+        if (log.type === 'OUT') current.keluar += (log.jumlah || 0);
+      });
+
+      // Map calculation to items
+      let processedReports = itemsToExport.map(item => {
+        const key = `${item.nama_produk}|${item.rak}`;
+        const calc = logMap.get(key) || { masuk: 0, keluar: 0 };
+        const masuk = calc.masuk;
+        const keluar = calc.keluar;
+        const tersedia = (item.stok_awal || 0) + masuk - keluar;
+        return {
+          ...item,
+          masuk,
+          keluar,
+          tersedia
+        };
+      });
+
+      // Client-side filter for calculated fields if active
+      const calculatedCols: FilterableColumn[] = ['masuk', 'keluar', 'tersedia'];
+      for (const col of calculatedCols) {
+        const selectedValues = filters[col];
+        if (selectedValues && selectedValues.size > 0) {
+          processedReports = processedReports.filter(item => selectedValues.has(item[col]));
+        }
+      }
+
+      if (showMinusOnly) {
+        processedReports = processedReports.filter(item => item.tersedia < 0);
+      }
+
+      setExportProgress({
+        isExporting: true,
+        progress: 85,
+        total: processedReports.length,
+        current: processedReports.length,
+        stage: 'exporting',
+        message: `Membuat file CSV untuk ${processedReports.length.toLocaleString()} data...`
+      });
+
       const headers = ['Nama Produk', 'Packing', 'Rak', 'Sub Rak', 'Satuan', 'Stok Awal', 'Masuk', 'Keluar', 'Tersedia'];
       const csvContent = [
         headers.join(','),
-        ...stockData.map(item => [
-          `"${item.nama_produk}"`,
-          `"${item.packing}"`,
-          `"${item.rak}"`,
+        ...processedReports.map(item => [
+          `"${item.nama_produk || ''}"`,
+          `"${item.packing || ''}"`,
+          `"${item.rak || ''}"`,
           `"${item.sub_rak || ''}"`,
-          `"${item.satuan}"`,
-          item.stok_awal,
-          item.masuk,
-          item.keluar,
-          item.tersedia
+          `"${item.satuan || ''}"`,
+          item.stok_awal || 0,
+          item.masuk || 0,
+          item.keluar || 0,
+          item.tersedia || 0
         ].join(','))
       ].join('\n');
+
+      setExportProgress({
+        isExporting: true,
+        progress: 95,
+        total: processedReports.length,
+        current: processedReports.length,
+        stage: 'downloading',
+        message: 'Mengunduh file CSV...'
+      });
 
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
       link.setAttribute('href', url);
-      link.setAttribute('download', `data-gudang-${new Date().toISOString().split('T')[0]}.csv`);
+      const filePrefix = isOnlySelected ? 'data-gudang-terpilih' : (debouncedRackFilter ? `data-gudang-rak-${debouncedRackFilter}` : 'data-gudang');
+      link.setAttribute('download', `${filePrefix}-${new Date().toISOString().split('T')[0]}.csv`);
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
 
-      showToast(`Export berhasil! ${stockData.length} data telah diunduh.`, 'success');
-    } catch (error) {
+      setExportProgress({
+        isExporting: true,
+        progress: 100,
+        total: processedReports.length,
+        current: processedReports.length,
+        stage: 'complete',
+        message: 'Export selesai!'
+      });
+
+      showToast(`Export berhasil! ${processedReports.length.toLocaleString()} data telah diunduh.`, 'success');
+      setTimeout(() => {
+        setExportProgress({ isExporting: false, progress: 0, total: 0, current: 0, stage: '', message: '' });
+      }, 1500);
+
+    } catch (error: any) {
       console.error('Error exporting data:', error);
-      showToast('Terjadi kesalahan saat export data', 'error');
+      showToast(`Terjadi kesalahan saat export data: ${error.message || 'Error'}`, 'error');
+      setExportProgress({ isExporting: false, progress: 0, total: 0, current: 0, stage: '', message: '' });
     }
-  }, [stockData, showToast]);
+  }, [selectedIds, debouncedSearchTerm, debouncedRackFilter, showMinusOnly, filters, sortConfig, snapshotFilter, paginationInfo, showToast]);
 
   const handleExportAllWithSubtotal = async () => {
     try {
@@ -2217,6 +2537,43 @@ export function DataGudang() {
           </div>
         )}
 
+        {/* Floating / Sticky Progress Presentation Banner when Exporting Data */}
+        {exportProgress.isExporting && (
+          <div className="bg-slate-900 text-white p-5 rounded-3xl border-2 border-blue-500/50 shadow-2xl shadow-blue-950/20 mb-6 animate-in fade-in slide-in-from-top-4 duration-300">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-500/20 text-blue-400 rounded-2xl border border-blue-500/30">
+                  <Download className="w-5 h-5 animate-bounce" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-black uppercase tracking-wider text-blue-300 flex items-center gap-2">
+                    Proses Export Data Berkelanjutan
+                  </h4>
+                  <p className="text-xs text-slate-300 font-medium mt-0.5">{exportProgress.message}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 self-end sm:self-auto">
+                <span className="text-2xl font-black text-blue-400 font-mono tracking-tight">
+                  {exportProgress.progress}%
+                </span>
+                {exportProgress.total > 0 && (
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest bg-slate-800 px-3 py-1 rounded-xl border border-slate-700">
+                    {exportProgress.current} / {exportProgress.total}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Visual Progress Bar */}
+            <div className="w-full bg-slate-800/80 rounded-full h-3.5 p-0.5 border border-slate-700/80 overflow-hidden">
+              <div
+                className="bg-gradient-to-r from-blue-500 via-indigo-400 to-cyan-400 h-full rounded-full transition-all duration-300 shadow-[0_0_15px_rgba(59,130,246,0.6)]"
+                style={{ width: `${Math.max(exportProgress.progress, 4)}%` }}
+              ></div>
+            </div>
+          </div>
+        )}
+
         {/* Data Summary Dashboard */}
         <div className="hidden lg:grid grid-cols-4 gap-4 mb-4">
           <div className="bg-white rounded-[20px] border-l-4 border-l-blue-500 border-t border-r border-b border-gray-100/80 shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] p-4 px-5 flex items-center justify-between relative overflow-hidden group">
@@ -2310,9 +2667,18 @@ export function DataGudang() {
                 </div>
                 <div className="flex items-center gap-2 lg:gap-3">
                   <button
+                    onClick={() => handleActionWithPin(() => handleExport(true))}
+                    disabled={exportProgress.isExporting}
+                    className="h-9 px-3.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 border border-emerald-400 cursor-pointer disabled:opacity-50"
+                    title="Export CSV data terpilih lintas halaman"
+                  >
+                    <Download className="h-4 w-4" />
+                    <span className="text-xs lg:text-sm">Export Terpilih ({selectedIds.size})</span>
+                  </button>
+                  <button
                     onClick={handleCheckBalanceSelected}
                     disabled={isAnalyzingBalance}
-                    className="h-9 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-2 border border-emerald-400 cursor-pointer"
+                    className="h-9 px-3.5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 border border-teal-400 cursor-pointer"
                     title="Analisis dan Perbaiki Saldo Lebih Potong untuk SKU terpilih"
                   >
                     {isAnalyzingBalance ? (
@@ -2326,14 +2692,14 @@ export function DataGudang() {
                   </button>
                   <button
                     onClick={handleOpenBulkEdit}
-                    className="h-9 px-4 bg-white hover:bg-gray-50 text-blue-700 font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-2 cursor-pointer"
+                    className="h-9 px-3.5 bg-white hover:bg-gray-50 text-blue-700 font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
                   >
                     <Edit2 className="h-4 w-4" />
                     <span className="text-xs lg:text-sm">Edit</span>
                   </button>
                   <button
                     onClick={handleDeleteBulkClick}
-                    className="h-9 px-4 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 flex items-center gap-2 border border-rose-400 cursor-pointer"
+                    className="h-9 px-3.5 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl shadow-lg transition-all active:scale-95 flex items-center gap-1.5 border border-rose-400 cursor-pointer"
                   >
                     <Trash2 className="h-4 w-4" />
                     <span className="text-xs lg:text-sm">Hapus</span>
@@ -2779,6 +3145,56 @@ export function DataGudang() {
               </div>
             )}
 
+            {/* Banner Pemilihan Berkelanjutan (Multi-Page Selection Helper Banner) */}
+            {selectedIds.size > 0 && (
+              <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-blue-50 border-b border-blue-200 px-4 lg:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-blue-900 font-medium animate-in fade-in duration-200">
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center justify-center bg-blue-600 text-white font-black text-[11px] px-2.5 py-0.5 rounded-lg shadow-sm">
+                    {selectedIds.size}
+                  </span>
+                  <span>
+                    {selectedIds.size >= paginationInfo.totalCount && paginationInfo.totalCount > 0 ? (
+                      <span>
+                        Semua <strong>{selectedIds.size.toLocaleString()}</strong> data di semua halaman telah dipilih (sesuai filter aktif).
+                      </span>
+                    ) : (
+                      <span>
+                        <strong>{currentPageSelectedCount}</strong> data di halaman ini terpilih (Total <strong>{selectedIds.size.toLocaleString()}</strong> terpilih lintas halaman).
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center gap-4">
+                  {selectedIds.size < paginationInfo.totalCount && (
+                    <button
+                      type="button"
+                      disabled={isSelectingAllPages}
+                      onClick={handleSelectAllAcrossPages}
+                      className="font-black text-blue-700 hover:text-blue-900 underline underline-offset-4 flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+                    >
+                      {isSelectingAllPages ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Mengambil {paginationInfo.totalCount.toLocaleString()} data...</span>
+                        </>
+                      ) : (
+                        <span>
+                          Pilih semua {paginationInfo.totalCount.toLocaleString()} data di semua halaman (sesuai filter aktif)
+                        </span>
+                      )}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIds(new Set())}
+                    className="font-bold text-rose-600 hover:text-rose-800 underline underline-offset-4 transition-colors cursor-pointer"
+                  >
+                    Batalkan pilihan
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="overflow-x-auto min-h-[400px]">
               <table className="w-full">
                 <thead className="bg-blue-50/80 backdrop-blur-md border-b border-blue-100 text-blue-900 sticky top-0 z-10">
@@ -2787,7 +3203,12 @@ export function DataGudang() {
                       <input 
                         type="checkbox" 
                         onChange={handleSelectAll} 
-                        checked={stockData.length > 0 && selectedIds.size === stockData.length}
+                        checked={isCurrentPageAllSelected}
+                        ref={(el) => {
+                          if (el) {
+                            el.indeterminate = isCurrentPageSomeSelected;
+                          }
+                        }}
                         className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer shadow-sm"
                         title="Pilih Semua di Halaman Ini"
                       />
