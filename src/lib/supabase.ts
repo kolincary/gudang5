@@ -1,15 +1,30 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL!;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY!;
+// Read dynamic URL & Key if set via DB Config Hot-Swap, otherwise fallback to .env
+const dynamicUrl = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_url') : null) || import.meta.env.VITE_SUPABASE_URL!;
+const dynamicKey = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_anon_key') : null) || import.meta.env.VITE_SUPABASE_ANON_KEY!;
+
+const supabaseUrl = dynamicUrl;
+const supabaseAnonKey = dynamicKey;
 
 // Auto-cleanup if Supabase project changed
 if (typeof window !== 'undefined') {
   const lastUrl = localStorage.getItem('last_supabase_url');
   if (lastUrl && lastUrl !== supabaseUrl) {
     console.log('🔄 Supabase project URL changed. Clearing obsolete local storage...');
+    // preserve custom config keys
+    const customUrl = localStorage.getItem('custom_supabase_url');
+    const customKey = localStorage.getItem('custom_supabase_anon_key');
+    const multiCfg = localStorage.getItem('multi_db_config_v1');
+    const devMode = localStorage.getItem('devmode');
+    
     localStorage.clear();
     sessionStorage.clear();
+
+    if (customUrl) localStorage.setItem('custom_supabase_url', customUrl);
+    if (customKey) localStorage.setItem('custom_supabase_anon_key', customKey);
+    if (multiCfg) localStorage.setItem('multi_db_config_v1', multiCfg);
+    if (devMode) localStorage.setItem('devmode', devMode);
   }
   localStorage.setItem('last_supabase_url', supabaseUrl);
 }

@@ -295,13 +295,13 @@ export function DataSKU() {
         const name = sku.nama.toLowerCase().trim();
         nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
       });
-      
+
       result = result.filter(sku => {
         const name = sku.nama.toLowerCase().trim();
         return (nameCounts.get(name) || 0) > 1;
       });
     }
-    
+
     return result;
   }, [skus, searchTerm, showDuplicatesOnly]);
 
@@ -458,8 +458,8 @@ export function DataSKU() {
 
       // Assume header might be present if the first row has "ID", "Barang", "Nama"
       const firstRowStr = lines[0]?.map(String).join(' ').toLowerCase() || '';
-      const dataLines = (firstRowStr.includes('id') || firstRowStr.includes('barang') || firstRowStr.includes('nama')) 
-        ? lines.slice(1) 
+      const dataLines = (firstRowStr.includes('id') || firstRowStr.includes('barang') || firstRowStr.includes('nama'))
+        ? lines.slice(1)
         : lines;
 
       const total = dataLines.length;
@@ -551,8 +551,8 @@ export function DataSKU() {
           setImportProgress({ isImporting: false, progress: 0, total: 0, current: 0, message: '' });
           setIsImportModalOpen(false);
           fetchAndStoreSKUs();
-          const msg = skippedCount > 0 
-            ? `Impor selesai! ${importData.length} SKU baru ditambahkan. ${skippedCount} SKU dilewati karena ID sudah ada.` 
+          const msg = skippedCount > 0
+            ? `Impor selesai! ${importData.length} SKU baru ditambahkan. ${skippedCount} SKU dilewati karena ID sudah ada.`
             : `Impor berhasil! ${importData.length} SKU baru telah ditambahkan.`;
           showToast(msg, 'success');
         }, 2000);
@@ -966,16 +966,16 @@ export function DataSKU() {
 
         // Remove empty lines
         const lines = data.filter(row => row.length > 0 && row.some(cell => cell !== undefined && cell !== null && String(cell).trim() !== ''));
-        
+
         // Skip header if present
         const firstRowStr = lines[0]?.map(String).join(' ').toLowerCase() || '';
-        const dataLines = (firstRowStr.includes('lama') || firstRowStr.includes('baru') || firstRowStr.includes('id')) 
-          ? lines.slice(1) 
+        const dataLines = (firstRowStr.includes('lama') || firstRowStr.includes('baru') || firstRowStr.includes('id'))
+          ? lines.slice(1)
           : lines;
 
         const importedRows: MassUpdateRow[] = [];
         let index = 0;
-        
+
         for (const columns of dataLines) {
           if (columns.length >= 2 && columns[0] && columns[1]) {
             const oldSku = String(columns[0]).trim();
@@ -983,7 +983,7 @@ export function DataSKU() {
 
             // Cari ID Barang di list skuNames/skus
             const foundSku = skuNames.find(sku => sku.nama.toLowerCase().trim() === oldSku.toLowerCase().trim());
-            
+
             importedRows.push({
               id: Date.now() + index,
               old_sku: oldSku,
@@ -1205,7 +1205,7 @@ export function DataSKU() {
 
             <form onSubmit={handleAddSkuSubmit} className="space-y-4">
               <div className={`grid grid-cols-1 ${showPasteInput ? 'lg:grid-cols-12' : 'grid-cols-1'} gap-6 items-start`}>
-                
+
                 {/* LEFT COLUMN: Paste Data Sekaligus Form */}
                 {showPasteInput && (
                   <div className="lg:col-span-4 bg-white p-5 rounded-2xl border-2 border-indigo-100 shadow-lg space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
@@ -1351,11 +1351,10 @@ export function DataSKU() {
                       <Button
                         type="button"
                         onClick={() => setShowPasteInput(!showPasteInput)}
-                        className={`h-10 px-4 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs ${
-                          showPasteInput
-                            ? 'bg-indigo-600 text-white shadow-md'
-                            : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700'
-                        }`}
+                        className={`h-10 px-4 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs ${showPasteInput
+                          ? 'bg-indigo-600 text-white shadow-md'
+                          : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700'
+                          }`}
                       >
                         <Copy className="h-4 w-4 mr-1.5" />
                         {showPasteInput ? 'Tutup Panel Paste' : 'Paste Data Sekaligus'}
@@ -1563,32 +1562,32 @@ export function DataSKU() {
                       </Button>
                     </div>
                   </div>
-                  
-                    <div className="bg-white p-6 rounded-[2.5rem] border-2 border-blue-50 shadow-sm text-left">
-                      <div className="flex items-center gap-3 mb-4">
-                        <div className="h-2 w-2 bg-blue-500 rounded-full animate-pulse"></div>
-                        <h4 className="font-black text-xs uppercase tracking-widest text-blue-900">Panduan Kolom (Excel)</h4>
+
+                  <div className="bg-white p-6 rounded-[2.5rem] border-2 border-blue-50 shadow-sm text-left">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="h-2 w-2 bg-blue-500 rounded-full animate-pulse"></div>
+                      <h4 className="font-black text-xs uppercase tracking-widest text-blue-900">Panduan Kolom (Excel)</h4>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                        <p className="text-[10px] font-black text-blue-600 uppercase mb-1">Kolom 1 (A)</p>
+                        <p className="text-xs font-bold text-gray-700">ID Barang</p>
+                        <p className="text-[9px] text-gray-400 mt-1 italic">Contoh: 1001, SKU-001</p>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                          <p className="text-[10px] font-black text-blue-600 uppercase mb-1">Kolom 1 (A)</p>
-                          <p className="text-xs font-bold text-gray-700">ID Barang</p>
-                          <p className="text-[9px] text-gray-400 mt-1 italic">Contoh: 1001, SKU-001</p>
-                        </div>
-                        <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                          <p className="text-[10px] font-black text-blue-600 uppercase mb-1">Kolom 2 (B)</p>
-                          <p className="text-xs font-bold text-gray-700">Nama Produk</p>
-                          <p className="text-[9px] text-gray-400 mt-1 italic">Contoh: PULPEN-BP-01</p>
-                        </div>
-                      </div>
-                      <p className="mt-4 text-[9px] font-medium text-blue-500/70 italic">* Pastikan baris pertama adalah header sesuai template.</p>
-                      <div className="mt-5 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 shadow-sm">
-                        <Info className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
-                        <p className="text-sm text-red-700 font-medium leading-relaxed">
-                          SKU yang baru diimpor akan <strong>otomatis dibuatkan datanya</strong> di menu Data Gudang (dengan Rak UTAMA, CTN/, dan Stok 0).
-                        </p>
+                      <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                        <p className="text-[10px] font-black text-blue-600 uppercase mb-1">Kolom 2 (B)</p>
+                        <p className="text-xs font-bold text-gray-700">Nama Produk</p>
+                        <p className="text-[9px] text-gray-400 mt-1 italic">Contoh: PULPEN-BP-01</p>
                       </div>
                     </div>
+                    <p className="mt-4 text-[9px] font-medium text-blue-500/70 italic">* Pastikan baris pertama adalah header sesuai template.</p>
+                    <div className="mt-5 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 shadow-sm">
+                      <Info className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
+                      <p className="text-sm text-red-700 font-medium leading-relaxed">
+                        SKU yang baru diimpor akan <strong>otomatis dibuatkan datanya</strong> di menu Data Gudang (dengan Rak UTAMA, CTN/, dan Stok 0).
+                      </p>
+                    </div>
+                  </div>
                 </label>
               </div>
             )}
@@ -1680,7 +1679,7 @@ export function DataSKU() {
 
                 <form onSubmit={handleMassUpdate} className="space-y-4">
                   <div className={`grid grid-cols-1 ${showMassUpdatePaste ? 'lg:grid-cols-12' : 'grid-cols-1'} gap-6 items-start`}>
-                    
+
                     {/* LEFT COLUMN: Paste Update Massal Panel */}
                     {showMassUpdatePaste && (
                       <div className="lg:col-span-4 bg-white p-5 rounded-2xl border-2 border-indigo-100 shadow-lg space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
@@ -1762,11 +1761,10 @@ export function DataSKU() {
                           <Button
                             type="button"
                             onClick={() => setShowMassUpdatePaste(!showMassUpdatePaste)}
-                            className={`h-10 px-4 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs ${
-                              showMassUpdatePaste
-                                ? 'bg-indigo-600 text-white shadow-md'
-                                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700'
-                            }`}
+                            className={`h-10 px-4 font-bold rounded-xl border-none transition-all active:scale-95 flex items-center justify-center text-xs ${showMassUpdatePaste
+                              ? 'bg-indigo-600 text-white shadow-md'
+                              : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700'
+                              }`}
                           >
                             <Copy className="h-4 w-4 mr-1.5" />
                             {showMassUpdatePaste ? 'Tutup Panel Paste' : 'Paste Data Sekaligus'}

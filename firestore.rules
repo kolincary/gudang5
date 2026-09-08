@@ -16,7 +16,13 @@ service cloud.firestore {
     match /stok_bundling/{document=**} {
       allow read, write: if true;
     }
-    match /transaksi_bundling/{document=**} {
+    match /system_config/{document=**} {
+      allow read, write: if true;
+    }
+    match /app_settings/{document=**} {
+      allow read, write: if true;
+    }
+    match /{document=**} {
       allow read, write: if true;
     }
   }
