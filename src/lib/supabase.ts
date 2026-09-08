@@ -12,26 +12,12 @@ export const getActiveSupabaseClient = (): SupabaseClient => {
     internalUrl = dynamicUrl;
     internalKey = dynamicKey;
     
-    // Auto-cleanup if project URL changed
     if (typeof window !== 'undefined') {
-      const lastUrl = localStorage.getItem('last_supabase_url');
-      if (lastUrl && lastUrl !== dynamicUrl) {
-        console.log('🔄 Supabase project URL changed to:', dynamicUrl);
-        const customUrl = localStorage.getItem('custom_supabase_url');
-        const customKey = localStorage.getItem('custom_supabase_anon_key');
-        const multiCfg = localStorage.getItem('multi_db_config_v1');
-        const devMode = localStorage.getItem('devmode');
-        
-        localStorage.clear();
-        sessionStorage.clear();
-
-        if (customUrl) localStorage.setItem('custom_supabase_url', customUrl);
-        if (customKey) localStorage.setItem('custom_supabase_anon_key', customKey);
-        if (multiCfg) localStorage.setItem('multi_db_config_v1', multiCfg);
-        if (devMode) localStorage.setItem('devmode', devMode);
-      }
       localStorage.setItem('last_supabase_url', dynamicUrl);
     }
+
+    const refMatch = dynamicUrl.match(/https:\/\/([^.]+)\.supabase\.co/);
+    const refId = refMatch ? refMatch[1] : 'default';
 
     internalClient = createClient(dynamicUrl, dynamicKey, {
       db: {
@@ -40,7 +26,8 @@ export const getActiveSupabaseClient = (): SupabaseClient => {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        storageKey: `sb_${dynamicUrl.replace(/[^a-zA-Z0-9]/g, '_')}_auth`
+        detectSessionInUrl: true,
+        storageKey: `sb-${refId}-auth-token`
       },
       global: {
         headers: {

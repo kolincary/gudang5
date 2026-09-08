@@ -46,24 +46,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
         }, 5000);
 
-        // Get initial session
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            setSession(session);
-            setUser(session?.user ?? null);
-            if (session?.user) {
-                logUserLogin(session.user);
-                // Clean up URL if it contains auth tokens
-                if (window.location.hash.includes('access_token=')) {
-                    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        const initAuth = async () => {
+            try {
+                // If URL has OAuth hash with access_token
+                if (typeof window !== 'undefined' && window.location.hash.includes('access_token=')) {
+                    const hashStr = window.location.hash.replace(/^#/, '');
+                    const params = new URLSearchParams(hashStr);
+                    const accessToken = params.get('access_token');
+                    const refreshToken = params.get('refresh_token');
+
+                    if (accessToken && refreshToken) {
+                        console.log('🔑 Supabase OAuth callback detected, setting session explicitly...');
+                        const { data: hashData, error: hashError } = await supabase.auth.setSession({
+                            access_token: accessToken,
+                            refresh_token: refreshToken,
+                        });
+
+                        if (hashError) {
+                            console.error('Error setting session from hash:', hashError);
+                        } else if (hashData?.session) {
+                            setSession(hashData.session);
+                            setUser(hashData.session.user ?? null);
+                            if (hashData.session.user) {
+                                logUserLogin(hashData.session.user);
+                            }
+                            window.history.replaceState(null, '', window.location.pathname + window.location.search);
+                            setLoading(false);
+                            clearTimeout(loadTimeout);
+                            return;
+                        }
+                    }
                 }
+
+                // Standard session fetch
+                const { data: { session } } = await supabase.auth.getSession();
+                setSession(session);
+                setUser(session?.user ?? null);
+                if (session?.user) {
+                    logUserLogin(session.user);
+                    if (window.location.hash.includes('access_token=')) {
+                        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+                    }
+                }
+            } catch (err) {
+                console.error('Session fetch error:', err);
+            } finally {
+                setLoading(false);
+                clearTimeout(loadTimeout);
             }
-            setLoading(false);
-            clearTimeout(loadTimeout);
-        }).catch(err => {
-            console.error('Session fetch error:', err);
-            setLoading(false);
-            clearTimeout(loadTimeout);
-        });
+        };
+
+        initAuth();
 
         // Listen for auth changes
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -72,7 +105,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 setUser(session?.user ?? null);
                 if (_event === 'SIGNED_IN' && session?.user) {
                     logUserLogin(session.user);
-                    // Clean up URL on sign in
                     if (window.location.hash.includes('access_token=')) {
                         window.history.replaceState(null, '', window.location.pathname + window.location.search);
                     }
