@@ -1,47 +1,68 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Read dynamic URL & Key if set via DB Config Hot-Swap, otherwise fallback to .env
-const dynamicUrl = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_url') : null) || import.meta.env.VITE_SUPABASE_URL!;
-const dynamicKey = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_anon_key') : null) || import.meta.env.VITE_SUPABASE_ANON_KEY!;
+let internalClient: SupabaseClient | null = null;
+let internalUrl = '';
+let internalKey = '';
 
-const supabaseUrl = dynamicUrl;
-const supabaseAnonKey = dynamicKey;
+export const getActiveSupabaseClient = (): SupabaseClient => {
+  const dynamicUrl = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_url') : null) || import.meta.env.VITE_SUPABASE_URL!;
+  const dynamicKey = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_anon_key') : null) || import.meta.env.VITE_SUPABASE_ANON_KEY!;
 
-// Auto-cleanup if Supabase project changed
-if (typeof window !== 'undefined') {
-  const lastUrl = localStorage.getItem('last_supabase_url');
-  if (lastUrl && lastUrl !== supabaseUrl) {
-    console.log('🔄 Supabase project URL changed. Clearing obsolete local storage...');
-    // preserve custom config keys
-    const customUrl = localStorage.getItem('custom_supabase_url');
-    const customKey = localStorage.getItem('custom_supabase_anon_key');
-    const multiCfg = localStorage.getItem('multi_db_config_v1');
-    const devMode = localStorage.getItem('devmode');
+  if (!internalClient || internalUrl !== dynamicUrl || internalKey !== dynamicKey) {
+    internalUrl = dynamicUrl;
+    internalKey = dynamicKey;
     
-    localStorage.clear();
-    sessionStorage.clear();
+    // Auto-cleanup if project URL changed
+    if (typeof window !== 'undefined') {
+      const lastUrl = localStorage.getItem('last_supabase_url');
+      if (lastUrl && lastUrl !== dynamicUrl) {
+        console.log('🔄 Supabase project URL changed to:', dynamicUrl);
+        const customUrl = localStorage.getItem('custom_supabase_url');
+        const customKey = localStorage.getItem('custom_supabase_anon_key');
+        const multiCfg = localStorage.getItem('multi_db_config_v1');
+        const devMode = localStorage.getItem('devmode');
+        
+        localStorage.clear();
+        sessionStorage.clear();
 
-    if (customUrl) localStorage.setItem('custom_supabase_url', customUrl);
-    if (customKey) localStorage.setItem('custom_supabase_anon_key', customKey);
-    if (multiCfg) localStorage.setItem('multi_db_config_v1', multiCfg);
-    if (devMode) localStorage.setItem('devmode', devMode);
+        if (customUrl) localStorage.setItem('custom_supabase_url', customUrl);
+        if (customKey) localStorage.setItem('custom_supabase_anon_key', customKey);
+        if (multiCfg) localStorage.setItem('multi_db_config_v1', multiCfg);
+        if (devMode) localStorage.setItem('devmode', devMode);
+      }
+      localStorage.setItem('last_supabase_url', dynamicUrl);
+    }
+
+    internalClient = createClient(dynamicUrl, dynamicKey, {
+      db: {
+        schema: 'public',
+      },
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        storageKey: `sb_${dynamicUrl.replace(/[^a-zA-Z0-9]/g, '_')}_auth`
+      },
+      global: {
+        headers: {
+          'x-connection-warmup': 'true',
+        },
+      },
+    });
   }
-  localStorage.setItem('last_supabase_url', supabaseUrl);
-}
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  db: {
-    schema: 'public',
-  },
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-  },
-  global: {
-    headers: {
-      'x-connection-warmup': 'true',
-    },
-  },
+  return internalClient;
+};
+
+// Dynamically proxied Supabase client that routes every query to the current active Supabase database
+export const supabase = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    const client = getActiveSupabaseClient();
+    const value = (client as any)[prop];
+    if (typeof value === 'function') {
+      return value.bind(client);
+    }
+    return value;
+  }
 });
 
 let isConnectionWarmed = false;
