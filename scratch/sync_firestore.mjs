@@ -13,28 +13,27 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = initializeFirestore(app, {}, "stock-lt3");
 
-async function run() {
-  try {
-    // Collection 'stock-lt3' is allowed in active Firestore rules!
-    const docRef = doc(db, 'stock-lt3', 'supabase_active_config');
-    const targetUrl = 'https://ajeohbobmvxtaicmpfgs.supabase.co';
-    const targetKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFqZW9oYm9ibXZ4dGFpY21wZmdzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM2NTg0MCwiZXhwIjoyMDY5MjM0NDQwfQ.N9vDWiCXoS6TQ5uBZkFPNGDgcC95ZWxqSoZLIXTpor0';
-    
-    await setDoc(docRef, {
-      url: targetUrl,
-      anonKey: targetKey,
-      refId: 'ajeohbobmvxtaicmpfgs',
-      broadcastAt: new Date().toISOString(),
-      version: Date.now()
-    }, { merge: true });
+async function main() {
+  const payload = {
+    url: 'https://ajeohbobmvxtaicmpfgs.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFqZW9oYm9ibXZ4dGFpY21wZmdzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4NTI3NzgsImV4cCI6MjEwNDQyODc3OH0.N9vDWiCXoS6TQ5uBZkFPNGDgcC95ZWxq5oZLIxTpor0',
+    refId: 'ajeohbobmvxtaicmpfgs',
+    name: 'Supabase Target (ajeohbobmvxtaicmpfgs)',
+    broadcastAt: new Date().toISOString(),
+    version: Date.now(),
+    message: 'Active Supabase instance with valid anon key'
+  };
 
-    console.log('✅ SUCCESS: Saved to Firestore stock-lt3/supabase_active_config!');
-    
-    const snap = await getDoc(docRef);
-    console.log('Read back:', snap.data());
-  } catch (err) {
-    console.error('Error writing to Firestore:', err);
-  }
+  const docRef = doc(db, 'stock-lt3', 'supabase_active_config');
+  await setDoc(docRef, payload, { merge: true });
+  console.log('✅ SUCCESS: Saved to Firestore stock-lt3/supabase_active_config!');
+
+  const check = await getDoc(docRef);
+  console.log('Read back from Firestore:', check.data());
+  process.exit(0);
 }
 
-run();
+main().catch(e => {
+  console.error('Error:', e);
+  process.exit(1);
+});
