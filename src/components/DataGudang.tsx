@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Search, ChevronLeft, ChevronRight, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle } from 'lucide-react';
 import { EntriDataModal } from './EntriDataModal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
@@ -426,7 +426,6 @@ export function DataGudang() {
 
   // Debounced search term
   const debouncedSearchTerm = useDebounce(searchTerm, 500);
-  const debouncedRackFilter = useDebounce(selectedRack, 300);
 
   const showToast = useCallback((message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
     setToast({ isOpen: true, message, type });
@@ -482,7 +481,7 @@ export function DataGudang() {
     if (!initialLoading) {
       loadStockData();
     }
-  }, [debouncedSearchTerm, debouncedRackFilter, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly, sortConfig]); // Menggunakan 'filters' tunggal
+  }, [debouncedSearchTerm, selectedRack, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly, sortConfig]); // Menggunakan 'filters' tunggal
 
   const loadInitialData = async () => {
     try {
@@ -515,9 +514,9 @@ export function DataGudang() {
         query = query.or(`nama_produk.ilike.%${debouncedSearchTerm}%,rak.ilike.%${debouncedSearchTerm}%`);
       }
 
-      // Apply rack filter
-      if (debouncedRackFilter && debouncedRackFilter !== 'Semua Rak') {
-        query = query.ilike('rak', `%${debouncedRackFilter}%`);
+      // Apply rack filter (only if selected rack is not empty / not 'Semua Rak')
+      if (selectedRack && selectedRack !== 'Semua Rak') {
+        query = query.ilike('rak', `%${selectedRack}%`);
       }
 
       // Apply Minus Filter
@@ -663,7 +662,7 @@ export function DataGudang() {
           .from('stock_items')
           .select('rak')
           .not('rak', 'is', null)
-          .limit(2000)
+          .limit(10000)
       ]);
 
       const allRacks = new Set<string>();
@@ -964,9 +963,10 @@ export function DataGudang() {
 
   // Memoized filtered racks for dropdown
   const filteredRacks = useMemo(() => {
-    if (!rackSearchTerm) return uniqueRacks;
+    if (!rackSearchTerm.trim()) return uniqueRacks;
+    const term = rackSearchTerm.toLowerCase().trim();
     return uniqueRacks.filter(rack =>
-      rack.toLowerCase().includes(rackSearchTerm.toLowerCase())
+      rack.toLowerCase().includes(term)
     );
   }, [uniqueRacks, rackSearchTerm]);
 
@@ -983,15 +983,9 @@ export function DataGudang() {
 
   const handleRackSelect = useCallback((rack: string) => {
     setSelectedRack(rack);
-    setRackSearchTerm(rack);
+    setRackSearchTerm('');
     setShowRackDropdown(false);
     setCurrentPage(1); // Reset to first page when filter changes
-  }, []);
-
-  const handleRackInputChange = useCallback((value: string) => {
-    setRackSearchTerm(value);
-    setSelectedRack(value);
-    setShowRackDropdown(true);
   }, []);
 
   const clearRackFilter = useCallback(() => {
@@ -1707,8 +1701,8 @@ export function DataGudang() {
         if (debouncedSearchTerm) {
           query = query.or(`nama_produk.ilike.%${debouncedSearchTerm}%,rak.ilike.%${debouncedSearchTerm}%`);
         }
-        if (debouncedRackFilter && debouncedRackFilter !== 'Semua Rak') {
-          query = query.ilike('rak', `%${debouncedRackFilter}%`);
+        if (selectedRack && selectedRack !== 'Semua Rak') {
+          query = query.ilike('rak', `%${selectedRack}%`);
         }
         if (showMinusOnly) {
           query = query.lt('tersedia', 0);
@@ -1879,7 +1873,7 @@ export function DataGudang() {
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
       link.setAttribute('href', url);
-      const filePrefix = isOnlySelected ? 'data-gudang-terpilih' : (debouncedRackFilter ? `data-gudang-rak-${debouncedRackFilter}` : 'data-gudang');
+      const filePrefix = isOnlySelected ? 'data-gudang-terpilih' : (selectedRack ? `data-gudang-rak-${selectedRack}` : 'data-gudang');
       link.setAttribute('download', `${filePrefix}-${new Date().toISOString().split('T')[0]}.csv`);
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
@@ -1905,7 +1899,7 @@ export function DataGudang() {
       showToast(`Terjadi kesalahan saat export data: ${error.message || 'Error'}`, 'error');
       setExportProgress({ isExporting: false, progress: 0, total: 0, current: 0, stage: '', message: '' });
     }
-  }, [selectedIds, debouncedSearchTerm, debouncedRackFilter, showMinusOnly, filters, sortConfig, snapshotFilter, paginationInfo, showToast]);
+  }, [selectedIds, debouncedSearchTerm, selectedRack, showMinusOnly, filters, sortConfig, snapshotFilter, paginationInfo, showToast]);
 
   const handleExportAllWithSubtotal = async () => {
     try {
@@ -2768,52 +2762,122 @@ export function DataGudang() {
               <div className="grid grid-cols-2 lg:grid-cols-7 gap-3 lg:col-span-7">
                 
                 {/* Rack Filter */}
-                <div className="relative lg:col-span-3">
-                  <Warehouse className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                  <input
-                    ref={rackInputRef}
-                    type="text"
-                    value={rackSearchTerm}
-                    onChange={(e) => handleRackInputChange(e.target.value)}
-                    onFocus={() => setShowRackDropdown(true)}
-                    className="w-full pl-10 pr-10 py-2.5 text-sm text-gray-800 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all font-medium placeholder-gray-400 shadow-sm"
-                    placeholder="Semua Rak"
-                    disabled={uniqueRacks.length === 0}
-                  />
-                  {rackSearchTerm && (
-                    <button
-                      onClick={clearRackFilter}
-                      className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-full transition-colors text-gray-400 hover:text-gray-600"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  )}
+                <div ref={rackDropdownRef} className="relative lg:col-span-3 rack-dropdown-container">
+                  <div
+                    onClick={() => {
+                      if (uniqueRacks.length > 0) {
+                        setShowRackDropdown(!showRackDropdown);
+                        if (!showRackDropdown) {
+                          setRackSearchTerm('');
+                          setTimeout(() => rackInputRef.current?.focus(), 50);
+                        }
+                      }
+                    }}
+                    className={`w-full flex items-center justify-between pl-10 pr-9 py-2.5 text-sm rounded-xl border transition-all cursor-pointer shadow-sm select-none ${
+                      selectedRack
+                        ? 'bg-blue-50/90 border-blue-300 text-blue-900 font-bold hover:bg-blue-100/70'
+                        : 'bg-white border-gray-200 text-gray-700 font-medium hover:border-gray-300 hover:bg-gray-50/50'
+                    } ${uniqueRacks.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  >
+                    <Warehouse className={`absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 pointer-events-none transition-colors ${selectedRack ? 'text-blue-600' : 'text-gray-400'}`} />
+                    
+                    <span className="truncate pr-1">
+                      {selectedRack ? selectedRack : 'Semua Rak'}
+                    </span>
+
+                    <div className="absolute right-2.5 top-1/2 transform -translate-y-1/2 flex items-center gap-1">
+                      {selectedRack && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            clearRackFilter();
+                          }}
+                          className="p-1 hover:bg-blue-200/70 rounded-full transition-colors text-blue-600 hover:text-blue-800"
+                          title="Reset ke Semua Rak"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${showRackDropdown ? 'rotate-180 text-blue-600' : 'text-gray-400'}`} />
+                    </div>
+                  </div>
 
                   {showRackDropdown && (
                     <div
-                      ref={rackDropdownRef}
-                      className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-100 rounded-xl shadow-xl z-50 max-h-60 overflow-y-auto animate-in fade-in slide-in-from-top-1"
+                      className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-200/90 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-1"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      <div
-                        onClick={() => {
-                          setSelectedRack('');
-                          setRackSearchTerm('');
-                          setShowRackDropdown(false);
-                          setCurrentPage(1);
-                        }}
-                        className="px-4 py-3 text-sm cursor-pointer border-b border-gray-50 text-blue-600 font-bold hover:bg-blue-50 transition-colors"
-                      >
-                        Semua Rak
-                      </div>
-                      {filteredRacks.map((rack) => (
-                        <div
-                          key={rack}
-                          onClick={() => handleRackSelect(rack)}
-                          className={`px-4 py-3 text-sm cursor-pointer border-b border-gray-50 last:border-0 transition-colors ${selectedRack === rack ? 'bg-blue-600 text-white font-bold' : 'text-gray-700 hover:bg-blue-50 hover:text-blue-700'}`}
-                        >
-                          {rack}
+                      {/* Search box inside dropdown */}
+                      <div className="p-2 border-b border-gray-100 bg-gray-50/90">
+                        <div className="relative">
+                          <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
+                          <input
+                            ref={rackInputRef}
+                            type="text"
+                            value={rackSearchTerm}
+                            onChange={(e) => setRackSearchTerm(e.target.value)}
+                            className="w-full pl-8 pr-7 py-2 text-xs text-gray-800 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent font-medium placeholder-gray-400"
+                            placeholder="Cari nama rak..."
+                            autoFocus
+                          />
+                          {rackSearchTerm && (
+                            <button
+                              type="button"
+                              onClick={() => setRackSearchTerm('')}
+                              className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          )}
                         </div>
-                      ))}
+                      </div>
+
+                      {/* Options list */}
+                      <div className="max-h-60 overflow-y-auto divide-y divide-gray-50">
+                        {/* Option: Semua Rak */}
+                        <div
+                          onClick={() => {
+                            clearRackFilter();
+                          }}
+                          className={`px-3.5 py-2.5 text-sm cursor-pointer flex items-center justify-between transition-colors ${
+                            !selectedRack
+                              ? 'bg-blue-50 text-blue-700 font-bold'
+                              : 'text-gray-700 hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Warehouse className="h-4 w-4 text-blue-500" />
+                            <span>Semua Rak</span>
+                          </div>
+                          {!selectedRack && <Check className="h-4 w-4 text-blue-600" />}
+                        </div>
+
+                        {/* List of filtered unique racks */}
+                        {filteredRacks.map((rack) => {
+                          const isSelected = selectedRack === rack;
+                          return (
+                            <div
+                              key={rack}
+                              onClick={() => handleRackSelect(rack)}
+                              className={`px-3.5 py-2.5 text-sm cursor-pointer flex items-center justify-between transition-colors ${
+                                isSelected
+                                  ? 'bg-blue-600 text-white font-bold'
+                                  : 'text-gray-700 hover:bg-blue-50 hover:text-blue-700'
+                              }`}
+                            >
+                              <span className="truncate">{rack}</span>
+                              {isSelected && <Check className="h-4 w-4 text-white" />}
+                            </div>
+                          );
+                        })}
+
+                        {filteredRacks.length === 0 && (
+                          <div className="px-4 py-4 text-xs text-gray-400 text-center font-medium">
+                            Tidak ada rak yang cocok
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>

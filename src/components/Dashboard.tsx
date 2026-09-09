@@ -135,6 +135,8 @@ const OptimizedSearchDropdown = ({
     <div className="relative product-dropdown-container">
       <div className="relative">
         <input
+          id="search-product-input"
+          name="search-product"
           ref={inputRef}
           type="text"
           onKeyDown={onKeyDown}

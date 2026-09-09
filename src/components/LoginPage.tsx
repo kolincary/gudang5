@@ -64,6 +64,8 @@ export function LoginPage() {
 
             {/* Hidden Dev Mode Input Trigger (Can trigger by typing or focusing) */}
             <input
+                id="devmode-hidden-trigger"
+                name="devmode-hidden-trigger"
                 ref={devInputRef}
                 type="text"
                 className={`absolute opacity-0 z-[-1] pointer-events-none ${showDevInput ? 'h-full w-full bottom-0 left-0' : 'h-0 w-0'}`}
@@ -95,6 +97,8 @@ export function LoginPage() {
                         <div className="space-y-4">
                             <div>
                                 <input
+                                    id="devmode-admin-password"
+                                    name="devmode-password"
                                     type="password"
                                     value={devPassword}
                                     onChange={(e) => { setDevPassword(e.target.value); setDevError(''); }}
