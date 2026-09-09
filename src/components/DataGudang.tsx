@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle, PackageCheck, RotateCcw } from 'lucide-react';
 import { EntriDataModal } from './EntriDataModal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
@@ -294,6 +294,13 @@ export function DataGudang() {
     type: 'info'
   });
 
+  const showToast = useCallback((message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
+    setToast({ isOpen: true, message, type });
+    setTimeout(() => {
+      setToast({ isOpen: false, message: '', type: 'info' });
+    }, 4000);
+  }, []);
+
   const [exportProgress, setExportProgress] = useState<ExportProgress>({
     isExporting: false,
     progress: 0,
@@ -405,6 +412,62 @@ export function DataGudang() {
     showMinusOnlyRef.current = showMinusOnly;
   }, [showMinusOnly]);
 
+  // State untuk Filter Hanya Ada Stok (Kecuali Qty 0) - Khusus jika Filter Rak Aktif
+  const [showAvailableOnly, setShowAvailableOnly] = useState(false);
+  const showAvailableOnlyRef = useRef(false);
+
+  useEffect(() => {
+    showAvailableOnlyRef.current = showAvailableOnly;
+  }, [showAvailableOnly]);
+
+  const isRakFiltered = Boolean(selectedRack && selectedRack !== 'Semua Rak');
+
+  // Otomatis nonaktifkan filter stok tersedia jika filter rak di-reset / dikosongkan
+  useEffect(() => {
+    if (!isRakFiltered && showAvailableOnly) {
+      setShowAvailableOnly(false);
+    }
+  }, [isRakFiltered, showAvailableOnly]);
+
+  const handleToggleAvailableOnly = () => {
+    if (!isRakFiltered) {
+      showToast('Pilih filter rak terlebih dahulu untuk mengaktifkan filter ini!', 'warning');
+      return;
+    }
+    const nextState = !showAvailableOnly;
+    setShowAvailableOnly(nextState);
+    if (nextState && showMinusOnly) {
+      setShowMinusOnly(false);
+    }
+    setCurrentPage(1);
+    showToast(
+      nextState
+        ? `Filter aktif: Hanya menampilkan produk dengan stok tersedia (Qty ≠ 0) di rak "${selectedRack}"`
+        : 'Filter dinonaktifkan: Menampilkan semua stok',
+      'info'
+    );
+  };
+
+  const hasActiveFilters = Boolean(
+    searchTerm ||
+    (selectedRack && selectedRack !== 'Semua Rak') ||
+    showMinusOnly ||
+    showAvailableOnly ||
+    Object.keys(filters).length > 0
+  );
+
+  const handleResetAllFilters = useCallback(() => {
+    setSearchTerm('');
+    setRackSearchTerm('');
+    setSelectedRack('');
+    setShowRackDropdown(false);
+    setShowMinusOnly(false);
+    setShowAvailableOnly(false);
+    setFilters({});
+    setCurrentPage(1);
+    showToast('Semua filter berhasil di-reset', 'info');
+  }, [showToast]);
+
   // State untuk Snapshot Filter (SO Mode)
   const [snapshotFilter, setSnapshotFilter] = useState<SnapshotFilter>(() => {
     const saved = localStorage.getItem('datagudang_snapshot_filter');
@@ -427,14 +490,6 @@ export function DataGudang() {
   // Debounced search term
   const debouncedSearchTerm = useDebounce(searchTerm, 500);
 
-  const showToast = useCallback((message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
-    setToast({ isOpen: true, message, type });
-    setTimeout(() => {
-      setToast({ isOpen: false, message: '', type: 'info' });
-    }, 4000);
-  }, []);
-
-  
   // Real-time listener untuk Master Barang (stock_items)
   useEffect(() => {
     if (readMode !== 'firebase') return;
@@ -481,7 +536,7 @@ export function DataGudang() {
     if (!initialLoading) {
       loadStockData();
     }
-  }, [debouncedSearchTerm, selectedRack, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly, sortConfig]); // Menggunakan 'filters' tunggal
+  }, [debouncedSearchTerm, selectedRack, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly, showAvailableOnly, sortConfig]); // Menggunakan 'filters' tunggal
 
   const loadInitialData = async () => {
     try {
@@ -522,6 +577,11 @@ export function DataGudang() {
       // Apply Minus Filter
       if (showMinusOnly) {
         query = query.lt('tersedia', 0);
+      }
+
+      // Apply Available Only / Non-Zero Stock Filter (Kecuali Qty 0)
+      if (showAvailableOnly) {
+        query = query.neq('tersedia', 0);
       }
 
       // Apply advanced filters untuk kolom database
@@ -623,6 +683,11 @@ export function DataGudang() {
       // Pastikan filter minus diterapkan pada data hasil kalkulasi
       if (showMinusOnly) {
         stockReports = stockReports.filter(item => item.tersedia < 0);
+      }
+
+      // Pastikan filter hanya stok tersedia (Qty ≠ 0) diterapkan
+      if (showAvailableOnly) {
+        stockReports = stockReports.filter(item => item.tersedia !== 0);
       }
 
       globalStockCache = [...stockReports];
@@ -1345,6 +1410,11 @@ export function DataGudang() {
         query = query.lt('tersedia', 0);
       }
 
+      // Apply Available Only Filter
+      if (showAvailableOnly) {
+        query = query.neq('tersedia', 0);
+      }
+
       // Apply non-calculated column filters
       for (const key in filters) {
         const filterKey = key as FilterableColumn;
@@ -1707,6 +1777,9 @@ export function DataGudang() {
         if (showMinusOnly) {
           query = query.lt('tersedia', 0);
         }
+        if (showAvailableOnly) {
+          query = query.neq('tersedia', 0);
+        }
         for (const key in filters) {
           const filterKey = key as FilterableColumn;
           if (!['masuk', 'keluar', 'tersedia'].includes(filterKey)) {
@@ -1835,6 +1908,10 @@ export function DataGudang() {
         processedReports = processedReports.filter(item => item.tersedia < 0);
       }
 
+      if (showAvailableOnly) {
+        processedReports = processedReports.filter(item => item.tersedia !== 0);
+      }
+
       setExportProgress({
         isExporting: true,
         progress: 85,
@@ -1899,7 +1976,7 @@ export function DataGudang() {
       showToast(`Terjadi kesalahan saat export data: ${error.message || 'Error'}`, 'error');
       setExportProgress({ isExporting: false, progress: 0, total: 0, current: 0, stage: '', message: '' });
     }
-  }, [selectedIds, debouncedSearchTerm, selectedRack, showMinusOnly, filters, sortConfig, snapshotFilter, paginationInfo, showToast]);
+  }, [selectedIds, debouncedSearchTerm, selectedRack, showMinusOnly, showAvailableOnly, filters, sortConfig, snapshotFilter, paginationInfo, showToast]);
 
   const handleExportAllWithSubtotal = async () => {
     try {
@@ -2030,6 +2107,10 @@ export function DataGudang() {
       if (showMinusOnly) {
         itemsWithCalculation = itemsWithCalculation.filter(item => item.tersedia < 0);
         console.log('Export All Debug: Total items after filter =', itemsWithCalculation.length);
+      }
+
+      if (showAvailableOnly) {
+        itemsWithCalculation = itemsWithCalculation.filter(item => item.tersedia !== 0);
       }
 
       setExportProgress({
@@ -2910,19 +2991,77 @@ export function DataGudang() {
             </div>
 
             {/* Bottom row of Toolbar: Item Count & Mode SO */}
-            <div className="flex items-center justify-between pt-3 mt-1 border-t border-blue-500/30">
-              <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-blue-100">
+            <div className="flex items-center justify-between pt-3 mt-1 border-t border-blue-500/30 flex-wrap gap-2">
+              <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-blue-100 flex-wrap">
                 <div className="h-1.5 w-1.5 bg-blue-300 rounded-full animate-pulse shadow-[0_0_8px_rgba(147,197,253,0.8)]"></div>
                 <span>Total {paginationInfo.totalCount.toLocaleString()} SKU Aktif</span>
+                {showAvailableOnly && (
+                  <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-[10px] normal-case font-semibold">
+                    Filter: Ada Stok (Qty ≠ 0)
+                  </span>
+                )}
               </div>
-              <Button
-                onClick={() => setShowSnapshotModal(true)}
-                variant="secondary"
-                className={`h-8 px-4 rounded-lg flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-95 border-none shadow-sm ${snapshotFilter.enabled ? 'bg-amber-400 text-amber-900 animate-pulse hover:bg-amber-500' : 'bg-white/10 text-white hover:bg-white/20'}`}
-              >
-                <Calendar className="h-3.5 w-3.5" />
-                <span>Mode SO</span>
-              </Button>
+              <div className="flex items-center gap-2">
+                {/* Tombol Reset Semua Filter (Di samping kiri Ada Stok Saja) */}
+                <button
+                  type="button"
+                  onClick={handleResetAllFilters}
+                  disabled={!hasActiveFilters}
+                  className={`h-9 px-3.5 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold transition-all shadow-sm select-none ${
+                    hasActiveFilters
+                      ? 'bg-rose-500 hover:bg-rose-600 text-white active:scale-95 cursor-pointer'
+                      : 'bg-slate-900/40 text-slate-300/60 cursor-not-allowed opacity-75'
+                  }`}
+                  title={hasActiveFilters ? 'Reset semua filter yang aktif (pencarian, rak, status stok, filter kolom)' : 'Tidak ada filter yang sedang aktif'}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span>Reset Filter</span>
+                </button>
+
+                {/* Tombol Khusus Samping Kiri Mode SO */}
+                <button
+                  type="button"
+                  onClick={handleToggleAvailableOnly}
+                  disabled={!isRakFiltered}
+                  className={`h-9 px-3.5 rounded-xl flex items-center justify-center gap-2 text-xs font-bold transition-all shadow-sm select-none ${
+                    !isRakFiltered
+                      ? 'bg-slate-900/40 text-slate-300/70 cursor-not-allowed opacity-75'
+                      : showAvailableOnly
+                      ? 'bg-emerald-500 hover:bg-emerald-600 text-white font-bold active:scale-95 cursor-pointer'
+                      : 'bg-white hover:bg-slate-100 text-blue-900 font-bold active:scale-95 cursor-pointer'
+                  }`}
+                  title={
+                    !isRakFiltered
+                      ? 'Pilih filter rak terlebih dahulu untuk mengaktifkan filter ini'
+                      : showAvailableOnly
+                      ? 'Filter aktif: Menampilkan hanya produk dengan stok tersedia (Qty ≠ 0). Klik untuk reset.'
+                      : `Klik untuk hanya menampilkan produk dengan stok tersedia (Qty ≠ 0) di rak ${selectedRack}`
+                  }
+                >
+                  {showAvailableOnly ? (
+                    <PackageCheck className="h-4 w-4 text-white" />
+                  ) : !isRakFiltered ? (
+                    <Lock className="h-3.5 w-3.5 text-amber-400" />
+                  ) : (
+                    <PackageCheck className="h-4 w-4 text-emerald-600" />
+                  )}
+                  <span>{showAvailableOnly ? 'Ada Stok Saja' : 'Hanya Ada Stok'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowSnapshotModal(true)}
+                  className={`h-9 px-4 rounded-xl flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-95 shadow-sm select-none ${
+                    snapshotFilter.enabled
+                      ? 'bg-amber-400 hover:bg-amber-500 text-amber-950 font-bold animate-pulse'
+                      : 'bg-white/20 hover:bg-white/30 text-white font-bold'
+                  }`}
+                  title="Filter data stok berdasarkan rentang tanggal/jam (Mode Stock Opname)"
+                >
+                  <Calendar className="h-3.5 w-3.5" />
+                  <span>Mode SO</span>
+                </button>
+              </div>
             </div>
           </div>
 
