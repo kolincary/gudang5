@@ -467,114 +467,125 @@ export function Layout({ children }: LayoutProps) {
                 );
               })}
 
-              {/* Monitoring Stok Dropdown - Desktop */}
-              {!desktopSidebarCollapsed && monitoringItems.filter(item => hasAccess(item.href)).length > 0 && (
-                <div className="space-y-1.5 pt-2">
-                  <button
-                    onClick={() => setMonitoringOpen(!monitoringOpen)}
-                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMonitoringActive
-                      ? 'bg-blue-50 text-blue-700 font-semibold'
-                      : 'text-gray-600 hover:bg-blue-50 hover:text-blue-600'
-                      }`}
-                  >
-                    <div className="flex items-center">
-                      <ShieldAlert className={`mr-3 h-5 w-5 transition-colors ${isMonitoringActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
-                      Monitoring Stok
-                    </div>
-                    <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${monitoringOpen ? 'rotate-180' : ''}`} />
-                  </button>
-
-                  {monitoringOpen && (
-                    <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
-                      {monitoringItems.filter(item => hasAccess(item.href)).map((item) => {
-                        const Icon = item.icon;
-                        const isActive = location.pathname === item.href;
-                        return (
-                          <Link
-                            key={item.name}
-                            to={item.href}
-                            className={`flex items-center px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group ${isActive
-                              ? 'text-blue-600 bg-blue-50'
-                              : 'text-gray-500 hover:text-blue-600 hover:bg-gray-50'
-                              }`}
-                          >
-                            <Icon className={`mr-3 h-4 w-4 transition-colors ${isActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
-                            {item.name}
-                          </Link>
-                        );
-                      })}
+              {/* Monitoring & Master Data Section - Desktop */}
+              {(monitoringItems.filter(item => hasAccess(item.href)).length > 0 || masterDataItems.filter(item => hasAccess(item.href)).length > 0) && (
+                <div className="space-y-1.5 mt-4 pt-4 border-t border-gray-100">
+                  {!desktopSidebarCollapsed && (
+                    <div className="px-3 mb-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                      Monitoring & Master Data
                     </div>
                   )}
-                </div>
-              )}
 
-              {/* Monitoring Stok Icon Only - Collapsed */}
-              {desktopSidebarCollapsed && monitoringItems.filter(item => hasAccess(item.href)).length > 0 && (
-                <Link
-                  to="/stok-minus"
-                  className={`flex items-center justify-center px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMonitoringActive
-                    ? 'bg-blue-50 text-blue-700 shadow-sm'
-                    : 'text-gray-600 hover:bg-blue-50 hover:text-blue-600'
-                    }`}
-                  title="Monitoring Stok"
-                >
-                  <ShieldAlert className={`h-5 w-5 transition-colors ${isMonitoringActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
-                </Link>
-              )}
+                  {/* Monitoring Stok Dropdown - Desktop */}
+                  {!desktopSidebarCollapsed && monitoringItems.filter(item => hasAccess(item.href)).length > 0 && (
+                    <div className="space-y-1.5">
+                      <button
+                        onClick={() => setMonitoringOpen(!monitoringOpen)}
+                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMonitoringActive
+                          ? 'bg-blue-50 text-blue-700 font-semibold'
+                          : 'text-gray-600 hover:bg-blue-50 hover:text-blue-600'
+                          }`}
+                      >
+                        <div className="flex items-center">
+                          <ShieldAlert className={`mr-3 h-5 w-5 transition-colors ${isMonitoringActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
+                          Monitoring Stok
+                        </div>
+                        <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${monitoringOpen ? 'rotate-180' : ''}`} />
+                      </button>
 
-              {/* Master Data Dropdown - Desktop */}
-              {!desktopSidebarCollapsed && masterDataItems.filter(item => hasAccess(item.href)).length > 0 && (
-                <div className="space-y-1.5 pt-2">
-                  <button
-                    onClick={() => setMasterDataOpen(!masterDataOpen)}
-                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMasterDataActive
-                      ? 'bg-blue-50 text-blue-700 font-semibold'
-                      : 'text-gray-600 hover:bg-blue-50 hover:text-blue-600'
-                      }`}
-                  >
-                    <div className="flex items-center">
-                      <FolderTree className={`mr-3 h-5 w-5 transition-colors ${isMasterDataActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
-                      Master Data
-                    </div>
-                    <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${masterDataOpen ? 'rotate-180' : ''}`} />
-                  </button>
-
-                  {masterDataOpen && (
-                    <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
-                      {masterDataItems.filter(item => hasAccess(item.href)).map((item) => {
-                        const Icon = item.icon;
-                        const isActive = location.pathname === item.href;
-                        return (
-                          <Link
-                            key={item.name}
-                            to={item.href}
-                            className={`flex items-center px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group ${isActive
-                              ? 'text-blue-600 bg-blue-50'
-                              : 'text-gray-500 hover:text-blue-600 hover:bg-gray-50'
-                              }`}
-                          >
-                            <Icon className={`mr-3 h-4 w-4 transition-colors ${isActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
-                            {item.name}
-                          </Link>
-                        );
-                      })}
+                      {monitoringOpen && (
+                        <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
+                          {monitoringItems.filter(item => hasAccess(item.href)).map((item) => {
+                            const Icon = item.icon;
+                            const isActive = location.pathname === item.href;
+                            return (
+                              <Link
+                                key={item.name}
+                                to={item.href}
+                                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group ${isActive
+                                  ? 'text-blue-600 bg-blue-50'
+                                  : 'text-gray-500 hover:text-blue-600 hover:bg-gray-50'
+                                  }`}
+                              >
+                                <Icon className={`mr-3 h-4 w-4 transition-colors ${isActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
+                                {item.name}
+                              </Link>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   )}
-                </div>
-              )}
 
-              {/* Master Data Icon Only - Collapsed */}
-              {desktopSidebarCollapsed && masterDataItems.filter(item => hasAccess(item.href)).length > 0 && (
-                <Link
-                  to="/master-data/gudang"
-                  className={`flex items-center justify-center px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMasterDataActive
-                    ? 'bg-blue-50 text-blue-700 shadow-sm'
-                    : 'text-gray-600 hover:bg-blue-50 hover:text-blue-600'
-                    }`}
-                  title="Master Data"
-                >
-                  <FolderTree className={`h-5 w-5 transition-colors ${isMasterDataActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
-                </Link>
+                  {/* Monitoring Stok Icon Only - Collapsed */}
+                  {desktopSidebarCollapsed && monitoringItems.filter(item => hasAccess(item.href)).length > 0 && (
+                    <Link
+                      to="/stok-minus"
+                      className={`flex items-center justify-center px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMonitoringActive
+                        ? 'bg-blue-50 text-blue-700 shadow-sm'
+                        : 'text-gray-600 hover:bg-blue-50 hover:text-blue-600'
+                        }`}
+                      title="Monitoring Stok"
+                    >
+                      <ShieldAlert className={`h-5 w-5 transition-colors ${isMonitoringActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
+                    </Link>
+                  )}
+
+                  {/* Master Data Dropdown - Desktop */}
+                  {!desktopSidebarCollapsed && masterDataItems.filter(item => hasAccess(item.href)).length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      <button
+                        onClick={() => setMasterDataOpen(!masterDataOpen)}
+                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMasterDataActive
+                          ? 'bg-blue-50 text-blue-700 font-semibold'
+                          : 'text-gray-600 hover:bg-blue-50 hover:text-blue-600'
+                          }`}
+                      >
+                        <div className="flex items-center">
+                          <FolderTree className={`mr-3 h-5 w-5 transition-colors ${isMasterDataActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
+                          Master Data
+                        </div>
+                        <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${masterDataOpen ? 'rotate-180' : ''}`} />
+                      </button>
+
+                      {masterDataOpen && (
+                        <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
+                          {masterDataItems.filter(item => hasAccess(item.href)).map((item) => {
+                            const Icon = item.icon;
+                            const isActive = location.pathname === item.href;
+                            return (
+                              <Link
+                                key={item.name}
+                                to={item.href}
+                                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 group ${isActive
+                                  ? 'text-blue-600 bg-blue-50'
+                                  : 'text-gray-500 hover:text-blue-600 hover:bg-gray-50'
+                                  }`}
+                              >
+                                <Icon className={`mr-3 h-4 w-4 transition-colors ${isActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
+                                {item.name}
+                              </Link>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Master Data Icon Only - Collapsed */}
+                  {desktopSidebarCollapsed && masterDataItems.filter(item => hasAccess(item.href)).length > 0 && (
+                    <Link
+                      to="/master-data/gudang"
+                      className={`flex items-center justify-center px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group ${isMasterDataActive
+                        ? 'bg-blue-50 text-blue-700 shadow-sm'
+                        : 'text-gray-600 hover:bg-blue-50 hover:text-blue-600'
+                        }`}
+                      title="Master Data"
+                    >
+                      <FolderTree className={`h-5 w-5 transition-colors ${isMasterDataActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-600'}`} />
+                    </Link>
+                  )}
+                </div>
               )}
 
               {/* Additional Menu Items - Desktop */}
