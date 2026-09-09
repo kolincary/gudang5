@@ -6,19 +6,41 @@ let isExecuting = false;
 
 /**
  * Runs the TRANSFER date fixing logic completely in the background.
- * Matches TRANSFER OUT & IN pairs with original supplier IN receipts.
+ * Matches all TRANSFER logs (both OUT and IN) with original supplier IN receipts.
  */
 export const runAutoFixTransferDates = async (silent = true): Promise<number> => {
   try {
-    if (!silent) console.log('🔄 Checking background TRANSFER dates...');
+    if (!silent) console.log('🔄 Checking background TRANSFER dates across all logs...');
 
-    // 1. Fetch all TRANSFER log entries
-    const { data: allTransferLogs, error: transferError } = await supabase
-      .from('database_log')
-      .select('id, sku, type, tgl, tgl_scan, waktu, jumlah, created_at')
-      .eq('gudang', 'TRANSFER');
+    // 1. Fetch all TRANSFER log entries with pagination to bypass 1000 limit
+    let allTransferLogs: any[] = [];
+    let from = 0;
+    const fetchBatchSize = 1000;
+    let hasMore = true;
 
-    if (transferError || !allTransferLogs || allTransferLogs.length === 0) {
+    while (hasMore) {
+      const { data, error } = await supabase
+        .from('database_log')
+        .select('id, sku, type, tgl, tgl_scan, waktu, jumlah, rak, created_at')
+        .eq('gudang', 'TRANSFER')
+        .order('created_at', { ascending: false })
+        .range(from, from + fetchBatchSize - 1);
+
+      if (error) {
+        console.error('Error fetching transfers:', error);
+        break;
+      }
+
+      if (data && data.length > 0) {
+        allTransferLogs.push(...data);
+        from += fetchBatchSize;
+        if (data.length < fetchBatchSize) hasMore = false;
+      } else {
+        hasMore = false;
+      }
+    }
+
+    if (allTransferLogs.length === 0) {
       return 0;
     }
 
@@ -32,32 +54,36 @@ export const runAutoFixTransferDates = async (silent = true): Promise<number> =>
     const uniqueSkus = Array.from(uniqueSkusMap.values());
     if (uniqueSkus.length === 0) return 0;
 
-    // 2. Fetch original IN receipt logs per unique SKU
+    // 2. Fetch original supplier IN receipt logs per unique SKU using .in()
     const inReceiptsBySku = new Map<string, any[]>();
-    const skuChunkSize = 25;
+    const skuChunkSize = 50;
 
     for (let i = 0; i < uniqueSkus.length; i += skuChunkSize) {
       const chunkSkus = uniqueSkus.slice(i, i + skuChunkSize);
-      await Promise.all(
-        chunkSkus.map(async (sku) => {
-          const { data } = await supabase
-            .from('database_log')
-            .select('tgl, tgl_scan, created_at')
-            .ilike('sku', sku)
-            .eq('type', 'IN')
-            .neq('gudang', 'TRANSFER')
-            .order('created_at', { ascending: true });
+      const { data: inData, error: inError } = await supabase
+        .from('database_log')
+        .select('sku, tgl, tgl_scan, waktu, rak, created_at')
+        .in('sku', chunkSkus)
+        .eq('type', 'IN')
+        .neq('gudang', 'TRANSFER')
+        .order('created_at', { ascending: true });
 
-          if (data && data.length > 0) {
-            const formatted = data.map(d => ({
-              tgl: d.tgl,
-              tgl_scan: d.tgl_scan || d.tgl,
-              createdAt: new Date(d.created_at).getTime()
-            }));
-            inReceiptsBySku.set(sku.toUpperCase(), formatted);
-          }
-        })
-      );
+      if (inError) {
+        console.warn('Error fetching chunk receipts in autoFixTransferService:', inError);
+      }
+
+      if (inData) {
+        inData.forEach(row => {
+          const k = (row.sku || '').trim().toUpperCase();
+          if (!inReceiptsBySku.has(k)) inReceiptsBySku.set(k, []);
+          inReceiptsBySku.get(k)!.push({
+            tgl: row.tgl,
+            tgl_scan: row.tgl_scan || row.tgl,
+            waktu: row.waktu,
+            createdAt: new Date(row.created_at).getTime()
+          });
+        });
+      }
     }
 
     // Helper to find chronological IN date
@@ -65,46 +91,36 @@ export const runAutoFixTransferDates = async (silent = true): Promise<number> =>
       const list = inReceiptsBySku.get(normSku);
       if (!list || list.length === 0) return null;
       for (let i = list.length - 1; i >= 0; i--) {
-        if (list[i].createdAt <= transferTimestamp) {
+        if (list[i].createdAt <= transferTimestamp + 60000) {
           return list[i];
         }
       }
       return list[0];
     };
 
-    // 3. Process TRANSFER OUT logs and match pairs
-    const updatesMap = new Map<string, { tgl: string; tgl_scan: string }>();
-    const outPairs = new Map<string, { tgl: string; tgl_scan: string }>();
+    // 3. Process all TRANSFER rows (both OUT and IN)
+    const updatesMap = new Map<string, { tgl: string; tgl_scan: string; waktu?: string }>();
 
-    const outLogs = allTransferLogs.filter(l => (l.type || '').trim().toUpperCase() === 'OUT');
-    const inLogs = allTransferLogs.filter(l => (l.type || '').trim().toUpperCase() === 'IN');
-
-    outLogs.forEach(outRow => {
-      const normSku = (outRow.sku || '').trim().toUpperCase();
-      const transferTime = new Date(outRow.created_at).getTime();
+    allTransferLogs.forEach(row => {
+      const normSku = (row.sku || '').trim().toUpperCase();
+      const transferTime = new Date(row.created_at).getTime();
       const matched = findCorrectDate(normSku, transferTime);
 
       if (matched) {
         const correctTgl = matched.tgl;
         const correctTglScan = matched.tgl_scan;
+        const correctWaktu = matched.waktu || row.waktu;
 
-        if (outRow.tgl !== correctTgl || outRow.tgl_scan !== correctTglScan) {
-          updatesMap.set(outRow.id, { tgl: correctTgl, tgl_scan: correctTglScan });
-        }
+        const needsTglUpdate = row.tgl !== correctTgl;
+        const needsScanUpdate = row.tgl_scan !== correctTglScan;
+        const needsWaktuUpdate = correctWaktu && row.waktu !== correctWaktu;
 
-        const pairKey = `${normSku}|${(outRow.waktu || '').trim()}|${outRow.jumlah}`;
-        outPairs.set(pairKey, { tgl: correctTgl, tgl_scan: correctTglScan });
-      }
-    });
-
-    inLogs.forEach(inRow => {
-      const normSku = (inRow.sku || '').trim().toUpperCase();
-      const pairKey = `${normSku}|${(inRow.waktu || '').trim()}|${inRow.jumlah}`;
-      const pairMatched = outPairs.get(pairKey);
-
-      if (pairMatched) {
-        if (inRow.tgl !== pairMatched.tgl || inRow.tgl_scan !== pairMatched.tgl_scan) {
-          updatesMap.set(inRow.id, { tgl: pairMatched.tgl, tgl_scan: pairMatched.tgl_scan });
+        if (needsTglUpdate || needsScanUpdate || needsWaktuUpdate) {
+          updatesMap.set(row.id, {
+            tgl: correctTgl,
+            tgl_scan: correctTglScan,
+            waktu: correctWaktu
+          });
         }
       }
     });
@@ -128,6 +144,7 @@ export const runAutoFixTransferDates = async (silent = true): Promise<number> =>
             .update({
               tgl: val.tgl,
               tgl_scan: val.tgl_scan,
+              waktu: val.waktu,
               log_update_user: 'AUTO_BG: Fix Transfer Date'
             })
             .eq('id', id)

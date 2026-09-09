@@ -6,6 +6,7 @@ import { ArrowRightLeft, X, Send, RefreshCw, AlertCircle, CheckCircle, Loader, W
 import { supabase, fetchAllStockItems } from '../lib/supabase';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
+import { getOriginalReceiptDate } from '../lib/transferDateHelper';
 
 interface StockItem {
   id: string;
@@ -267,64 +268,20 @@ export function PindahDataBarang() {
 
       updateProgress(operationSteps[1], 1);
 
-      // Fetch original IN log for this item to inherit its tgl, tgl_scan & waktu
-      const { data: logData, error: originalLogError } = await supabase
-          .from('database_log')
-          .select('tgl, tgl_scan, created_at, waktu, rak')
-          .ilike('sku', `%${selectedItem.nama_produk.trim()}%`)
-          .or('type.ilike.%IN%,type.ilike.%MOVE%,type.ilike.%TRANSFER%');
-      
-      let originalLog = null;
-      if (logData && logData.length > 0) {
-          // Prioritize matching rack, then sort descending by created_at (newest active batch first)
-          const rackMatched = logData.filter(l => l.rak && l.rak.trim().toLowerCase() === selectedItem.rak.trim().toLowerCase());
-          const targetList = rackMatched.length > 0 ? rackMatched : logData;
-          originalLog = targetList.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-      }
-
-      if (originalLogError) {
-          console.error('Error fetching original log:', originalLogError);
-          showToast(`Gagal mengambil data tgl masuk asli: ${originalLogError.message || 'unknown error'}`, 'error');
-      }
-
-      const tglAsli = originalLog?.tgl || tgl;
-      const tglScanAsli = originalLog?.tgl_scan || originalLog?.tgl || tgl;
-      const waktuAsli = originalLog?.waktu || waktu;
-      
-      // Helper to add +1 minute to waktu string
-      const addOneMinuteToWaktu = (waktuStr: string): string => {
-        if (!waktuStr) return waktuStr;
-        const separator = waktuStr.includes('.') ? '.' : ':';
-        const parts = waktuStr.split(separator).map(p => parseInt(p, 10));
-        
-        if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-          let hours = parts[0];
-          let minutes = parts[1] + 1;
-          let seconds = parts[2] || 0;
-
-          if (minutes >= 60) {
-            minutes = 0;
-            hours = (hours + 1) % 24;
-          }
-
-          const h = String(hours).padStart(2, '0');
-          const m = String(minutes).padStart(2, '0');
-          const s = parts.length >= 3 ? separator + String(seconds).padStart(2, '0') : '';
-          return h + separator + m + s;
-        }
-        return waktuStr;
-      };
+      // Fetch original supplier receipt date and time (pure without adding minutes)
+      const originalInfo = await getOriginalReceiptDate(selectedItem.nama_produk, selectedItem.rak);
+      const tglAsli = originalInfo.tgl;
+      const tglScanAsli = originalInfo.tgl_scan;
+      const waktuAsli = originalInfo.waktu;
 
       // Use current timestamp for created_at so transaction logs sort properly to the top
       const createdAtOut = new Date(now.getTime() + 1000).toISOString();
       const createdAtIn = new Date(now.getTime() + 2000).toISOString();
-      const waktuOut = addOneMinuteToWaktu(waktuAsli);
-      const waktuIn = addOneMinuteToWaktu(waktuAsli);
 
       const logEntries = [
         {
           tgl: tglAsli,
-          waktu: waktuOut,
+          waktu: waktuAsli,
           sku: selectedItem.nama_produk,
           jumlah: moveData.jumlah_pindah,
           type: 'OUT',
@@ -337,7 +294,7 @@ export function PindahDataBarang() {
         },
         {
           tgl: tglAsli,
-          waktu: waktuIn,
+          waktu: waktuAsli,
           sku: selectedItem.nama_produk,
           jumlah: moveData.jumlah_pindah,
           type: 'IN',

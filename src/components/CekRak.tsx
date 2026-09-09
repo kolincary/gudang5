@@ -11,6 +11,7 @@ import { cn } from '../lib/utils';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
+import { getOriginalReceiptDate } from '../lib/transferDateHelper';
 
 interface StockItem {
     id: string;
@@ -800,68 +801,21 @@ export function CekRak() {
                 return;
             }
 
-            // Fetch original IN log for this item to inherit its tgl, tgl_scan and waktu (prioritizing matching rack and newest active IN log)
-            const { data: logData, error: originalLogError } = await supabase
-                .from('database_log')
-                .select('tgl, tgl_scan, created_at, waktu, rak')
-                .ilike('sku', `%${pullItem.nama_produk.trim()}%`)
-                .or('type.ilike.%IN%,type.ilike.%MOVE%,type.ilike.%TRANSFER%');
+            // Fetch original supplier receipt date and time (pure without adding minutes)
+            const originalInfo = await getOriginalReceiptDate(pullItem.nama_produk, pullItem.rak);
+            const tglAsli = originalInfo.tgl;
+            const tglScanAsli = originalInfo.tgl_scan;
+            const waktuAsli = originalInfo.waktu;
             
-            let originalLog = null;
-            if (logData && logData.length > 0) {
-                // Prioritize matching rack, then sort descending by created_at (newest active batch first)
-                const rackMatched = logData.filter(l => l.rak && l.rak.trim().toLowerCase() === pullItem.rak.trim().toLowerCase());
-                const targetList = rackMatched.length > 0 ? rackMatched : logData;
-                originalLog = targetList.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-            }
-
-            if (originalLogError) {
-                console.error('Error fetching original log:', originalLogError);
-                setToast({ isOpen: true, message: `Gagal mengambil data tgl masuk asli: ${originalLogError.message || 'unknown error'}`, type: 'error' });
-            }
-
             const now = new Date();
-            const tglHariIni = now.toISOString().split('T')[0];
-            const waktuSekarang = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-            
-            const tglAsli = originalLog?.tgl || tglHariIni;
-            const tglScanAsli = originalLog?.tgl_scan || originalLog?.tgl || tglHariIni;
-            const waktuAsli = originalLog?.waktu || waktuSekarang;
-
-            // Helper to add +1 minute to waktu string
-            const addOneMinuteToWaktu = (waktuStr: string): string => {
-                if (!waktuStr) return waktuStr;
-                const separator = waktuStr.includes('.') ? '.' : ':';
-                const parts = waktuStr.split(separator).map(p => parseInt(p, 10));
-                
-                if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-                    let hours = parts[0];
-                    let minutes = parts[1] + 1;
-                    let seconds = parts[2] || 0;
-
-                    if (minutes >= 60) {
-                        minutes = 0;
-                        hours = (hours + 1) % 24;
-                    }
-
-                    const h = String(hours).padStart(2, '0');
-                    const m = String(minutes).padStart(2, '0');
-                    const s = parts.length >= 3 ? separator + String(seconds).padStart(2, '0') : '';
-                    return h + separator + m + s;
-                }
-                return waktuStr;
-            };
-            
             // Use current timestamp for created_at so transaction logs sort properly to the top
             const createdAtOut = new Date(now.getTime() + 1000).toISOString();
             const createdAtIn = new Date(now.getTime() + 2000).toISOString();
-            const waktuOut = addOneMinuteToWaktu(waktuAsli);
-            const waktuIn = addOneMinuteToWaktu(waktuAsli);
 
             const logEntries = [
                 {
                     tgl: tglAsli,
-                    waktu: waktuOut,
+                    waktu: waktuAsli,
                     sku: pullItem.nama_produk,
                     jumlah: pullQuantity,
                     type: 'OUT',
@@ -874,7 +828,7 @@ export function CekRak() {
                 },
                 {
                     tgl: tglAsli,
-                    waktu: waktuIn,
+                    waktu: waktuAsli,
                     sku: pullItem.nama_produk,
                     jumlah: pullQuantity,
                     type: 'IN',
@@ -1435,64 +1389,20 @@ export function CekRak() {
             const tglHariIni = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             const waktu = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 
-            // Fetch original IN log for this item to inherit its tgl, tgl_scan & waktu (prioritizing matching rack and newest active IN log)
-            const { data: logData, error: originalLogError } = await supabase
-                .from('database_log')
-                .select('tgl, tgl_scan, created_at, waktu, rak')
-                .ilike('sku', `%${selectedMoveItem.nama_produk.trim()}%`)
-                .or('type.ilike.%IN%,type.ilike.%MOVE%,type.ilike.%TRANSFER%');
-            
-            let originalLog = null;
-            if (logData && logData.length > 0) {
-                const rackMatched = logData.filter(l => l.rak && l.rak.trim().toLowerCase() === selectedMoveItem.rak.trim().toLowerCase());
-                const targetList = rackMatched.length > 0 ? rackMatched : logData;
-                originalLog = targetList.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-            }
-
-            if (originalLogError) {
-                console.error('Error fetching original log:', originalLogError);
-                showToast(`Gagal mengambil data tgl masuk asli: ${originalLogError.message || 'unknown error'}`, 'error');
-            }
-
-            const tglAsli = originalLog?.tgl || tglHariIni;
-            const tglScanAsli = originalLog?.tgl_scan || originalLog?.tgl || tglHariIni;
-            const waktuAsli = originalLog?.waktu || waktu;
-            
-            const addOneMinuteToWaktu = (waktuStr: string): string => {
-                if (!waktuStr) return waktuStr;
-                const separator = waktuStr.includes('.') ? '.' : ':';
-                const parts = waktuStr.split(separator).map(p => parseInt(p, 10));
-                
-                if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-                    let hours = parts[0];
-                    let minutes = parts[1] + 1;
-                    let seconds = parts[2] || 0;
-
-                    if (minutes >= 60) {
-                        minutes = 0;
-                        hours = (hours + 1) % 24;
-                    }
-
-                    const h = String(hours).padStart(2, '0');
-                    const m = String(minutes).padStart(2, '0');
-                    const s = parts.length >= 3 ? separator + String(seconds).padStart(2, '0') : '';
-                    return h + separator + m + s;
-                }
-                return waktuStr;
-            };
+            // Fetch original supplier receipt date and time (pure without adding minutes)
+            const originalInfo = await getOriginalReceiptDate(selectedMoveItem.nama_produk, selectedMoveItem.rak);
+            const tglAsli = originalInfo.tgl;
+            const tglScanAsli = originalInfo.tgl_scan;
+            const waktuAsli = originalInfo.waktu;
 
             // Use current timestamp for created_at so transaction logs sort properly to the top of active transactions
             const createdAtOut = new Date(now.getTime() + 1000).toISOString();
             const createdAtIn = new Date(now.getTime() + 2000).toISOString();
-            const waktuOut = addOneMinuteToWaktu(waktuAsli);
-            const waktuIn = addOneMinuteToWaktu(waktuAsli);
 
-            // Memecah riwayat secara halus dengan memundurkan tanggal log ke tglAsli
-            // sehingga riwayat barang tidak terlihat baru masuk hari ini.
             const logEntries = [
                 {
                     tgl: tglAsli,
-                    waktu: waktuOut,
+                    waktu: waktuAsli,
                     sku: selectedMoveItem.nama_produk,
                     jumlah: moveData.jumlah_pindah,
                     type: 'OUT',
@@ -1505,7 +1415,7 @@ export function CekRak() {
                 },
                 {
                     tgl: tglAsli,
-                    waktu: waktuIn,
+                    waktu: waktuAsli,
                     sku: selectedMoveItem.nama_produk,
                     jumlah: moveData.jumlah_pindah,
                     type: 'IN',
