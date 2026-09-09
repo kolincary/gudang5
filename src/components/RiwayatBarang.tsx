@@ -387,42 +387,48 @@ export function RiwayatBarang() {
   const [loadingMessage, setLoadingMessage] = useState('');
   const [isUpdatingInBackground, setIsUpdatingInBackground] = useState(false);
   const [hideRiwayatStats, setHideRiwayatStats] = useState<boolean>(false);
+  const [hideRiwayatQr, setHideRiwayatQr] = useState<boolean>(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const { userName, userRole, userEmail } = useAuth();
 
   useEffect(() => {
-    const fetchStatsSetting = async () => {
+    const fetchAppSettings = async () => {
       try {
         const { data: settingsData } = await supabase
           .from('app_settings')
           .select('key, value')
-          .in('key', ['hide_riwayat_stats', 'riwayat_stats_target_mode', 'riwayat_stats_allowed_roles']);
+          .in('key', [
+            'hide_riwayat_stats', 'riwayat_stats_target_mode', 'riwayat_stats_allowed_roles',
+            'hide_riwayat_qr', 'riwayat_qr_target_mode', 'riwayat_qr_allowed_roles'
+          ]);
+
+        const currentRole = userRole || localStorage.getItem('cached_user_role') || '';
+        const isDev = userEmail === 'rianambong@gmail.com' || userEmail === 'kepin@gmail.com' || userEmail === 'admin@gmail.com' || localStorage.getItem('devmode') === 'true' || currentRole === 'developer';
 
         if (settingsData && settingsData.length > 0) {
           const map = new Map(settingsData.map((s: any) => [s.key, s.value]));
-          const isGloballyHidden = map.get('hide_riwayat_stats') === 'true';
-          const targetMode = map.get('riwayat_stats_target_mode') || 'all';
-          const allowedRolesRaw = map.get('riwayat_stats_allowed_roles');
+
+          // 1. Evaluate Stats visibility
+          const isStatsGloballyHidden = map.get('hide_riwayat_stats') === 'true';
+          const statsTargetMode = map.get('riwayat_stats_target_mode') || 'all';
+          const statsAllowedRolesRaw = map.get('riwayat_stats_allowed_roles');
           
-          let allowedRoles: string[] = ['developer', 'staf_admin', 'staf_gudang'];
-          if (allowedRolesRaw) {
+          let statsAllowedRoles: string[] = ['developer', 'staf_admin', 'staf_gudang'];
+          if (statsAllowedRolesRaw) {
             try {
-              allowedRoles = JSON.parse(allowedRolesRaw);
+              statsAllowedRoles = JSON.parse(statsAllowedRolesRaw);
             } catch (e) {
-              allowedRoles = ['developer', 'staf_admin', 'staf_gudang'];
+              statsAllowedRoles = ['developer', 'staf_admin', 'staf_gudang'];
             }
           }
 
-          if (isGloballyHidden) {
+          if (isStatsGloballyHidden) {
             setHideRiwayatStats(true);
-          } else if (targetMode === 'roles') {
-            const currentRole = userRole || localStorage.getItem('cached_user_role') || '';
-            const isDev = userEmail === 'rianambong@gmail.com' || userEmail === 'kepin@gmail.com' || userEmail === 'admin@gmail.com' || localStorage.getItem('devmode') === 'true' || currentRole === 'developer';
-            
-            if (isDev && allowedRoles.includes('developer')) {
+          } else if (statsTargetMode === 'roles') {
+            if (isDev && statsAllowedRoles.includes('developer')) {
               setHideRiwayatStats(false);
-            } else if (currentRole && allowedRoles.includes(currentRole)) {
+            } else if (currentRole && statsAllowedRoles.includes(currentRole)) {
               setHideRiwayatStats(false);
             } else {
               setHideRiwayatStats(true);
@@ -430,21 +436,60 @@ export function RiwayatBarang() {
           } else {
             setHideRiwayatStats(false);
           }
+
+          // 2. Evaluate QR Code button visibility
+          const isQrGloballyHidden = map.get('hide_riwayat_qr') === 'true';
+          const qrTargetMode = map.get('riwayat_qr_target_mode') || 'roles'; // Default: role restricted
+          const qrAllowedRolesRaw = map.get('riwayat_qr_allowed_roles');
+
+          let qrAllowedRoles: string[] = ['developer', 'staf_admin']; // Default: only admin & developer
+          if (qrAllowedRolesRaw) {
+            try {
+              qrAllowedRoles = JSON.parse(qrAllowedRolesRaw);
+            } catch (e) {
+              qrAllowedRoles = ['developer', 'staf_admin'];
+            }
+          }
+
+          if (isQrGloballyHidden) {
+            setHideRiwayatQr(true);
+          } else if (qrTargetMode === 'roles') {
+            if (isDev && qrAllowedRoles.includes('developer')) {
+              setHideRiwayatQr(false);
+            } else if (currentRole && qrAllowedRoles.includes(currentRole)) {
+              setHideRiwayatQr(false);
+            } else {
+              setHideRiwayatQr(true);
+            }
+          } else {
+            // mode 'all'
+            setHideRiwayatQr(false);
+          }
+        } else {
+          // Fallback if settings don't exist in DB yet:
+          // Default stats: visible to all
+          setHideRiwayatStats(false);
+          // Default QR: only visible to developer & staf_admin
+          if (isDev || currentRole === 'staf_admin' || currentRole === 'developer') {
+            setHideRiwayatQr(false);
+          } else {
+            setHideRiwayatQr(true);
+          }
         }
       } catch (err) {
-        console.error('Error loading riwayat stats setting:', err);
+        console.error('Error loading riwayat settings from app_settings:', err);
       }
     };
 
-    fetchStatsSetting();
+    fetchAppSettings();
 
     // Subscribe to unified zero-delay real-time sync across local tabs, broadcast channel, and Supabase
     const unsubscribeSettings = subscribeAppSettingsChange(() => {
-      fetchStatsSetting();
+      fetchAppSettings();
     });
 
     const subId = realtimeManager.subscribe('app_settings', () => {
-      fetchStatsSetting();
+      fetchAppSettings();
     });
 
     return () => {
@@ -2070,7 +2115,7 @@ export function RiwayatBarang() {
                                   </span>
                                 )}
                               </div>
-                              {item.type === 'IN' && (
+                              {item.type === 'IN' && !hideRiwayatQr && (
                                 <Button
                                   onClick={() => setQrModalData({ sku: item.sku, tgl: item.tgl, tgl_scan: item.tgl_scan })}
                                   className="h-8 w-8 p-0 bg-gradient-to-br from-blue-400 to-blue-600 hover:from-blue-500 hover:to-blue-700 text-white font-bold rounded-lg shadow-[0_4px_10px_rgba(37,99,235,0.3)] hover:shadow-blue-500/40 transition-all duration-300 transform hover:scale-110 active:scale-90 flex items-center justify-center border border-white/20 backdrop-blur-md ml-2"

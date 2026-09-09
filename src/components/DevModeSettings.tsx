@@ -25,7 +25,8 @@ import {
     Sparkles,
     ShieldCheck,
     PackageCheck,
-    Crown
+    Crown,
+    QrCode
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { Navigate, Link } from 'react-router-dom';
@@ -51,6 +52,11 @@ export function DevModeSettings() {
     const [showRiwayatStats, setShowRiwayatStats] = useState(true);
     const [statsTargetMode, setStatsTargetMode] = useState<'all' | 'roles'>('all');
     const [statsAllowedRoles, setStatsAllowedRoles] = useState<string[]>(['developer', 'staf_admin', 'staf_gudang']);
+
+    // QR Code Generator Configuration State (Riwayat Barang)
+    const [showRiwayatQr, setShowRiwayatQr] = useState(true);
+    const [qrTargetMode, setQrTargetMode] = useState<'all' | 'roles'>('roles');
+    const [qrAllowedRoles, setQrAllowedRoles] = useState<string[]>(['developer', 'staf_admin']);
 
     // Logs State
     const [logs, setLogs] = useState<any[]>([]);
@@ -106,11 +112,14 @@ export function DevModeSettings() {
                     setTargetUserEmail(data.target_user_email || '');
                 }
 
-                // Fetch universal riwayat stats settings from app_settings
+                // Fetch universal riwayat stats & QR settings from app_settings
                 const { data: appData } = await supabase
                     .from('app_settings')
                     .select('key, value')
-                    .in('key', ['hide_riwayat_stats', 'riwayat_stats_target_mode', 'riwayat_stats_allowed_roles']);
+                    .in('key', [
+                        'hide_riwayat_stats', 'riwayat_stats_target_mode', 'riwayat_stats_allowed_roles',
+                        'hide_riwayat_qr', 'riwayat_qr_target_mode', 'riwayat_qr_allowed_roles'
+                    ]);
 
                 if (appData && appData.length > 0) {
                     const map = new Map(appData.map((s: any) => [s.key, s.value]));
@@ -125,6 +134,23 @@ export function DevModeSettings() {
                         } catch (e) {
                             console.warn('Error parsing riwayat_stats_allowed_roles:', e);
                         }
+                    }
+
+                    // QR Code Settings
+                    const hideQrVal = map.get('hide_riwayat_qr');
+                    setShowRiwayatQr(hideQrVal !== 'true');
+                    setQrTargetMode((map.get('riwayat_qr_target_mode') as 'all' | 'roles') || 'roles');
+
+                    const allowedQrRaw = map.get('riwayat_qr_allowed_roles');
+                    if (allowedQrRaw) {
+                        try {
+                            const parsed = JSON.parse(allowedQrRaw);
+                            if (Array.isArray(parsed)) setQrAllowedRoles(parsed);
+                        } catch (e) {
+                            console.warn('Error parsing riwayat_qr_allowed_roles:', e);
+                        }
+                    } else {
+                        setQrAllowedRoles(['developer', 'staf_admin']);
                     }
                 }
             } catch (err) {
@@ -241,6 +267,70 @@ export function DevModeSettings() {
         }
     };
 
+    // --- QR Code Settings Handlers ---
+    const handleToggleRiwayatQr = async (checked: boolean) => {
+        setShowRiwayatQr(checked);
+        try {
+            const { error } = await supabase.from('app_settings').upsert({
+                key: 'hide_riwayat_qr',
+                value: checked ? 'false' : 'true',
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'key' });
+
+            if (error) {
+                console.error("Error updating app_settings for QR:", error);
+                setShowRiwayatQr(!checked);
+                showToast('Gagal mengubah status tombol QR!', 'error');
+            } else {
+                notifyAppSettingsChange({ hide_riwayat_qr: checked ? 'false' : 'true' });
+                showToast(checked ? 'Tombol QR Code DITAMPILKAN di Riwayat Barang (Realtime)' : 'Tombol QR Code DISEMBUNYIKAN di Riwayat Barang (Realtime)');
+            }
+        } catch (err) {
+            console.error("Error toggling QR setting:", err);
+            setShowRiwayatQr(!checked);
+        }
+    };
+
+    const handleQrTargetModeChange = async (mode: 'all' | 'roles') => {
+        setQrTargetMode(mode);
+        try {
+            const { error } = await supabase.from('app_settings').upsert({
+                key: 'riwayat_qr_target_mode',
+                value: mode,
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'key' });
+
+            if (error) throw error;
+            notifyAppSettingsChange({ riwayat_qr_target_mode: mode });
+            showToast(mode === 'all' ? 'Target QR: Berlaku untuk SEMUA Role' : 'Target QR: Dibatasi untuk ROLE tertentu saja');
+        } catch (err) {
+            console.error("Error saving QR target mode:", err);
+            showToast('Gagal mengubah mode target role QR!', 'error');
+        }
+    };
+
+    const handleToggleQrRolePermission = async (roleKey: string) => {
+        const nextRoles = qrAllowedRoles.includes(roleKey)
+            ? qrAllowedRoles.filter(r => r !== roleKey)
+            : [...qrAllowedRoles, roleKey];
+
+        setQrAllowedRoles(nextRoles);
+        try {
+            const { error } = await supabase.from('app_settings').upsert({
+                key: 'riwayat_qr_allowed_roles',
+                value: JSON.stringify(nextRoles),
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'key' });
+
+            if (error) throw error;
+            notifyAppSettingsChange({ riwayat_qr_allowed_roles: nextRoles });
+            showToast(`Hak akses role QR diperbarui (${nextRoles.length} role aktif)`);
+        } catch (err) {
+            console.error("Error saving allowed roles for QR:", err);
+            showToast('Gagal memperbarui izin role QR!', 'error');
+        }
+    };
+
     const handleSave = async () => {
         setIsSaving(true);
         try {
@@ -253,7 +343,7 @@ export function DevModeSettings() {
 
             if (error) throw error;
 
-            // Save all universal riwayat stats settings to app_settings
+            // Save all universal riwayat stats & QR settings to app_settings
             await Promise.all([
                 supabase.from('app_settings').upsert({
                     key: 'hide_riwayat_stats',
@@ -269,13 +359,31 @@ export function DevModeSettings() {
                     key: 'riwayat_stats_allowed_roles',
                     value: JSON.stringify(statsAllowedRoles),
                     updated_at: new Date().toISOString()
+                }, { onConflict: 'key' }),
+                supabase.from('app_settings').upsert({
+                    key: 'hide_riwayat_qr',
+                    value: showRiwayatQr ? 'false' : 'true',
+                    updated_at: new Date().toISOString()
+                }, { onConflict: 'key' }),
+                supabase.from('app_settings').upsert({
+                    key: 'riwayat_qr_target_mode',
+                    value: qrTargetMode,
+                    updated_at: new Date().toISOString()
+                }, { onConflict: 'key' }),
+                supabase.from('app_settings').upsert({
+                    key: 'riwayat_qr_allowed_roles',
+                    value: JSON.stringify(qrAllowedRoles),
+                    updated_at: new Date().toISOString()
                 }, { onConflict: 'key' })
             ]);
 
             notifyAppSettingsChange({
                 hide_riwayat_stats: showRiwayatStats ? 'false' : 'true',
                 riwayat_stats_target_mode: statsTargetMode,
-                riwayat_stats_allowed_roles: statsAllowedRoles
+                riwayat_stats_allowed_roles: statsAllowedRoles,
+                hide_riwayat_qr: showRiwayatQr ? 'false' : 'true',
+                riwayat_qr_target_mode: qrTargetMode,
+                riwayat_qr_allowed_roles: qrAllowedRoles
             });
 
             showToast('Semua pengaturan DevMode & Hak Akses berhasil disimpan!');
@@ -614,6 +722,135 @@ export function DevModeSettings() {
                                                         <div className="p-3 bg-indigo-950/20 border border-indigo-500/20 rounded-2xl">
                                                             <p className="text-[11px] text-indigo-300">
                                                                 ✓ Mode Universal aktif: Summary stats akan **ditampilkan ke seluruh pengguna** (Developer, Staf Admin, dan Staf Gudang).
+                                                            </p>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* CARD 1.5: QR CODE BUTTON VISIBILITY & ROLE TARGETING CONFIG */}
+                                        <div className="bg-slate-900/80 backdrop-blur-xl rounded-3xl p-5 sm:p-6 border border-slate-800/90 shadow-xl space-y-5 relative overflow-hidden">
+                                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                                                <div className="space-y-1">
+                                                    <div className="flex items-center gap-2.5">
+                                                        <div className="p-1.5 bg-blue-500/20 text-blue-400 rounded-lg">
+                                                            <QrCode className="w-4 h-4" />
+                                                        </div>
+                                                        <h2 className="text-sm font-black text-white uppercase tracking-wider">
+                                                            Tombol QR Code di Riwayat Barang
+                                                        </h2>
+                                                    </div>
+                                                    <p className="text-xs text-slate-400">
+                                                        Atur izin kemunculan tombol generator QR Code pada tabel Riwayat Barang (Mencegah bypass scan layar).
+                                                    </p>
+                                                </div>
+
+                                                {/* HIGH VISIBILITY CUSTOM SWITCH BUTTON */}
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleToggleRiwayatQr(!showRiwayatQr)}
+                                                    disabled={isLoading || isSaving}
+                                                    className={`px-4 py-2 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center gap-2.5 transition-all shadow-lg cursor-pointer shrink-0 ${
+                                                        showRiwayatQr
+                                                            ? 'bg-gradient-to-r from-blue-500 to-indigo-500 text-white shadow-blue-500/25 ring-2 ring-blue-400 hover:brightness-110 active:scale-95'
+                                                            : 'bg-slate-800 text-rose-300 border-2 border-rose-500/50 shadow-rose-950/30 hover:bg-slate-750 active:scale-95'
+                                                    }`}
+                                                >
+                                                    <div className={`w-5 h-5 rounded-full flex items-center justify-center text-slate-950 shadow-sm transition-all ${
+                                                        showRiwayatQr ? 'bg-white text-blue-600' : 'bg-rose-500 text-white'
+                                                    }`}>
+                                                        {showRiwayatQr ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : <X className="w-3.5 h-3.5 stroke-[3]" />}
+                                                    </div>
+                                                    <span>{showRiwayatQr ? '● ON (DITAMPILKAN)' : '○ OFF (DISEMBUNYIKAN)'}</span>
+                                                </button>
+                                            </div>
+
+                                            {/* ROLE TARGETING CONFIGURATION (Expanded when Switch is ON) */}
+                                            {showRiwayatQr && (
+                                                <div className="space-y-4 pt-1 animate-in fade-in zoom-in-95 duration-200">
+                                                    <div>
+                                                        <label className="text-xs font-black text-slate-300 uppercase tracking-wider flex items-center gap-2 mb-2">
+                                                            <Users className="w-3.5 h-3.5 text-blue-400" />
+                                                            <span>Target Visibilitas Role QR Code:</span>
+                                                        </label>
+                                                        
+                                                        {/* Target Mode Segmented Buttons */}
+                                                        <div className="grid grid-cols-2 gap-2 p-1 bg-slate-950/80 rounded-2xl border border-slate-800">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleQrTargetModeChange('roles')}
+                                                                className={`py-2.5 px-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                                                                    qrTargetMode === 'roles'
+                                                                        ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                                                                        : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
+                                                                }`}
+                                                            >
+                                                                <span>👥 Batasi Role (Admin / Dev)</span>
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleQrTargetModeChange('all')}
+                                                                className={`py-2.5 px-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                                                                    qrTargetMode === 'all'
+                                                                        ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                                                                        : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
+                                                                }`}
+                                                            >
+                                                                <span>🌐 Semua Role (Universal)</span>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* ROLE CHECKBOX LIST (When 'roles' mode is active) */}
+                                                    {qrTargetMode === 'roles' ? (
+                                                        <div className="space-y-2 pt-1 animate-in fade-in duration-150">
+                                                            <p className="text-[11px] text-blue-300 font-semibold mb-2">
+                                                                Centang role mana saja yang **BOLEH MELIHAT & KLIK** tombol QR Code di Riwayat Barang:
+                                                            </p>
+                                                            <div className="space-y-2">
+                                                                {roleOptions.map((r) => {
+                                                                    const Icon = r.icon;
+                                                                    const isChecked = qrAllowedRoles.includes(r.key);
+                                                                    return (
+                                                                        <div
+                                                                            key={r.key}
+                                                                            onClick={() => handleToggleQrRolePermission(r.key)}
+                                                                            className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
+                                                                                isChecked
+                                                                                    ? 'bg-blue-950/40 border-blue-500/50 hover:border-blue-400'
+                                                                                    : 'bg-slate-950/40 border-slate-800 hover:border-slate-700 opacity-60'
+                                                                            }`}
+                                                                        >
+                                                                            <div className="flex items-center gap-3">
+                                                                                <div className={`p-2 rounded-xl border ${r.badgeColor}`}>
+                                                                                    <Icon className="w-4 h-4" />
+                                                                                </div>
+                                                                                <div>
+                                                                                    <div className="flex items-center gap-2">
+                                                                                        <h4 className="font-bold text-xs text-white">{r.label}</h4>
+                                                                                        <span className="text-[10px] font-mono text-slate-400">({r.key})</span>
+                                                                                    </div>
+                                                                                    <p className="text-[10px] text-slate-400">{r.desc}</p>
+                                                                                </div>
+                                                                            </div>
+
+                                                                            <div className={`w-6 h-6 rounded-lg border flex items-center justify-center transition-all ${
+                                                                                isChecked
+                                                                                    ? 'bg-blue-600 border-blue-500 text-white shadow-md'
+                                                                                    : 'border-slate-700 bg-slate-900'
+                                                                            }`}>
+                                                                                {isChecked && <Check className="w-4 h-4 stroke-[3]" />}
+                                                                            </div>
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="p-3 bg-blue-950/20 border border-blue-500/20 rounded-2xl">
+                                                            <p className="text-[11px] text-blue-300">
+                                                                ✓ Mode Universal aktif: Tombol QR Code akan **ditampilkan ke seluruh pengguna** (termasuk Staf Gudang).
                                                             </p>
                                                         </div>
                                                     )}
