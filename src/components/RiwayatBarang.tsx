@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Download, X, RefreshCw, QrCode, ChevronDown, Filter, Calendar, Package, Building, Layers, ArrowRightLeft, List, Tag, Calculator, AlertCircle, Search, Edit2, ArrowRight, CheckCircle, ArrowUpDown, Database, History } from 'lucide-react';
+import { Download, X, RefreshCw, QrCode, ChevronDown, Filter, Calendar, Package, Building, Layers, ArrowRightLeft, List, Tag, Calculator, AlertCircle, Search, Edit2, ArrowRight, CheckCircle, ArrowUpDown, Database, History, Copy, Check } from 'lucide-react';
 import { supabase, fetchAllProducts } from '../lib/supabase';
 import { runDateMigration } from '../lib/dateMigration';
 import { realtimeManager } from '../lib/realtimeManager';
@@ -388,6 +388,7 @@ export function RiwayatBarang() {
   const [isUpdatingInBackground, setIsUpdatingInBackground] = useState(false);
   const [hideRiwayatStats, setHideRiwayatStats] = useState<boolean>(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
   const { userName, userRole, userEmail } = useAuth();
 
   useEffect(() => {
@@ -1524,6 +1525,58 @@ export function RiwayatBarang() {
     }));
   }, [filters]);
 
+  // --- Copy All Handler (Full Data Across All Pages, Left-Aligned Tab-Separated) ---
+  const handleCopyAll = useCallback(async () => {
+    try {
+      showToast('Sedang menyiapkan data untuk disalin...', 'info');
+
+      const allData = await fetchAllHistoryData();
+
+      if (!allData || allData.length === 0) {
+        showToast('Tidak ada data untuk disalin', 'warning');
+        return;
+      }
+
+      // Format rows as tab-separated values without headers (all columns clean and left-aligned)
+      const rows = allData.map(item => {
+        const tanggal = (formatDateToISO(item.tgl) || item.tgl || '').trim();
+        const waktu = (item.waktu || '').trim();
+        const sku = (item.sku || '').trim();
+        const jumlah = String(item.jumlah ?? '').trim();
+        const type = (item.type === 'IN' ? 'MASUK' : item.type === 'OUT' ? 'KELUAR' : 'TRANSFER').trim();
+        const gudang = (item.gudang || '').trim();
+        const rak = (item.rak || '').trim();
+        const tglScan = (item.tgl_scan ? (formatDateToISO(item.tgl_scan) || item.tgl_scan) : '-').trim();
+        const user = (item.user_name || '').trim();
+
+        return [tanggal, waktu, sku, jumlah, type, gudang, rak, tglScan, user].join('\t');
+      });
+
+      const content = rows.join('\n');
+
+      try {
+        await navigator.clipboard.writeText(content);
+      } catch {
+        // Fallback for older browsers
+        const textarea = document.createElement('textarea');
+        textarea.value = content;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+
+      setIsCopied(true);
+      showToast(`Berhasil menyalin ${allData.length} baris data ke clipboard!`, 'success');
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (error) {
+      console.error('Error copying data:', error);
+      showToast('Gagal menyalin data ke clipboard', 'error');
+    }
+  }, [fetchAllHistoryData, showToast]);
+
   const refreshData = useCallback(() => {
     if (currentPage !== 1) {
       setCurrentPage(1);
@@ -1885,6 +1938,19 @@ export function RiwayatBarang() {
                   FIX DATE FORMAT
                 </button>
               )}
+
+              <button
+                onClick={handleCopyAll}
+                disabled={historyData.length === 0}
+                className={`px-5 py-2.5 text-[10px] font-black rounded-xl shadow-[0_8px_25px_rgba(16,185,129,0.4)] transition-all flex items-center gap-2 tracking-widest active:scale-95 border disabled:opacity-50 disabled:cursor-not-allowed ${
+                  isCopied
+                    ? 'bg-green-500 hover:bg-green-400 text-white border-green-300/50'
+                    : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400/50'
+                }`}
+              >
+                {isCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                {isCopied ? 'TERSALIN' : 'SALIN ALL'}
+              </button>
 
               <button
                 onClick={() => setIsHistoryModalOpen(true)}
