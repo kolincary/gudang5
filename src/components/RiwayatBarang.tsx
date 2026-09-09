@@ -1840,10 +1840,14 @@ export function RiwayatBarang() {
         new Date().toLocaleTimeString('id-ID', { hour12: false }).replace(/:/g, '.'),
         exportFileName
       ).then(() => {
-        console.log('Riwayat export berhasil disimpan.');
+        console.log('Riwayat export berhasil disimpan ke Cloud.');
       }).catch((error) => {
         console.error('Gagal menyimpan riwayat:', error);
-        showToast(`Gagal menyimpan riwayat export: ${error.message}`, 'error');
+        if (error?.code === 'storage/unauthorized') {
+          showToast('Catatan: Riwayat Cloud tidak tersimpan karena Firebase Storage Rules terkunci.', 'warning');
+        } else {
+          showToast(`Gagal menyimpan riwayat export: ${error.message}`, 'error');
+        }
       });
 
       showToast(`Export Excel berhasil! ${filteredData.length} data telah diunduh.`, 'success');

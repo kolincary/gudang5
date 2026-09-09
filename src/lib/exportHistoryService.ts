@@ -54,9 +54,14 @@ export const saveExportHistory = async (
     const docRef = await addDoc(collection(db, 'export_history'), docData);
     console.log("Berhasil simpan ke Firestore dengan ID:", docRef.id);
     return { id: docRef.id, ...docData };
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error saving export history:", error);
-    throw error; // Biarkan pemanggil tahu jika gagal
+    if (error?.code === 'storage/unauthorized' || error?.message?.includes('unauthorized')) {
+      const customErr = new Error('Izin Firebase Storage belum dibuka (Storage Rules Unauthorized). Buka Firebase Console > Storage > Rules dan izinkan read/write.');
+      (customErr as any).code = 'storage/unauthorized';
+      throw customErr;
+    }
+    throw error;
   }
 };
 
