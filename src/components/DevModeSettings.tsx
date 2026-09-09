@@ -26,7 +26,10 @@ import {
     ShieldCheck,
     PackageCheck,
     Crown,
-    QrCode
+    QrCode,
+    Unlock,
+    Delete,
+    ArrowLeft
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { Navigate, Link } from 'react-router-dom';
@@ -65,40 +68,139 @@ export function DevModeSettings() {
     const [hasMoreLogs, setHasMoreLogs] = useState(true);
     const ITEMS_PER_PAGE = 50;
 
-    // PIN State
+    // PIN Authentication State (Tactile 4-Digit Security Console)
     const [isPinModalOpen, setIsPinModalOpen] = useState(true);
     const [isAccessGranted, setIsAccessGranted] = useState(false);
-    const [pin, setPin] = useState('');
-    const [pinMessage, setPinMessage] = useState({ text: '', type: '' });
-    const pinInputRef = useRef<HTMLInputElement>(null);
+    const [pinDigits, setPinDigits] = useState<string[]>(['', '', '', '']);
+    const [pinMessage, setPinMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
+    const [isShaking, setIsShaking] = useState(false);
+    const [isVerifying, setIsVerifying] = useState(false);
+    const digitRefs = [
+        useRef<HTMLInputElement>(null),
+        useRef<HTMLInputElement>(null),
+        useRef<HTMLInputElement>(null),
+        useRef<HTMLInputElement>(null)
+    ];
     const correctPin = '2501';
 
     useEffect(() => {
-        if (isPinModalOpen && pinInputRef.current) {
-            pinInputRef.current.focus();
+        if (isPinModalOpen) {
+            digitRefs[0].current?.focus();
         }
     }, [isPinModalOpen]);
 
-    const handlePinSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (pin.trim() === correctPin) {
-            setPinMessage({ text: 'PIN Benar! Membuka DevMode...', type: 'success' });
-            setIsAccessGranted(true);
+    const executeVerify = (fullCode: string) => {
+        if (fullCode === correctPin) {
+            setIsVerifying(true);
+            setPinMessage({ text: 'PIN Valid. Membuka DevMode...', type: 'success' });
             setTimeout(() => {
+                setIsAccessGranted(true);
                 setIsPinModalOpen(false);
+                setIsVerifying(false);
                 setPinMessage({ text: '', type: '' });
-            }, 400);
+            }, 350);
         } else {
-            setPinMessage({ text: 'PIN Salah. Silakan coba lagi.', type: 'error' });
-            if (pinInputRef.current) {
-                pinInputRef.current.focus();
-            }
+            setPinMessage({ text: 'PIN Tidak Valid. Akses Ditolak.', type: 'error' });
+            setIsShaking(true);
+            setTimeout(() => {
+                setIsShaking(false);
+                setPinDigits(['', '', '', '']);
+                digitRefs[0].current?.focus();
+            }, 450);
         }
-        setPin('');
     };
 
-    const handleClosePinModal = () => {
-        setIsPinModalOpen(false);
+    const handleDigitChange = (index: number, value: string) => {
+        // Support paste (e.g. "2501")
+        if (value.length > 1) {
+            const clean = value.replace(/\D/g, '').slice(0, 4);
+            if (clean.length > 0) {
+                const updated = ['', '', '', ''];
+                clean.split('').forEach((c, i) => {
+                    updated[i] = c;
+                });
+                setPinDigits(updated);
+                if (clean.length === 4) {
+                    executeVerify(clean);
+                } else {
+                    digitRefs[clean.length]?.current?.focus();
+                }
+            }
+            return;
+        }
+
+        const char = value.replace(/\D/g, '');
+        const updated = [...pinDigits];
+        updated[index] = char;
+        setPinDigits(updated);
+        setPinMessage({ text: '', type: '' });
+
+        if (char && index < 3) {
+            digitRefs[index + 1].current?.focus();
+        }
+
+        const full = updated.join('');
+        if (full.length === 4) {
+            executeVerify(full);
+        }
+    };
+
+    const handleDigitKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Backspace') {
+            if (!pinDigits[index] && index > 0) {
+                const updated = [...pinDigits];
+                updated[index - 1] = '';
+                setPinDigits(updated);
+                digitRefs[index - 1].current?.focus();
+            } else {
+                const updated = [...pinDigits];
+                updated[index] = '';
+                setPinDigits(updated);
+            }
+        } else if (e.key === 'ArrowLeft' && index > 0) {
+            digitRefs[index - 1].current?.focus();
+        } else if (e.key === 'ArrowRight' && index < 3) {
+            digitRefs[index + 1].current?.focus();
+        }
+    };
+
+    const handleNumpadPress = (num: string) => {
+        if (isVerifying) return;
+        setPinMessage({ text: '', type: '' });
+        const firstEmpty = pinDigits.findIndex(d => d === '');
+        if (firstEmpty !== -1) {
+            const updated = [...pinDigits];
+            updated[firstEmpty] = num;
+            setPinDigits(updated);
+            if (firstEmpty < 3) {
+                digitRefs[firstEmpty + 1].current?.focus();
+            }
+            const full = updated.join('');
+            if (full.length === 4) {
+                executeVerify(full);
+            }
+        }
+    };
+
+    const handleNumpadBackspace = () => {
+        if (isVerifying) return;
+        setPinMessage({ text: '', type: '' });
+        for (let i = 3; i >= 0; i--) {
+            if (pinDigits[i] !== '') {
+                const updated = [...pinDigits];
+                updated[i] = '';
+                setPinDigits(updated);
+                digitRefs[i].current?.focus();
+                break;
+            }
+        }
+    };
+
+    const handleNumpadClear = () => {
+        if (isVerifying) return;
+        setPinMessage({ text: '', type: '' });
+        setPinDigits(['', '', '', '']);
+        digitRefs[0].current?.focus();
     };
 
     useEffect(() => {
@@ -448,56 +550,195 @@ export function DevModeSettings() {
 
     return (
         <div className="min-h-screen bg-slate-950 text-slate-100 p-3 sm:p-6 lg:p-8 font-sans">
-            {/* PIN SECURITY MODAL */}
+            {/* REDESIGNED HARDWARE SECURITY PIN MODAL (Anti AI Slop) */}
             {isPinModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-                    <div className="bg-slate-900 border border-slate-700/80 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl shadow-indigo-950/50 relative overflow-hidden">
-                        {/* Glowing ambient background circle */}
-                        <div className="absolute -top-16 -right-16 w-36 h-36 bg-indigo-500/20 rounded-full blur-2xl pointer-events-none" />
-                        <div className="absolute -bottom-16 -left-16 w-36 h-36 bg-purple-500/20 rounded-full blur-2xl pointer-events-none" />
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
+                    <style>{`
+                        @keyframes pinShake {
+                            0%, 100% { transform: translateX(0); }
+                            20%, 60% { transform: translateX(-6px); }
+                            40%, 80% { transform: translateX(6px); }
+                        }
+                        .animate-pin-shake {
+                            animation: pinShake 0.4s ease-in-out;
+                        }
+                    `}</style>
+                    
+                    <div className={`bg-slate-900/95 border border-slate-800 rounded-3xl p-5 sm:p-7 max-w-[380px] md:max-w-[400px] w-full shadow-[0_20px_50px_rgba(0,0,0,0.8)] relative overflow-hidden transition-all duration-200 ${
+                        isShaking ? 'animate-pin-shake border-rose-500/60' : ''
+                    }`}>
+                        {/* Top Hairline Accent */}
+                        <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-blue-500/60 to-transparent" />
 
-                        <div className="flex flex-col items-center text-center relative z-10">
-                            <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-lg shadow-indigo-500/30 mb-5 ring-4 ring-indigo-500/20">
-                                <KeyRound className="w-8 h-8" />
+                        {/* Top Status Bar */}
+                        <div className="flex items-center justify-between pb-3.5 mb-4 sm:mb-5 border-b border-slate-800/80">
+                            <div className="flex items-center gap-2">
+                                <span className="relative flex h-2 w-2">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                                </span>
+                                <span className="text-[10px] font-mono font-bold tracking-widest text-slate-400 uppercase">
+                                    AUTH // DEV_SECURITY
+                                </span>
                             </div>
-                            
-                            <h2 className="text-xl font-black text-white tracking-tight">DevMode Security Check</h2>
-                            <p className="text-xs text-slate-400 mt-1 max-w-xs">
-                                Masukkan kode PIN developer untuk membuka panel kontrol dan konfigurasi rahasia.
+                            <Link
+                                to="/"
+                                className="text-slate-500 hover:text-slate-300 transition-colors p-1 rounded-lg hover:bg-slate-800"
+                                title="Batal & Kembali ke Dashboard"
+                            >
+                                <X className="w-4 h-4" />
+                            </Link>
+                        </div>
+
+                        {/* Header Info */}
+                        <div className="text-center mb-5 sm:mb-6">
+                            <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-center text-blue-400 shadow-inner mx-auto mb-3">
+                                {isVerifying ? (
+                                    <Unlock className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-400 animate-pulse" />
+                                ) : (
+                                    <KeyRound className="w-5 h-5 sm:w-6 sm:h-6 text-blue-400" />
+                                )}
+                            </div>
+                            <h2 className="text-base sm:text-lg font-black text-white tracking-tight uppercase">
+                                Otentikasi Akses DevMode
+                            </h2>
+                            <p className="text-xs text-slate-400 mt-1 max-w-[280px] sm:max-w-[300px] mx-auto leading-relaxed">
+                                Masukkan 4-digit master PIN untuk mengakses konsol konfigurasi sistem.
                             </p>
+                        </div>
 
-                            <div className="mt-2.5 px-3 py-1 bg-amber-500/10 border border-amber-500/20 rounded-full text-[11px] font-bold text-amber-400 flex items-center gap-1.5">
-                                <AlertTriangle className="w-3.5 h-3.5" />
-                                <span>PIN sama dengan web Thermal Print & Label</span>
-                            </div>
+                        {/* 4-Digit Segmented PIN Cells */}
+                        <div className="flex justify-center items-center gap-2.5 sm:gap-3 mb-3.5 sm:mb-4">
+                            {pinDigits.map((digit, idx) => {
+                                const isFilled = digit !== '';
+                                const isCurrent = pinDigits.findIndex(d => d === '') === idx || (idx === 3 && pinDigits[3] !== '');
+                                return (
+                                    <div
+                                        key={idx}
+                                        onClick={() => digitRefs[idx].current?.focus()}
+                                        className={`w-13 h-15 sm:w-15 sm:h-17 rounded-2xl border-2 flex items-center justify-center transition-all cursor-text relative ${
+                                            isVerifying
+                                                ? 'border-emerald-500/80 bg-emerald-950/20 text-emerald-400'
+                                                : pinMessage.type === 'error'
+                                                ? 'border-rose-500/70 bg-rose-950/20 text-rose-400'
+                                                : isFilled
+                                                ? 'border-blue-500/70 bg-slate-950 text-white shadow-md shadow-blue-500/10'
+                                                : isCurrent
+                                                ? 'border-slate-700 bg-slate-950/60 ring-2 ring-blue-500/20'
+                                                : 'border-slate-800 bg-slate-950/40 text-slate-600'
+                                        }`}
+                                    >
+                                        <input
+                                            ref={digitRefs[idx]}
+                                            type="password"
+                                            inputMode="numeric"
+                                            pattern="[0-9]*"
+                                            maxLength={idx === 0 ? 4 : 1}
+                                            value={digit}
+                                            onChange={(e) => handleDigitChange(idx, e.target.value)}
+                                            onKeyDown={(e) => handleDigitKeyDown(idx, e)}
+                                            className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                                            autoComplete="off"
+                                        />
+                                        {isFilled ? (
+                                            <div className="w-3.5 h-3.5 rounded-full bg-blue-400 shadow-sm animate-in zoom-in-75 duration-150" />
+                                        ) : isCurrent ? (
+                                            <div className="w-1.5 h-4 bg-blue-500/60 rounded-full animate-pulse" />
+                                        ) : (
+                                            <div className="w-2 h-2 rounded-full bg-slate-800" />
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
 
-                            <form onSubmit={handlePinSubmit} className="w-full mt-6 space-y-4">
-                                <div>
-                                    <input
-                                        ref={pinInputRef}
-                                        type="password"
-                                        value={pin}
-                                        onChange={(e) => setPin(e.target.value)}
-                                        maxLength={6}
-                                        className="w-full px-4 py-3.5 text-center text-2xl font-mono tracking-[0.4em] bg-slate-950/80 border-2 border-slate-700 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/20 rounded-2xl text-white outline-none transition-all placeholder:text-slate-600"
-                                        placeholder="••••"
-                                        autoComplete="off"
-                                    />
-                                    {pinMessage.text && (
-                                        <p className={`mt-2 text-xs font-bold ${pinMessage.type === 'error' ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                            {pinMessage.text}
-                                        </p>
-                                    )}
+                        {/* Status Message / Hint */}
+                        <div className="min-h-[24px] flex items-center justify-center mb-4">
+                            {pinMessage.text ? (
+                                <p className={`text-xs font-bold flex items-center gap-1.5 animate-in fade-in ${
+                                    pinMessage.type === 'error' ? 'text-rose-400' : 'text-emerald-400'
+                                }`}>
+                                    {pinMessage.type === 'error' ? <AlertTriangle className="w-3.5 h-3.5" /> : <Check className="w-3.5 h-3.5" />}
+                                    <span>{pinMessage.text}</span>
+                                </p>
+                            ) : (
+                                <div className="px-2.5 py-0.5 rounded-md bg-slate-800/50 border border-slate-800 text-[10px] font-mono text-slate-400 flex items-center gap-1 text-center">
+                                    <span>💡 PIN sama dengan web Thermal Print & Label</span>
                                 </div>
+                            )}
+                        </div>
 
+                        {/* DESKTOP KEYBOARD HELPER (Only visible on Desktop/Laptop) */}
+                        <div className="hidden md:flex items-center justify-center gap-2 mb-4 py-2 px-3 bg-slate-950/60 border border-slate-800/80 rounded-xl text-slate-400 text-[11px] font-mono">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                            <span>Ketik PIN 4 digit langsung melalui keyboard</span>
+                        </div>
+
+                        {/* MOBILE TACTILE NUMPAD (Only visible on Mobile/Tablet < md) */}
+                        <div className="md:hidden grid grid-cols-3 gap-2 mb-4">
+                            {[
+                                { num: '1', sub: '' },
+                                { num: '2', sub: 'ABC' },
+                                { num: '3', sub: 'DEF' },
+                                { num: '4', sub: 'GHI' },
+                                { num: '5', sub: 'JKL' },
+                                { num: '6', sub: 'MNO' },
+                                { num: '7', sub: 'PQRS' },
+                                { num: '8', sub: 'TUV' },
+                                { num: '9', sub: 'WXYZ' },
+                            ].map((item) => (
                                 <button
-                                    type="submit"
-                                    className="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-sm uppercase tracking-wider shadow-lg shadow-indigo-600/30 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-2"
+                                    key={item.num}
+                                    type="button"
+                                    onClick={() => handleNumpadPress(item.num)}
+                                    disabled={isVerifying}
+                                    className="h-12 rounded-2xl bg-slate-950/80 active:bg-blue-600/30 border border-slate-800/80 active:border-blue-500/50 text-white font-mono transition-all flex flex-col items-center justify-center select-none active:scale-95 cursor-pointer disabled:opacity-50"
                                 >
-                                    <Lock className="w-4 h-4" />
-                                    <span>Buka Akses Panel</span>
+                                    <span className="text-base font-bold leading-none">{item.num}</span>
+                                    {item.sub && <span className="text-[7px] font-sans font-medium text-slate-500 tracking-wider mt-0.5">{item.sub}</span>}
                                 </button>
-                            </form>
+                            ))}
+
+                            {/* Bottom Row: Clear, 0, Backspace */}
+                            <button
+                                type="button"
+                                onClick={handleNumpadClear}
+                                disabled={isVerifying || pinDigits.every(d => d === '')}
+                                className="h-12 rounded-2xl bg-slate-950/40 active:bg-slate-800 border border-slate-800/60 text-slate-400 active:text-rose-300 transition-all flex items-center justify-center text-[10px] font-bold uppercase tracking-wider select-none active:scale-95 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
+                                Clear
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => handleNumpadPress('0')}
+                                disabled={isVerifying}
+                                className="h-12 rounded-2xl bg-slate-950/80 active:bg-blue-600/30 border border-slate-800/80 active:border-blue-500/50 text-white font-mono transition-all flex flex-col items-center justify-center select-none active:scale-95 cursor-pointer disabled:opacity-50"
+                            >
+                                <span className="text-base font-bold leading-none">0</span>
+                                <span className="text-[7px] font-sans font-medium text-slate-500 tracking-wider mt-0.5">+</span>
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={handleNumpadBackspace}
+                                disabled={isVerifying || pinDigits.every(d => d === '')}
+                                className="h-12 rounded-2xl bg-slate-950/40 active:bg-slate-800 border border-slate-800/60 text-slate-400 active:text-slate-200 transition-all flex items-center justify-center select-none active:scale-95 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                title="Hapus satu angka"
+                            >
+                                <Delete className="w-4 h-4" />
+                            </button>
+                        </div>
+
+                        {/* Bottom Exit Link */}
+                        <div className="text-center pt-2 border-t border-slate-800/60">
+                            <Link
+                                to="/"
+                                className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors py-1 px-3 rounded-lg hover:bg-slate-800/40"
+                            >
+                                <ArrowLeft className="w-3.5 h-3.5" />
+                                <span>Kembali ke Dashboard</span>
+                            </Link>
                         </div>
                     </div>
                 </div>
