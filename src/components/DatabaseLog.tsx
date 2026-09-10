@@ -3,12 +3,14 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Download, Upload, FileText, CheckCircle, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter } from 'lucide-react';
+import { Download, Upload, FileText, CheckCircle, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { saveExportHistory } from '../lib/exportHistoryService';
 import { ExportHistoryModal } from './ExportHistoryModal';
 import { skuConversionService } from '../services/skuConversionService';
+import { TransferChainAuditModal } from './TransferChainAuditModal';
+import { auditTransferChains, fixTransferChainLinks, ChainAuditSummary, BrokenChainLink } from '../services/transferChainService';
 
 export interface DatabaseLogEntry {
   id: string;
@@ -443,6 +445,16 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const [transferSearchTerm, setTransferSearchTerm] = useState('');
   const [isDeletingTransfers, setIsDeletingTransfers] = useState(false);
   const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = useState(false);
+
+  // --- TRANSFER CHAIN AUDIT & AUTO-FIX STATE ---
+  const [isChainAuditModalOpen, setIsChainAuditModalOpen] = useState(false);
+  const [chainAuditSku, setChainAuditSku] = useState('');
+  const [chainAuditSummary, setChainAuditSummary] = useState<ChainAuditSummary | null>(null);
+  const [isAuditingChain, setIsAuditingChain] = useState(false);
+  const [isFixingChain, setIsFixingChain] = useState(false);
+  const [selectedChainLinkIds, setSelectedChainLinkIds] = useState<Set<string>>(new Set());
+  const [chainFilterTab, setChainFilterTab] = useState<'ALL' | 'TRANSFERS' | 'NON_TRANSFER_OUTS'>('ALL');
+  const [chainSearchTerm, setChainSearchTerm] = useState('');
 
   const handleAnalyzeStockBalance = async (skuToAnalyze: string) => {
     if (!skuToAnalyze) {
@@ -906,6 +918,51 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const hideToast = () => {
     setToast(prev => ({ ...prev, show: false }));
   };
+
+  // Global Keyboard Listener: ketik sembarang "devmode" pada keyboard untuk toggle DevMode
+  useEffect(() => {
+    let devModeSequence = '';
+    const targetSequence = 'DEVMODE';
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Abaikan jika menekan tombol modifier (Ctrl, Alt, Meta/Cmd)
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      if (event.key === 'Backspace') {
+        devModeSequence = devModeSequence.slice(0, -1);
+        return;
+      }
+
+      if (event.key.length === 1) {
+        const char = event.key.toUpperCase();
+        devModeSequence += char;
+
+        if (devModeSequence.length > targetSequence.length) {
+          devModeSequence = devModeSequence.slice(-targetSequence.length);
+        }
+
+        if (devModeSequence === targetSequence) {
+          devModeSequence = '';
+          setShowFixDates(prev => {
+            const next = !prev;
+            if (next) {
+              localStorage.setItem('devmode', 'true');
+              showToast('DevMode Aktif! Tombol Cek Saldo & Audit Transfer ditampilkan.', 'success');
+            } else {
+              localStorage.removeItem('devmode');
+              showToast('DevMode Nonaktif.', 'warning');
+            }
+            return next;
+          });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   // --- TRANSFER AUDIT & CLEANUP LOGIC ---
   const handleScanTransferAnomalies = async (skuToScan?: string) => {
@@ -1537,6 +1594,99 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     } finally {
       setIsDeletingTransfers(false);
     }
+  };
+
+  // --- TRANSFER CHAIN AUDIT & FIX HANDLERS ---
+  const handleScanTransferChains = async (skuToScan?: string) => {
+    try {
+      setIsAuditingChain(true);
+      setSelectedChainLinkIds(new Set());
+      const target = (skuToScan !== undefined ? skuToScan : chainAuditSku).trim();
+      const summary = await auditTransferChains(target);
+      setChainAuditSummary(summary);
+      
+      const totalBroken = summary.brokenTransfers.length + summary.brokenNonTransferOuts.length;
+      if (totalBroken > 0) {
+        showToast(`Audit Selesai: Ditemukan ${totalBroken} anomali rantai transfer (${summary.brokenTransfers.length} transfer, ${summary.brokenNonTransferOuts.length} potong keluar).`, 'warning');
+      } else {
+        showToast('Audit Selesai: Rantai transfer sudah teratur dan sesuai alur fisik barang.', 'success');
+      }
+    } catch (err: any) {
+      console.error('Error scanning transfer chains:', err);
+      showToast('Gagal audit rantai transfer: ' + (err?.message || err), 'error');
+    } finally {
+      setIsAuditingChain(false);
+    }
+  };
+
+  const handleToggleSelectChainLink = (id: string) => {
+    setSelectedChainLinkIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAllVisibleChainLinks = (visibleIds: string[]) => {
+    setSelectedChainLinkIds(prev => {
+      const allSelected = visibleIds.length > 0 && visibleIds.every(id => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) {
+        visibleIds.forEach(id => next.delete(id));
+      } else {
+        visibleIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const handleClearChainSelection = () => {
+    setSelectedChainLinkIds(new Set());
+  };
+
+  const handleFixSelectedChainLinks = async (specificLinks?: BrokenChainLink[]) => {
+    if (!chainAuditSummary) return;
+    const allBroken = [...chainAuditSummary.brokenTransfers, ...chainAuditSummary.brokenNonTransferOuts];
+    const targets = specificLinks || allBroken.filter(l => selectedChainLinkIds.has(l.id));
+
+    if (targets.length === 0) {
+      showToast('Pilih setidaknya satu baris anomali untuk diperbaiki.', 'info');
+      return;
+    }
+
+    if (!confirm(`Apakah Anda yakin ingin memperbaiki ${targets.length} baris log agar rantai rak transfer sesuai fisik barang?`)) {
+      return;
+    }
+
+    try {
+      setIsFixingChain(true);
+      const { successCount, errorCount } = await fixTransferChainLinks(targets);
+      if (errorCount === 0) {
+        showToast(`Berhasil memperbaiki ${successCount} baris rantai transfer!`, 'success');
+      } else {
+        showToast(`Berhasil memperbaiki ${successCount} baris, ${errorCount} gagal.`, 'warning');
+      }
+
+      // Re-scan to update modal and main list
+      await handleScanTransferChains(chainAuditSku);
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (err: any) {
+      console.error('Error fixing transfer chains:', err);
+      showToast('Terjadi kesalahan saat memperbaiki rantai: ' + (err?.message || err), 'error');
+    } finally {
+      setIsFixingChain(false);
+    }
+  };
+
+  const handleFixAllChainLinks = async () => {
+    if (!chainAuditSummary) return;
+    const allBroken = [...chainAuditSummary.brokenTransfers, ...chainAuditSummary.brokenNonTransferOuts];
+    if (allBroken.length === 0) {
+      showToast('Tidak ada anomali rantai transfer yang perlu diperbaiki.', 'info');
+      return;
+    }
+    await handleFixSelectedChainLinks(allBroken);
   };
 
   useEffect(() => {
@@ -3488,44 +3638,65 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                             : 'Fix Transfer Date'}
                         </span>
                       </button>
+
+                      {/* DEVMODE: CEK SALDO / AUDIT MINUS */}
+                      <button
+                        onClick={() => {
+                          setIsAnalysisModalOpen(true);
+                          const targetSku = filters.sku || analysisSku;
+                          if (targetSku) {
+                            setAnalysisSku(targetSku);
+                            handleAnalyzeStockBalance(targetSku);
+                          } else {
+                            setAnalysisResults([]);
+                          }
+                        }}
+                        className="h-12 px-5 bg-teal-600 hover:bg-teal-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-teal-400/30"
+                        title="Cek Saldo Stok & Diagnosa Data Minus / Lebih Potong"
+                      >
+                        <Calculator className="h-4 w-4" />
+                        <span className="uppercase text-[10px] font-black">Cek Saldo / Audit Minus</span>
+                      </button>
+
+                      {/* DEVMODE: AUDIT TRANSFER (IN/OUT) */}
+                      <button
+                        onClick={() => {
+                          setIsTransferAuditModalOpen(true);
+                          const targetSku = filters.sku || transferAuditSku;
+                          if (targetSku) {
+                            setTransferAuditSku(targetSku);
+                            handleScanTransferAnomalies(targetSku);
+                          } else {
+                            handleScanTransferAnomalies('');
+                          }
+                        }}
+                        className="h-12 px-5 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-indigo-400/30"
+                        title="Audit Anomali Data Transfer (Duplikat, Gantung, & Selisih)"
+                      >
+                        <ArrowRightLeft className="h-4 w-4" />
+                        <span className="uppercase text-[10px] font-black">Audit Transfer (IN/OUT)</span>
+                      </button>
+
+                      {/* DEVMODE: AUDIT TRANSFER CHAIN */}
+                      <button
+                        onClick={() => {
+                          setIsChainAuditModalOpen(true);
+                          const targetSku = filters.sku || chainAuditSku;
+                          if (targetSku) {
+                            setChainAuditSku(targetSku);
+                            handleScanTransferChains(targetSku);
+                          } else {
+                            handleScanTransferChains('');
+                          }
+                        }}
+                        className="h-12 px-5 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-violet-400/40"
+                        title="Audit & Perbaiki Rantai Transfer (Chain) & Potong Stok Keluar"
+                      >
+                        <Link className="h-4 w-4" />
+                        <span className="uppercase text-[10px] font-black">Audit Transfer Chain</span>
+                      </button>
                     </div>
                   )}
-
-                  <button
-                    onClick={() => {
-                      setIsAnalysisModalOpen(true);
-                      const targetSku = filters.sku || analysisSku;
-                      if (targetSku) {
-                        setAnalysisSku(targetSku);
-                        handleAnalyzeStockBalance(targetSku);
-                      } else {
-                        setAnalysisResults([]);
-                      }
-                    }}
-                    className="h-12 px-5 bg-teal-600 hover:bg-teal-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-teal-400/30"
-                    title="Cek Saldo Stok & Diagnosa Data Minus / Lebih Potong"
-                  >
-                    <Calculator className="h-4 w-4" />
-                    <span className="uppercase text-[10px] font-black">Cek Saldo / Audit Minus</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setIsTransferAuditModalOpen(true);
-                      const targetSku = filters.sku || transferAuditSku;
-                      if (targetSku) {
-                        setTransferAuditSku(targetSku);
-                        handleScanTransferAnomalies(targetSku);
-                      } else {
-                        handleScanTransferAnomalies('');
-                      }
-                    }}
-                    className="h-12 px-5 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-indigo-400/30"
-                    title="Audit Anomali Data Transfer (Duplikat, Gantung, & Selisih)"
-                  >
-                    <ArrowRightLeft className="h-4 w-4" />
-                    <span className="uppercase text-[10px] font-black">Audit Transfer (IN/OUT)</span>
-                  </button>
 
                   <button
                     onClick={handleImport}
@@ -5591,6 +5762,28 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         itemsToDelete={transferAnomalies.filter(item => selectedTransferIds.has(item.id))}
         isDeleting={isDeletingTransfers}
         onConfirmDelete={() => handleDeleteTransferLogs(Array.from(selectedTransferIds))}
+      />
+
+      <TransferChainAuditModal
+        isOpen={isChainAuditModalOpen}
+        onClose={() => setIsChainAuditModalOpen(false)}
+        summary={chainAuditSummary}
+        isScanning={isAuditingChain}
+        isFixing={isFixingChain}
+        onRescan={handleScanTransferChains}
+        selectedIds={selectedChainLinkIds}
+        onToggleSelect={handleToggleSelectChainLink}
+        onSelectAllVisible={handleSelectAllVisibleChainLinks}
+        onClearSelection={handleClearChainSelection}
+        onFixSelected={handleFixSelectedChainLinks}
+        onFixAll={handleFixAllChainLinks}
+        skuInput={chainAuditSku}
+        setSkuInput={setChainAuditSku}
+        skuOptions={allSkus}
+        filterTab={chainFilterTab}
+        setFilterTab={setChainFilterTab}
+        searchTerm={chainSearchTerm}
+        setSearchTerm={setChainSearchTerm}
       />
 
       <Toast

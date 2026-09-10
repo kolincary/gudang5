@@ -80,16 +80,33 @@ export const runAutoFixTransferDates = async (silent = true): Promise<number> =>
             tgl: row.tgl,
             tgl_scan: row.tgl_scan || row.tgl,
             waktu: row.waktu,
+            rak: (row.rak || '').trim().toUpperCase(),
             createdAt: new Date(row.created_at).getTime()
           });
         });
       }
     }
 
-    // Helper to find chronological IN date
-    const findCorrectDate = (normSku: string, transferTimestamp: number) => {
+    // Helper to find chronological IN date, prioritizing matching origin rack
+    const findCorrectDate = (normSku: string, transferTimestamp: number, transferRak?: string) => {
       const list = inReceiptsBySku.get(normSku);
       if (!list || list.length === 0) return null;
+
+      // 1. Try exact match by rack first if transferRak is provided
+      if (transferRak) {
+        const cleanRak = transferRak.trim().toUpperCase();
+        // Look for receipt with matching rack created before or near transfer
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i].rak === cleanRak && list[i].createdAt <= transferTimestamp + 60000) {
+            return list[i];
+          }
+        }
+        // If not found before transfer, any matching rack receipt
+        const anyRakMatch = list.find(l => l.rak === cleanRak);
+        if (anyRakMatch) return anyRakMatch;
+      }
+
+      // 2. Fallback to closest chronological IN receipt before transfer
       for (let i = list.length - 1; i >= 0; i--) {
         if (list[i].createdAt <= transferTimestamp + 60000) {
           return list[i];
@@ -104,7 +121,7 @@ export const runAutoFixTransferDates = async (silent = true): Promise<number> =>
     allTransferLogs.forEach(row => {
       const normSku = (row.sku || '').trim().toUpperCase();
       const transferTime = new Date(row.created_at).getTime();
-      const matched = findCorrectDate(normSku, transferTime);
+      const matched = findCorrectDate(normSku, transferTime, row.rak);
 
       if (matched) {
         const correctTgl = matched.tgl;
