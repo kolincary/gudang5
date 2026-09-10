@@ -4015,7 +4015,7 @@ export function InputBarangKeluar() {
                             <button
                                 onClick={handleSubmit}
                                 disabled={isSubmitting}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-emerald-500 active:bg-emerald-600 text-white active:scale-95 transition-all disabled:opacity-50 focus:outline-none"
+                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-emerald-500 active:bg-emerald-600 text-white active:scale-95 transition-all disabled:opacity-50 focus:outline-none cursor-pointer"
                             >
                                 <Send className={`h-5 w-5 ${isSubmitting ? 'animate-pulse' : ''}`} />
                                 <span className="text-[12px] font-bold uppercase tracking-wider">{isSubmitting ? '...' : 'Kirim'}</span>
@@ -4023,15 +4023,23 @@ export function InputBarangKeluar() {
 
                             <button
                                 onClick={addRow}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-gray-700/80 active:bg-gray-600 text-white active:scale-95 transition-all focus:outline-none"
+                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-gray-700/80 active:bg-gray-600 text-white active:scale-95 transition-all focus:outline-none cursor-pointer"
                             >
                                 <Plus className="h-5 w-5" />
                                 <span className="text-[12px] font-bold uppercase tracking-wider">Baris</span>
                             </button>
 
                             <button
+                                onClick={handleMoveMinusStock}
+                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-blue-500 active:bg-blue-600 text-white active:scale-95 transition-all focus:outline-none cursor-pointer shadow-md"
+                            >
+                                <MoveRight className="h-5 w-5" />
+                                <span className="text-[12px] font-bold uppercase tracking-wider">Move</span>
+                            </button>
+
+                            <button
                                 onClick={add50Rows}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-gray-700/80 active:bg-gray-600 text-white active:scale-95 transition-all focus:outline-none"
+                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-gray-700/80 active:bg-gray-600 text-white active:scale-95 transition-all focus:outline-none cursor-pointer"
                             >
                                 <Layers className="h-5 w-5" />
                                 <span className="text-[12px] font-bold uppercase tracking-wider">+50</span>
@@ -4039,7 +4047,7 @@ export function InputBarangKeluar() {
 
                             <button
                                 onClick={penyesuaian}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-cyan-600 active:bg-cyan-700 text-white active:scale-95 transition-all focus:outline-none shadow-md"
+                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-cyan-600 active:bg-cyan-700 text-white active:scale-95 transition-all focus:outline-none shadow-md cursor-pointer"
                             >
                                 <Filter className="h-5 w-5" />
                                 <span className="text-[12px] font-bold uppercase tracking-wider">Rapikan</span>
@@ -4047,23 +4055,15 @@ export function InputBarangKeluar() {
 
                             <button
                                 onClick={handleKirimPenyesuaian}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-amber-500 active:bg-amber-600 text-white active:scale-95 transition-all focus:outline-none"
+                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-amber-500 active:bg-amber-600 text-white active:scale-95 transition-all focus:outline-none cursor-pointer"
                             >
                                 <Tag className="h-5 w-5" />
                                 <span className="text-[12px] font-bold uppercase tracking-wider">Adjust</span>
                             </button>
 
                             <button
-                                onClick={handleMoveMinusStock}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-blue-500 active:bg-blue-600 text-white active:scale-95 transition-all focus:outline-none"
-                            >
-                                <MoveRight className="h-5 w-5" />
-                                <span className="text-[12px] font-bold uppercase tracking-wider">Move</span>
-                            </button>
-
-                            <button
                                 onClick={handleMoveToQuarantine}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-rose-500 active:bg-rose-600 text-white active:scale-95 transition-all focus:outline-none"
+                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-rose-500 active:bg-rose-600 text-white active:scale-95 transition-all focus:outline-none cursor-pointer"
                             >
                                 <ShieldAlert className="h-5 w-5" />
                                 <span className="text-[12px] font-bold uppercase tracking-wider">Karantin</span>

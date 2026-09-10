@@ -66,11 +66,14 @@ export const DatabaseService = {
         } else {
           query = query.order(options.sortConfig.key, { ascending: options.sortConfig.direction === 'asc' });
         }
-        query = query.order('id', { ascending: false });
+        query = query
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false });
       } else {
         query = query
           .order('tgl_normalized', { ascending: false })
           .order('waktu', { ascending: false })
+          .order('created_at', { ascending: false })
           .order('id', { ascending: false });
       }
 

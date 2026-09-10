@@ -130,27 +130,40 @@ export const runAutoFixTransferDates = async (silent = true): Promise<number> =>
       return 0;
     }
 
-    // 4. Batch update updatesMap in parallel chunks of 50
-    const entries = Array.from(updatesMap.entries());
-    let updatedCount = 0;
-    const updateBatchSize = 50;
+    // 4. Ultra-fast batch update: Group by target payload and update with .in('id', chunkIds)
+    const payloadGroups = new Map<string, { tgl: string; tgl_scan: string; waktu?: string; ids: string[] }>();
+    updatesMap.forEach((val, id) => {
+      const key = `${val.tgl}|||${val.tgl_scan}|||${val.waktu || ''}`;
+      if (!payloadGroups.has(key)) {
+        payloadGroups.set(key, { tgl: val.tgl, tgl_scan: val.tgl_scan, waktu: val.waktu, ids: [] });
+      }
+      payloadGroups.get(key)!.ids.push(id);
+    });
 
-    for (let i = 0; i < entries.length; i += updateBatchSize) {
-      const chunk = entries.slice(i, i + updateBatchSize);
-      await Promise.all(
-        chunk.map(([id, val]) =>
-          supabase
-            .from('database_log')
-            .update({
-              tgl: val.tgl,
-              tgl_scan: val.tgl_scan,
-              waktu: val.waktu,
-              log_update_user: 'AUTO_BG: Fix Transfer Date'
-            })
-            .eq('id', id)
-        )
-      );
-      updatedCount += chunk.length;
+    let updatedCount = 0;
+    const updateChunkSize = 100;
+
+    for (const group of payloadGroups.values()) {
+      for (let i = 0; i < group.ids.length; i += updateChunkSize) {
+        const chunkIds = group.ids.slice(i, i + updateChunkSize);
+        const updatePayload: any = {
+          tgl: group.tgl,
+          tgl_scan: group.tgl_scan,
+          log_update_user: 'AUTO_BG: Fix Transfer Date'
+        };
+        if (group.waktu) {
+          updatePayload.waktu = group.waktu;
+        }
+
+        const { error: updateErr } = await supabase
+          .from('database_log')
+          .update(updatePayload)
+          .in('id', chunkIds);
+
+        if (!updateErr) {
+          updatedCount += chunkIds.length;
+        }
+      }
     }
 
     console.log(`✓ Background Auto-Fix Transfer: Successfully synced ${updatedCount} rows.`);
