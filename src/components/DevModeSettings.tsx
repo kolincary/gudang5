@@ -38,10 +38,26 @@ import { DatabaseLog } from './DatabaseLog';
 import { notifyAppSettingsChange } from '../lib/settingsSync';
 
 export function DevModeSettings() {
-    const { userEmail } = useAuth();
+    const { userEmail, userName } = useAuth();
+
+    const checkShouldSkipPin = (email?: string, name?: string) => {
+        const cleanEmail = (email || '').trim().toLowerCase();
+        const cleanName = (name || '').trim().toLowerCase();
+        return (
+            cleanEmail === 'jgilbeth92@gmail.com' ||
+            cleanEmail === 'devmode' ||
+            cleanName === 'dev mode admin' ||
+            localStorage.getItem('devmode') === 'true' ||
+            localStorage.getItem('dev_mock_user') === 'true'
+        );
+    };
     
     // Safety check: Make sure this is only accessible by dev
-    const isDevMode = userEmail === 'rianambong@gmail.com' || userEmail === 'kepin@gmail.com' || userEmail === 'admin@gmail.com' || localStorage.getItem('devmode') === 'true';
+    const isDevMode = 
+        userEmail === 'rianambong@gmail.com' || 
+        userEmail === 'kepin@gmail.com' || 
+        userEmail === 'admin@gmail.com' || 
+        checkShouldSkipPin(userEmail, userName);
 
     const [activeTab, setActiveTab] = useState<'settings' | 'transfer_log'>('settings');
     const [isHalfMode, setIsHalfMode] = useState(false);
@@ -69,8 +85,9 @@ export function DevModeSettings() {
     const ITEMS_PER_PAGE = 50;
 
     // PIN Authentication State (Form Input 4-Digit Security)
-    const [isPinModalOpen, setIsPinModalOpen] = useState(true);
-    const [isAccessGranted, setIsAccessGranted] = useState(false);
+    const isAutoSkipPin = checkShouldSkipPin(userEmail, userName);
+    const [isPinModalOpen, setIsPinModalOpen] = useState(!isAutoSkipPin);
+    const [isAccessGranted, setIsAccessGranted] = useState(isAutoSkipPin);
     const [pinInput, setPinInput] = useState('');
     const [showPin, setShowPin] = useState(false);
     const [pinMessage, setPinMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
@@ -80,13 +97,20 @@ export function DevModeSettings() {
     const correctPin = '2501';
 
     useEffect(() => {
-        if (isPinModalOpen) {
+        if (checkShouldSkipPin(userEmail, userName)) {
+            setIsAccessGranted(true);
+            setIsPinModalOpen(false);
+        }
+    }, [userEmail, userName]);
+
+    useEffect(() => {
+        if (isPinModalOpen && !isAutoSkipPin) {
             const timer = setTimeout(() => {
                 pinInputRef.current?.focus();
             }, 100);
             return () => clearTimeout(timer);
         }
-    }, [isPinModalOpen]);
+    }, [isPinModalOpen, isAutoSkipPin]);
 
     const executeVerify = (fullCode: string) => {
         if (fullCode === correctPin) {
