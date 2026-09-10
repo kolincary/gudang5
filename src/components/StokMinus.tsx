@@ -5,6 +5,8 @@ import { Toast } from './ui/Toast';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase } from '../lib/supabase';
 import { format } from 'date-fns';
+import { useDatabaseConfig } from '../lib/DatabaseContext';
+import { DatabaseService } from '../lib/DatabaseService';
 
 interface MinusStockRow {
     id: string;
@@ -30,6 +32,7 @@ interface ToastState {
 }
 
 export const StokMinus: React.FC = () => {
+    const { writeMode } = useDatabaseConfig();
     const [rows, setRows] = useState<MinusStockRow[]>([]);
     const [filteredRows, setFilteredRows] = useState<MinusStockRow[]>([]);
     const [loading, setLoading] = useState(true);
@@ -115,27 +118,43 @@ export const StokMinus: React.FC = () => {
         setSendingRows(prev => new Set(prev).add(row.id));
 
         try {
+            const now = new Date();
+            const todayStr = format(now, 'yyyy-MM-dd');
+            const nowTime = format(now, 'HH.mm.ss');
+
             const logData = {
-                tgl: format(new Date(row.tanggal), 'dd/MM/yyyy'),
-                waktu: row.waktu,
+                tgl: todayStr, // Menggunakan tanggal hari ini saat potong stok / kirim (e.g. 13/09/2026 -> 2026-09-13)
+                waktu: nowTime,
                 sku: row.nama_produk,
                 jumlah: row.jumlah,
                 type: 'OUT',
                 gudang: row.gudang,
                 rak: row.rak,
-                sub_rak: row.sub_rak,
-                tgl_scan: row.tgl_scan || null,
+                sub_rak: row.sub_rak || row.rak,
+                tgl_scan: row.tgl_scan || todayStr,
                 user_name: row.user_name || null
             };
 
-            const { error: insertError } = await supabase
-                .from('database_log')
-                .insert([logData]);
+            const { error: insertError } = await DatabaseService.insertLogs([logData], writeMode);
 
             if (insertError) {
                 console.error('Error inserting to database_log:', insertError);
                 showToast('Gagal mengirim data ke database', 'error');
                 return;
+            }
+
+            // Sync OUT ke Lantai 3 jika terhubung
+            try {
+                await DatabaseService.syncOutToLantai3([{
+                    sku: logData.sku,
+                    jumlah: logData.jumlah,
+                    gudang: logData.gudang,
+                    rak: logData.rak,
+                    sub_rak: logData.sub_rak,
+                    user_name: logData.user_name || undefined
+                }]);
+            } catch (syncErr) {
+                console.warn('Sync out to Lantai 3 warning:', syncErr);
             }
 
             const { error: deleteError } = await supabase
