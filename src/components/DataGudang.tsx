@@ -3,16 +3,17 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle, PackageCheck, RotateCcw } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle, PackageCheck, RotateCcw, EyeOff } from 'lucide-react';
 import { EntriDataModal } from './EntriDataModal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, doc, writeBatch, setDoc, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { performStockSync } from '../services/stockSyncService';
 import { verifyPin } from '../lib/pinValidator';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { DatabaseService } from '../lib/DatabaseService';
+import { SyncSkuCasingModal } from './SyncSkuCasingModal';
 
 export interface RedistributionMove {
   id: string;
@@ -261,6 +262,7 @@ export function DataGudang() {
   const [isSelectingAllPages, setIsSelectingAllPages] = useState(false);
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
   const [bulkEditItems, setBulkEditItems] = useState<StockReport[]>([]);
+  const [isSkuCasingModalOpen, setIsSkuCasingModalOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [rackSearchTerm, setRackSearchTerm] = useState('');
   const [showRackDropdown, setShowRackDropdown] = useState(false);
@@ -283,6 +285,16 @@ export function DataGudang() {
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState({
     isOpen: false,
     count: 0
+  });
+  const [bulkDeactivateConfirm, setBulkDeactivateConfirm] = useState({
+    isOpen: false,
+    count: 0
+  });
+  const [isDeactivating, setIsDeactivating] = useState(false);
+
+  // DevMode State
+  const [isDevMode, setIsDevMode] = useState(() => {
+    return typeof window !== 'undefined' && localStorage.getItem('devmode') === 'true';
   });
   const [toast, setToast] = useState<{
     isOpen: boolean;
@@ -531,6 +543,65 @@ export function DataGudang() {
     loadAllFilterOptions();
   }, []);
 
+  // Global Keyboard Listener: ketik sembarang "devmode" pada keyboard untuk toggle DevMode
+  useEffect(() => {
+    let devModeSequence = '';
+    const targetSequence = 'DEVMODE';
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Abaikan jika menekan tombol modifier (Ctrl, Alt, Meta/Cmd)
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      if (event.key === 'Backspace') {
+        devModeSequence = devModeSequence.slice(0, -1);
+        return;
+      }
+
+      if (event.key.length === 1) {
+        const char = event.key.toUpperCase();
+        devModeSequence += char;
+
+        if (devModeSequence.length > targetSequence.length) {
+          devModeSequence = devModeSequence.slice(-targetSequence.length);
+        }
+
+        if (devModeSequence === targetSequence) {
+          devModeSequence = '';
+          setIsDevMode(prev => {
+            const next = !prev;
+            if (next) {
+              localStorage.setItem('devmode', 'true');
+              showToast('DevMode Aktif! Fitur Sinkron Huruf SKU & Cek Saldo ditampilkan.', 'success');
+            } else {
+              localStorage.removeItem('devmode');
+              showToast('DevMode Nonaktif.', 'warning');
+            }
+            return next;
+          });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showToast]);
+
+  // Sync isDevMode with localStorage / storage events
+  useEffect(() => {
+    const syncDevMode = () => {
+      const isDev = localStorage.getItem('devmode') === 'true';
+      setIsDevMode(isDev);
+    };
+    const interval = setInterval(syncDevMode, 1000);
+    window.addEventListener('storage', syncDevMode);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('storage', syncDevMode);
+    };
+  }, []);
+
   // Load data when filters or pagination change
   useEffect(() => {
     if (!initialLoading) {
@@ -612,35 +683,57 @@ export function DataGudang() {
 
 
 
-      // Calculate masuk/keluar using batch fetching
+      // Calculate masuk/keluar using paginated batch fetching for complete accuracy
       const skus = items.map(item => item.nama_produk);
+      const batchLogs: any[] = [];
 
-      // Fetch logs for all items on this page in one query
-      let logQuery = supabase
-        .from('database_log')
-        .select('sku, rak, type, jumlah, created_at')
-        .in('sku', skus)
-        .in('type', ['IN', 'OUT']);
+      if (skus.length > 0) {
+        let from = 0;
+        const logBatchSize = 1000;
+        let hasMore = true;
 
-      // Apply snapshot filter if enabled
-      if (snapshotFilter.enabled) {
-        const startDateTime = `${snapshotFilter.startDate}T${snapshotFilter.startTime}`;
-        const endDateTime = `${snapshotFilter.endDate}T${snapshotFilter.endTime}`;
-        logQuery = logQuery.gte('created_at', startDateTime).lte('created_at', endDateTime);
+        while (hasMore) {
+          let logQuery = supabase
+            .from('database_log')
+            .select('sku, rak, type, jumlah, created_at')
+            .in('sku', skus)
+            .in('type', ['IN', 'OUT'])
+            .order('id', { ascending: true })
+            .range(from, from + logBatchSize - 1);
+
+          // Apply snapshot filter if enabled
+          if (snapshotFilter.enabled) {
+            const startDateTime = `${snapshotFilter.startDate}T${snapshotFilter.startTime}`;
+            const endDateTime = `${snapshotFilter.endDate}T${snapshotFilter.endTime}`;
+            logQuery = logQuery.gte('created_at', startDateTime).lte('created_at', endDateTime);
+          }
+
+          const { data: logData, error: logError } = await logQuery;
+
+          if (logError) {
+            console.error('Error fetching batch logs:', logError);
+            break;
+          }
+
+          if (logData && logData.length > 0) {
+            batchLogs.push(...logData);
+            if (logData.length < logBatchSize) {
+              hasMore = false;
+            } else {
+              from += logBatchSize;
+            }
+          } else {
+            hasMore = false;
+          }
+        }
       }
 
-      const { data: logData, error: logError } = await logQuery;
-
-      if (logError) {
-        console.error('Error fetching batch logs:', logError);
-      }
-
-      const batchLogs = logData || [];
-
-      // Group logs by SKU + Rak for faster lookup
+      // Group logs by normalized SKU + Rak for robust lookup
       const logMap = new Map<string, any[]>();
       batchLogs.forEach(log => {
-        const key = `${log.sku}|${log.rak}`;
+        const normSku = (log.sku || '').toString().trim().toLowerCase();
+        const normRak = (log.rak || '').toString().trim().toLowerCase();
+        const key = `${normSku}|${normRak}`;
         if (!logMap.has(key)) {
           logMap.set(key, []);
         }
@@ -649,7 +742,9 @@ export function DataGudang() {
 
       // Map items with calculated stock
       let stockReports = items.map((item) => {
-        const key = `${item.nama_produk}|${item.rak}`;
+        const normSku = (item.nama_produk || '').toString().trim().toLowerCase();
+        const normRak = (item.rak || '').toString().trim().toLowerCase();
+        const key = `${normSku}|${normRak}`;
         const itemLogs = logMap.get(key) || [];
 
         const masuk = itemLogs.filter(e => e.type === 'IN').reduce((sum, e) => sum + (e.jumlah || 0), 0);
@@ -1066,7 +1161,8 @@ export function DataGudang() {
   }, []);
 
   const refreshData = useCallback(() => {
-    setLogCache(new Map()); // Clear cache
+    globalStockCache = []; // Clear in-memory cache
+    setLogCache(new Map()); // Clear log cache
     // Reset filter
     clearSearch();
     clearRackFilter();
@@ -1285,6 +1381,79 @@ export function DataGudang() {
     } catch (error) {
       console.error('Error bulk deleting items:', error);
       showToast('Terjadi kesalahan saat menghapus data massal', 'error');
+    }
+  };
+
+  const handleBulkDeactivateClick = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    setBulkDeactivateConfirm({
+      isOpen: true,
+      count: selectedIds.size
+    });
+  }, [selectedIds]);
+
+  const confirmBulkDeactivate = async () => {
+    if (selectedIds.size === 0) return;
+    try {
+      setIsDeactivating(true);
+      const idsToDeactivate = Array.from(selectedIds);
+      const now = new Date().toISOString();
+
+      // 1. Update status in Supabase stock_items
+      const chunkSize = 200;
+      for (let i = 0; i < idsToDeactivate.length; i += chunkSize) {
+        const chunk = idsToDeactivate.slice(i, i + chunkSize);
+        const { error } = await supabase
+          .from('stock_items')
+          .update({ status: 'Tidak Aktif', updated_at: now })
+          .in('id', chunk);
+
+        if (error) {
+          console.error('Error deactivating items in Supabase:', error);
+          throw error;
+        }
+      }
+
+      // 2. Dual-write / Update in Firebase Firestore
+      try {
+        const fbChunkSize = 100;
+        for (let i = 0; i < idsToDeactivate.length; i += fbChunkSize) {
+          const chunk = idsToDeactivate.slice(i, i + fbChunkSize);
+          const batch = writeBatch(db);
+          for (const id of chunk) {
+            const docRef = doc(db, 'stock_items', id.toString());
+            batch.set(docRef, { status: 'Tidak Aktif', updated_at: now }, { merge: true });
+          }
+          await batch.commit();
+        }
+      } catch (fbErr) {
+        console.error('Firebase dual-write deactivation warning:', fbErr);
+      }
+
+      // 3. Invalidate local caches so Dashboard & Data Gudang drop them immediately
+      globalStockCache = [];
+      try {
+        localStorage.removeItem('dashboard_products_cache');
+        localStorage.removeItem('dashboard_stock_cache');
+        localStorage.removeItem('dashboard_logs_cache');
+      } catch (cErr) {
+        console.error('Cache clearing error:', cErr);
+      }
+
+      // 4. Update local state
+      allStockItemsRef.current = allStockItemsRef.current.filter(item => !selectedIds.has(item.id));
+      setStockData(prev => prev.filter(item => !selectedIds.has(item.id)));
+      setSelectedIds(new Set());
+      setBulkDeactivateConfirm({ isOpen: false, count: 0 });
+      showToast(`Berhasil menonaktifkan ${idsToDeactivate.length} data terpilih!`, 'success');
+
+      // 5. Reload table data
+      loadStockData(false);
+    } catch (error: any) {
+      console.error('Error bulk deactivating items:', error);
+      showToast(`Gagal menonaktifkan data: ${error.message || error}`, 'error');
+    } finally {
+      setIsDeactivating(false);
     }
   };
 
@@ -1843,21 +2012,36 @@ export function DataGudang() {
 
       for (let i = 0; i < uniqueSkus.length; i += logBatchSize) {
         const skuChunk = uniqueSkus.slice(i, i + logBatchSize);
-        let logQuery = supabase
-          .from('database_log')
-          .select('sku, rak, type, jumlah, created_at')
-          .in('sku', skuChunk)
-          .in('type', ['IN', 'OUT']);
+        let from = 0;
+        const subBatch = 1000;
+        let hasMore = true;
 
-        if (snapshotFilter.enabled) {
-          const startDateTime = `${snapshotFilter.startDate}T${snapshotFilter.startTime}`;
-          const endDateTime = `${snapshotFilter.endDate}T${snapshotFilter.endTime}`;
-          logQuery = logQuery.gte('created_at', startDateTime).lte('created_at', endDateTime);
-        }
+        while (hasMore) {
+          let logQuery = supabase
+            .from('database_log')
+            .select('sku, rak, type, jumlah, created_at')
+            .in('sku', skuChunk)
+            .in('type', ['IN', 'OUT'])
+            .order('id', { ascending: true })
+            .range(from, from + subBatch - 1);
 
-        const { data: logData, error: logErr } = await logQuery;
-        if (!logErr && logData) {
-          allLogs.push(...logData);
+          if (snapshotFilter.enabled) {
+            const startDateTime = `${snapshotFilter.startDate}T${snapshotFilter.startTime}`;
+            const endDateTime = `${snapshotFilter.endDate}T${snapshotFilter.endTime}`;
+            logQuery = logQuery.gte('created_at', startDateTime).lte('created_at', endDateTime);
+          }
+
+          const { data: logData, error: logErr } = await logQuery;
+          if (!logErr && logData && logData.length > 0) {
+            allLogs.push(...logData);
+            if (logData.length < subBatch) {
+              hasMore = false;
+            } else {
+              from += subBatch;
+            }
+          } else {
+            hasMore = false;
+          }
         }
 
         const calcProgress = 45 + Math.floor(((i + skuChunk.length) / uniqueSkus.length) * 35);
@@ -1870,10 +2054,12 @@ export function DataGudang() {
         }));
       }
 
-      // Group logs by SKU|Rak
+      // Group logs by normalized SKU|Rak
       const logMap = new Map<string, { masuk: number, keluar: number }>();
       allLogs.forEach(log => {
-        const key = `${log.sku}|${log.rak}`;
+        const normSku = (log.sku || '').toString().trim().toLowerCase();
+        const normRak = (log.rak || '').toString().trim().toLowerCase();
+        const key = `${normSku}|${normRak}`;
         if (!logMap.has(key)) logMap.set(key, { masuk: 0, keluar: 0 });
         const current = logMap.get(key)!;
         if (log.type === 'IN') current.masuk += (log.jumlah || 0);
@@ -1882,7 +2068,9 @@ export function DataGudang() {
 
       // Map calculation to items
       let processedReports = itemsToExport.map(item => {
-        const key = `${item.nama_produk}|${item.rak}`;
+        const normSku = (item.nama_produk || '').toString().trim().toLowerCase();
+        const normRak = (item.rak || '').toString().trim().toLowerCase();
+        const key = `${normSku}|${normRak}`;
         const calc = logMap.get(key) || { masuk: 0, keluar: 0 };
         const masuk = calc.masuk;
         const keluar = calc.keluar;
@@ -2517,6 +2705,18 @@ export function DataGudang() {
                   <span className="uppercase text-[10px] lg:text-xs font-black">Sinkron Data Packing</span>
                 </button>
 
+                {isDevMode && (
+                  <button
+                    onClick={() => setIsSkuCasingModalOpen(true)}
+                    disabled={loading}
+                    className="h-11 px-4 lg:px-5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-teal-400/50 backdrop-blur-md disabled:opacity-50"
+                    title="Sinkronisasi Huruf Besar/Kecil SKU Sesuai Master Data SKU (DevMode)"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    <span className="uppercase text-[10px] lg:text-xs font-black">Sinkron Huruf SKU</span>
+                  </button>
+                )}
+
                 {snapshotFilter.enabled ? (
                   <button
                     onClick={handleDisableSnapshot}
@@ -2750,19 +2950,36 @@ export function DataGudang() {
                     <Download className="h-4 w-4" />
                     <span className="text-xs lg:text-sm">Export Terpilih ({selectedIds.size})</span>
                   </button>
+                  {isDevMode && (
+                    <button
+                      onClick={handleCheckBalanceSelected}
+                      disabled={isAnalyzingBalance}
+                      className="h-9 px-3.5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 border border-teal-400 cursor-pointer"
+                      title="Analisis dan Perbaiki Saldo Lebih Potong untuk SKU terpilih (DevMode)"
+                    >
+                      {isAnalyzingBalance ? (
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Scale className="h-4 w-4" />
+                      )}
+                      <span className="text-xs lg:text-sm">
+                        {isAnalyzingBalance ? 'Menganalisis...' : 'Cek Saldo'}
+                      </span>
+                    </button>
+                  )}
                   <button
-                    onClick={handleCheckBalanceSelected}
-                    disabled={isAnalyzingBalance}
-                    className="h-9 px-3.5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 border border-teal-400 cursor-pointer"
-                    title="Analisis dan Perbaiki Saldo Lebih Potong untuk SKU terpilih"
+                    onClick={handleBulkDeactivateClick}
+                    disabled={isDeactivating}
+                    className="h-9 px-3.5 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 border border-amber-400 cursor-pointer disabled:opacity-50"
+                    title={`Nonaktifkan ${selectedIds.size} data SKU terpilih (tidak akan muncul di dropdown Dashboard)`}
                   >
-                    {isAnalyzingBalance ? (
+                    {isDeactivating ? (
                       <RefreshCw className="h-4 w-4 animate-spin" />
                     ) : (
-                      <Scale className="h-4 w-4" />
+                      <EyeOff className="h-4 w-4" />
                     )}
                     <span className="text-xs lg:text-sm">
-                      {isAnalyzingBalance ? 'Menganalisis...' : 'Cek Saldo'}
+                      {isDeactivating ? 'Menonaktifkan...' : `Nonaktifkan (${selectedIds.size})`}
                     </span>
                   </button>
                   <button
@@ -2804,7 +3021,15 @@ export function DataGudang() {
                   type="text"
                   value={searchTerm}
                   onChange={(e) => {
-                    setSearchTerm(e.target.value);
+                    const val = e.target.value;
+                    if (val.toLowerCase() === 'devmode') {
+                      localStorage.setItem('devmode', 'true');
+                      setIsDevMode(true);
+                      showToast('DevMode Aktif! Fitur Sinkron Huruf SKU & Cek Saldo ditampilkan.', 'success');
+                      setSearchTerm('');
+                      return;
+                    }
+                    setSearchTerm(val);
                     setCurrentPage(1);
                   }}
                   className="w-full pl-10 pr-10 py-2.5 text-sm text-gray-800 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all font-medium placeholder-gray-400 shadow-sm"
@@ -3648,6 +3873,15 @@ export function DataGudang() {
           message={`Apakah Anda yakin ingin menghapus ${bulkDeleteConfirm.count} data yang dipilih? Tindakan ini tidak dapat dibatalkan.`}
         />
 
+        {/* Bulk Deactivate Confirmation */}
+        <ConfirmDialog
+          isOpen={bulkDeactivateConfirm.isOpen}
+          onClose={() => setBulkDeactivateConfirm({ isOpen: false, count: 0 })}
+          onConfirm={confirmBulkDeactivate}
+          title="Konfirmasi Nonaktifkan Data"
+          message={`Apakah Anda yakin ingin menonaktifkan ${bulkDeactivateConfirm.count} data yang dipilih? Data yang dinonaktifkan tidak akan muncul pada dropdown pencarian Dashboard.`}
+        />
+
         {/* Preview Modal Perbaikan Saldo (Lebih Potong) Multi-SKU */}
         <Modal
           isOpen={isRedistributePreviewOpen}
@@ -3904,6 +4138,14 @@ export function DataGudang() {
             </div>
           </form>
         </Modal>
+
+        {/* Modal Sinkronisasi Casing Huruf SKU */}
+        <SyncSkuCasingModal
+          isOpen={isSkuCasingModalOpen}
+          onClose={() => setIsSkuCasingModalOpen(false)}
+          onSuccess={refreshData}
+        />
+
         {/* Mobile Sticky Action Bar */}
         <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-2xl p-4 border-t border-gray-100 shadow-[0_-8px_30px_rgba(0,0,0,0.08)] flex gap-2 animate-in slide-in-from-bottom-5">
           <Button

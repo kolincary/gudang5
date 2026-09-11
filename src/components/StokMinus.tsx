@@ -48,6 +48,28 @@ export const StokMinus: React.FC = () => {
         setToast({ show: true, message, type });
     };
 
+    const normalizeDateVariations = (tglScan: string): string[] => {
+        if (!tglScan) return [];
+        const trimmed = tglScan.trim();
+        const variations = [trimmed];
+        if (trimmed.includes('-')) {
+            const parts = trimmed.split('-');
+            if (parts[0].length === 2 && parts[2].length === 4) {
+                variations.push(`${parts[2]}-${parts[1]}-${parts[0]}`); // dd-mm-yyyy -> yyyy-mm-dd
+            } else if (parts[0].length === 4 && parts[2].length === 2) {
+                variations.push(`${parts[2]}-${parts[1]}-${parts[0]}`); // yyyy-mm-dd -> dd-mm-yyyy
+            }
+        }
+        if (trimmed.includes('/')) {
+            const parts = trimmed.split('/');
+            if (parts[0].length === 2 && parts[2].length === 4) {
+                variations.push(`${parts[0]}-${parts[1]}-${parts[2]}`);
+                variations.push(`${parts[2]}-${parts[1]}-${parts[0]}`);
+            }
+        }
+        return [...new Set(variations)];
+    };
+
     const loadMinusStockData = async () => {
         setLoading(true);
         try {
@@ -68,35 +90,80 @@ export const StokMinus: React.FC = () => {
                 return;
             }
 
-            const productNames = Array.from(new Set(minusData.map(item => item.nama_produk)));
+            // Hitung stok aktual dinamis dari database_log untuk setiap baris minus
+            const updatedRows = await Promise.all(
+                minusData.map(async (row) => {
+                    const sku = (row.nama_produk || '').trim();
+                    const rak = (row.rak || '').trim();
+                    const tglScan = (row.tgl_scan || '').trim();
 
-            const { data: stockData, error: stockError } = await supabase
-                .from('stock_items')
-                .select('nama_produk, rak, tersedia')
-                .in('nama_produk', productNames);
+                    if (!sku || !rak) {
+                        return {
+                            ...row,
+                            stok_tersedia: 0,
+                            total_stok: 0 - (row.jumlah || 0)
+                        };
+                    }
 
-            if (stockError) {
-                console.error('Error fetching current stock:', stockError);
-            }
+                    const variations = normalizeDateVariations(tglScan);
 
-            const stockMap = new Map<string, number>();
-            if (stockData) {
-                stockData.forEach(item => {
-                    const key = `${item.nama_produk?.toLowerCase().trim()}|${item.rak?.toLowerCase().trim()}`;
-                    stockMap.set(key, item.tersedia || 0);
-                });
-            }
+                    // 1. Jika ada tgl_scan, prioritaskan cek batch logs untuk tgl_scan tersebut
+                    if (variations.length > 0) {
+                        const { data: batchLogs, error: batchError } = await supabase
+                            .from('database_log')
+                            .select('jumlah, type, tgl_scan')
+                            .ilike('sku', sku)
+                            .ilike('rak', rak)
+                            .in('tgl_scan', variations);
 
-            const updatedRows = minusData.map((row) => {
-                const key = `${row.nama_produk?.toLowerCase().trim()}|${row.rak?.toLowerCase().trim()}`;
-                const currentStock = stockMap.get(key) || 0;
+                        if (!batchError && batchLogs && batchLogs.length > 0) {
+                            const totalIn = batchLogs
+                                .filter(l => l.type === 'IN')
+                                .reduce((sum, l) => sum + (l.jumlah || 0), 0);
+                            const totalOut = batchLogs
+                                .filter(l => l.type === 'OUT')
+                                .reduce((sum, l) => sum + (l.jumlah || 0), 0);
 
-                return {
-                    ...row,
-                    stok_tersedia: currentStock,
-                    total_stok: currentStock - row.jumlah
-                };
-            });
+                            const stokTersedia = totalIn - totalOut;
+                            return {
+                                ...row,
+                                stok_tersedia: stokTersedia,
+                                total_stok: stokTersedia - (row.jumlah || 0)
+                            };
+                        }
+                    }
+
+                    // 2. Fallback jika tidak ada tgl_scan atau tidak ada log batch spesifik: hitung total log rak
+                    const { data: allLogs, error: allLogsError } = await supabase
+                        .from('database_log')
+                        .select('jumlah, type')
+                        .ilike('sku', sku)
+                        .ilike('rak', rak)
+                        .in('type', ['IN', 'OUT']);
+
+                    if (!allLogsError && allLogs) {
+                        const totalIn = allLogs
+                            .filter(l => l.type === 'IN')
+                            .reduce((sum, l) => sum + (l.jumlah || 0), 0);
+                        const totalOut = allLogs
+                            .filter(l => l.type === 'OUT')
+                            .reduce((sum, l) => sum + (l.jumlah || 0), 0);
+
+                        const stokTersedia = totalIn - totalOut;
+                        return {
+                            ...row,
+                            stok_tersedia: stokTersedia,
+                            total_stok: stokTersedia - (row.jumlah || 0)
+                        };
+                    }
+
+                    return {
+                        ...row,
+                        stok_tersedia: 0,
+                        total_stok: 0 - (row.jumlah || 0)
+                    };
+                })
+            );
 
             setRows(updatedRows);
             setFilteredRows(updatedRows);

@@ -138,13 +138,34 @@ export const DatabaseService = {
 
   async fetchLogsBySku(sku: string, mode: DatabaseReadMode) {
     if (mode === 'supabase') {
-      const { data, error } = await supabase
-        .from('database_log')
-        .select('sku, rak, type, jumlah')
-        .ilike('sku', sku)
-        .in('type', ['IN', 'OUT']);
-      if (error) throw error;
-      return data || [];
+      const allLogs: any[] = [];
+      let from = 0;
+      const batchSize = 1000;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from('database_log')
+          .select('sku, rak, type, jumlah, created_at')
+          .ilike('sku', sku)
+          .in('type', ['IN', 'OUT'])
+          .order('id', { ascending: true })
+          .range(from, from + batchSize - 1);
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          allLogs.push(...data);
+          if (data.length < batchSize) {
+            hasMore = false;
+          } else {
+            from += batchSize;
+          }
+        } else {
+          hasMore = false;
+        }
+      }
+      return allLogs;
     } else {
       const colRef = collection(db, COLLECTION_NAME);
       // Since Firebase lacks ilike, we do exact match. For Dashboard, productName is usually exact.

@@ -78,8 +78,22 @@ const OptimizedSearchDropdown = ({
     <div className="relative flex-1 w-full flex items-center h-full">
       <div className="pl-5 text-blue-500 pointer-events-none"><Search className="h-5 w-5" /></div>
       <input
+        id="daily-sku-filter-input"
+        name="daily-sku-filter-query"
         ref={inputRef}
-        type="text"
+        type="search"
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={showDropdown}
+        aria-haspopup="listbox"
+        data-lpignore="true"
+        data-form-type="other"
+        data-1p-ignore="true"
+        data-bwignore="true"
         onKeyDown={onKeyDown}
         value={value}
         onChange={(e) => onChange(e.target.value)}

@@ -317,18 +317,37 @@ export const calculateAccurateStock = async (namaProduk: string, rak: string): P
 
     const stokAwal = stockItem.data?.stok_awal || 0;
 
-    const { data: logData, error: logError } = await supabase
-      .from('database_log')
-      .select('jumlah, type, rak')
-      .ilike('sku', namaProduk.trim())
-      .in('type', ['IN', 'OUT']);
+    const logEntries: any[] = [];
+    let from = 0;
+    const batchSize = 1000;
+    let hasMore = true;
 
-    if (logError) {
-      console.error('Error fetching log data:', logError);
-      return stokAwal;
+    while (hasMore) {
+      const { data: logData, error: logError } = await supabase
+        .from('database_log')
+        .select('sku, jumlah, type, rak, created_at')
+        .ilike('sku', namaProduk.trim())
+        .in('type', ['IN', 'OUT'])
+        .order('id', { ascending: true })
+        .range(from, from + batchSize - 1);
+
+      if (logError) {
+        console.error('Error fetching log data:', logError);
+        break;
+      }
+
+      if (logData && logData.length > 0) {
+        logEntries.push(...logData);
+        if (logData.length < batchSize) {
+          hasMore = false;
+        } else {
+          from += batchSize;
+        }
+      } else {
+        hasMore = false;
+      }
     }
 
-    const logEntries = logData || [];
     const targetRakLower = rak.trim().toLowerCase();
 
     // Filter logs for the specific rack using the same logic as Dashboard

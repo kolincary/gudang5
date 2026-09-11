@@ -135,10 +135,22 @@ const OptimizedSearchDropdown = ({
     <div className="relative product-dropdown-container">
       <div className="relative">
         <input
-          id="search-product-input"
-          name="search-product"
+          id="dashboard-sku-filter-input"
+          name="dashboard-sku-filter-query"
           ref={inputRef}
-          type="text"
+          type="search"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={showDropdown}
+          aria-haspopup="listbox"
+          data-lpignore="true"
+          data-form-type="other"
+          data-1p-ignore="true"
+          data-bwignore="true"
           onKeyDown={onKeyDown}
           value={value}
           onChange={(e) => onChange(e.target.value)}
