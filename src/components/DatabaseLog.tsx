@@ -1802,8 +1802,10 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       const target = (skuToScan !== undefined ? skuToScan : syncOutSkuInput).trim();
       const result = await scanMismatchedOutLogs(target || undefined);
       setSyncOutScanResult(result);
-      if (result.mismatchedItems.length > 0) {
-        showToast(`Ditemukan ${result.mismatchedItems.length} baris transaksi OUT dengan rak tidak sesuai nota masuk.`, 'warning');
+      if (result.restorableItems.length > 0) {
+        showToast(`Ditemukan ${result.restorableItems.length} baris transaksi OUT siap dikembalikan (${result.protectedItems.length} diproteksi).`, 'info');
+      } else if (result.protectedItems.length > 0) {
+        showToast(`Semua ${result.protectedItems.length} transaksi OUT diproteksi aman (tidak boleh diubah).`, 'info');
       } else {
         showToast('Semua transaksi OUT sudah sesuai dengan nota masuk Gudang J/H!', 'success');
       }
@@ -1843,9 +1845,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
   const handleFixSelectedSyncOut = async (items?: MismatchedOutRakItem[]) => {
     if (!syncOutScanResult) return;
-    const targets = items || syncOutScanResult.mismatchedItems.filter(item => selectedSyncOutIds.has(item.id));
+    const candidates = items || syncOutScanResult.mismatchedItems.filter(item => selectedSyncOutIds.has(item.id));
+    const targets = candidates.filter(item => !item.isProtected);
+
     if (targets.length === 0) {
-      showToast('Pilih setidaknya satu baris transaksi OUT untuk dikembalikan raknya.', 'info');
+      showToast('Pilih setidaknya satu baris transaksi OUT yang tidak diproteksi untuk dikembalikan raknya.', 'info');
       return;
     }
 
@@ -1875,11 +1879,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   };
 
   const handleFixAllSyncOut = async () => {
-    if (!syncOutScanResult || syncOutScanResult.mismatchedItems.length === 0) {
-      showToast('Tidak ada transaksi OUT yang perlu diperbaiki.', 'info');
+    if (!syncOutScanResult || syncOutScanResult.restorableItems.length === 0) {
+      showToast('Tidak ada transaksi OUT yang dapat diperbaiki (semua diproteksi atau sudah sesuai).', 'info');
       return;
     }
-    await handleFixSelectedSyncOut(syncOutScanResult.mismatchedItems);
+    await handleFixSelectedSyncOut(syncOutScanResult.restorableItems);
   };
 
   useEffect(() => {

@@ -1,5 +1,20 @@
 import { supabase } from '../lib/supabase';
 
+export const PROTECTED_SYNC_RAKS = [
+  'LANTAI 2',
+  'LANTAI 4',
+  'ECER-M',
+  'ECER-O',
+  'ECER-N',
+  'BLOK-I'
+];
+
+export const isProtectedSyncRak = (rak: string | null | undefined): boolean => {
+  if (!rak) return false;
+  const clean = rak.trim().toUpperCase();
+  return PROTECTED_SYNC_RAKS.some(p => clean === p);
+};
+
 export interface MismatchedOutRakItem {
   id: string;
   sku: string;
@@ -14,6 +29,8 @@ export interface MismatchedOutRakItem {
   currentSubRak?: string;
   correctRak: string;
   correctSubRak: string;
+  isProtected: boolean;
+  protectReason?: string;
   inReceipt: {
     id: string;
     tgl: string;
@@ -28,6 +45,8 @@ export interface MismatchedOutRakItem {
 
 export interface SyncOutRakScanResult {
   mismatchedItems: MismatchedOutRakItem[];
+  restorableItems: MismatchedOutRakItem[];
+  protectedItems: MismatchedOutRakItem[];
   totalOutScanned: number;
   totalInReceipts: number;
   timestamp: string;
@@ -113,7 +132,6 @@ export async function scanMismatchedOutLogs(
     outLogs.push(...data);
     if (data.length < pageSize) break;
     outPage++;
-    // If scanning a specific SKU, finish all pages; if scanning all, guard at 250k
     if (outPage > 250) break;
   }
 
@@ -121,6 +139,8 @@ export async function scanMismatchedOutLogs(
   if (onProgress) onProgress('Menganalisis Ketidaksesuaian Rak...', 85);
 
   const mismatchedItems: MismatchedOutRakItem[] = [];
+  const restorableItems: MismatchedOutRakItem[] = [];
+  const protectedItems: MismatchedOutRakItem[] = [];
 
   outLogs.forEach((out) => {
     if (!out.sku || !out.tgl_scan) return;
@@ -140,7 +160,20 @@ export async function scanMismatchedOutLogs(
     const isSubRakDiff = curSubRak && corSubRak && curSubRak.toUpperCase() !== corSubRak.toUpperCase();
 
     if (isRakDiff || isSubRakDiff) {
-      mismatchedItems.push({
+      const isCurProtected = isProtectedSyncRak(curRak);
+      const isCorProtected = isProtectedSyncRak(corRak);
+      const isProt = isCurProtected || isCorProtected;
+
+      let protectReason = '';
+      if (isCurProtected && isCorProtected) {
+        protectReason = `Rak asal (${curRak}) & rak tujuan (${corRak}) diproteksi khusus`;
+      } else if (isCurProtected) {
+        protectReason = `Rak asal (${curRak}) diproteksi khusus & tidak boleh diubah`;
+      } else if (isCorProtected) {
+        protectReason = `Rak tujuan (${corRak}) diproteksi khusus & tidak boleh diubah`;
+      }
+
+      const item: MismatchedOutRakItem = {
         id: out.id,
         sku: out.sku,
         gudang: out.gudang || '',
@@ -154,6 +187,8 @@ export async function scanMismatchedOutLogs(
         currentSubRak: curSubRak,
         correctRak: corRak,
         correctSubRak: corSubRak,
+        isProtected: isProt,
+        protectReason: isProt ? protectReason : undefined,
         inReceipt: {
           id: inReceipt.id,
           tgl: inReceipt.tgl || '',
@@ -164,7 +199,14 @@ export async function scanMismatchedOutLogs(
           sub_rak: corSubRak,
           jumlah: Number(inReceipt.jumlah || 0)
         }
-      });
+      };
+
+      mismatchedItems.push(item);
+      if (isProt) {
+        protectedItems.push(item);
+      } else {
+        restorableItems.push(item);
+      }
     }
   });
 
@@ -172,6 +214,8 @@ export async function scanMismatchedOutLogs(
 
   return {
     mismatchedItems,
+    restorableItems,
+    protectedItems,
     totalOutScanned: outLogs.length,
     totalInReceipts: inLogs.length,
     timestamp: new Date().toISOString()
@@ -182,13 +226,16 @@ export async function restoreOutRakLogs(
   itemsToFix: { id: string; correctRak: string; correctSubRak: string }[],
   onProgress?: (processed: number, total: number) => void
 ): Promise<{ successCount: number; errorCount: number; errors: any[] }> {
+  // Safety guard: filter out any protected target raks
+  const safeItems = itemsToFix.filter(i => !isProtectedSyncRak(i.correctRak));
+
   const batchSize = 30;
   let successCount = 0;
   let errorCount = 0;
   const errors: any[] = [];
 
-  for (let i = 0; i < itemsToFix.length; i += batchSize) {
-    const chunk = itemsToFix.slice(i, i + batchSize);
+  for (let i = 0; i < safeItems.length; i += batchSize) {
+    const chunk = safeItems.slice(i, i + batchSize);
 
     const promises = chunk.map(async (item) => {
       try {
@@ -216,7 +263,7 @@ export async function restoreOutRakLogs(
     await Promise.all(promises);
 
     if (onProgress) {
-      onProgress(Math.min(i + chunk.length, itemsToFix.length), itemsToFix.length);
+      onProgress(Math.min(i + chunk.length, safeItems.length), safeItems.length);
     }
   }
 
