@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Download, Upload, FileText, CheckCircle, Check, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link } from 'lucide-react';
+import { Download, Upload, FileText, CheckCircle, Check, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, UserCheck, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { saveExportHistory } from '../lib/exportHistoryService';
@@ -274,12 +274,31 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     rak: '',
     subRak: '',
     waktu: '',
+    user: '',
     logUpdateUser: '',
     tanggal: '',
     tglScan: '',
     isAdjustment: '',
     onlySelected: false
   });
+
+  const clearAllFilters = () => {
+    setFilters({
+      sku: '',
+      type: '',
+      gudang: initialGudangFilter || '',
+      rak: '',
+      subRak: '',
+      waktu: '',
+      user: '',
+      logUpdateUser: '',
+      tanggal: '',
+      tglScan: '',
+      isAdjustment: '',
+      onlySelected: false
+    });
+    setCurrentPage(1);
+  };
 
   useEffect(() => {
     if (initialGudangFilter) {
@@ -343,86 +362,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     setIsManualDateModalOpen(false);
   };
 
-  // --- TRANSFER MUTASI PAIRING ---
-  interface TransferPairDetail {
-    pairId: string;
-    role: 'OUT_ORIGIN' | 'IN_DEST';
-    partnerId: string;
-    partnerRak: string;
-    partnerSubRak?: string;
-    partnerType: 'IN' | 'OUT';
-    sku: string;
-    qty: number;
-    tgl: string;
-    waktu: string;
-    tglScan: string;
-  }
 
-  const transferPairs = useMemo(() => {
-    const pairMap = new Map<string, TransferPairDetail>();
-
-    // Filter candidate transfer entries
-    const candidates = filteredEntries.filter(
-      entry => (entry.gudang || '').toUpperCase().includes('TRANSFER') || (entry.type === 'MOVE')
-    );
-
-    // Group by unique signature: SKU + Normalized Tgl + Waktu + Normalized Tgl Scan + Qty
-    const grouped = new Map<string, DatabaseLogEntry[]>();
-    candidates.forEach(entry => {
-      const normSku = (entry.sku || '').trim().toUpperCase();
-      const normTgl = formatDateDisplay(entry.tgl) || (entry.tgl || '').trim();
-      const normWaktu = (entry.waktu || '').trim();
-      const normTglScan = formatDateDisplay(entry.tgl_scan) || (entry.tgl_scan || '').trim();
-      const qty = Number(entry.jumlah || 0);
-      const key = `${normSku}|${normTgl}|${normWaktu}|${normTglScan}|${qty}`;
-
-      if (!grouped.has(key)) {
-        grouped.set(key, []);
-      }
-      grouped.get(key)!.push(entry);
-    });
-
-    grouped.forEach((entries, key) => {
-      const outItems = entries.filter(e => (e.type || '').toUpperCase() === 'OUT');
-      const inItems = entries.filter(e => (e.type || '').toUpperCase() === 'IN');
-
-      const minPairs = Math.min(outItems.length, inItems.length);
-      for (let i = 0; i < minPairs; i++) {
-        const outItem = outItems[i];
-        const inItem = inItems[i];
-
-        pairMap.set(outItem.id, {
-          pairId: key,
-          role: 'OUT_ORIGIN',
-          partnerId: inItem.id,
-          partnerRak: inItem.rak,
-          partnerSubRak: inItem.sub_rak,
-          partnerType: 'IN',
-          sku: outItem.sku,
-          qty: outItem.jumlah,
-          tgl: outItem.tgl,
-          waktu: outItem.waktu,
-          tglScan: outItem.tgl_scan
-        });
-
-        pairMap.set(inItem.id, {
-          pairId: key,
-          role: 'IN_DEST',
-          partnerId: outItem.id,
-          partnerRak: outItem.rak,
-          partnerSubRak: outItem.sub_rak,
-          partnerType: 'OUT',
-          sku: inItem.sku,
-          qty: inItem.jumlah,
-          tgl: inItem.tgl,
-          waktu: inItem.waktu,
-          tglScan: inItem.tgl_scan
-        });
-      }
-    });
-
-    return pairMap;
-  }, [filteredEntries]);
 
   // --- STOCK BALANCE ANALYSIS & DEFICIT AUDIT STATE ---
   const [isAnalysisModalOpen, setIsAnalysisModalOpen] = useState(false);
@@ -2197,6 +2137,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         currentFilters.rak || 
         currentFilters.subRak || 
         currentFilters.waktu || 
+        currentFilters.user || 
         currentFilters.logUpdateUser || 
         currentFilters.tanggal || 
         currentFilters.tglScan
@@ -2245,6 +2186,9 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         const colonWaktu = rawWaktu.replace(/\./g, ':');
         const dotWaktu = rawWaktu.replace(/:/g, '.');
         query = query.or(`waktu.ilike.%${rawWaktu}%,waktu.ilike.%${colonWaktu}%,waktu.ilike.%${dotWaktu}%`);
+      }
+      if (currentFilters.user) {
+        query = query.ilike('user_name', `%${currentFilters.user}%`);
       }
       if (currentFilters.logUpdateUser) {
         query = query.ilike('log_update_user', `%${currentFilters.logUpdateUser}%`);
@@ -3269,19 +3213,6 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
   };
 
-  const clearAllFilters = () => {
-    setFilters({
-      sku: '',
-      type: '',
-      gudang: initialGudangFilter || '',
-      rak: '',
-      tanggal: '',
-      tglScan: '',
-      isAdjustment: ''
-    });
-    setCurrentPage(1);
-  };
-
   const handleExport = async () => {
     if (!isAccessGranted) return;
 
@@ -3350,6 +3281,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           countQuery = countQuery.or(`waktu.ilike.%${rawW}%,waktu.ilike.%${colonW}%,waktu.ilike.%${dotW}%`);
         }
         if (filters.logUpdateUser) countQuery = countQuery.ilike('log_update_user', `%${filters.logUpdateUser}%`);
+        if (filters.user) countQuery = countQuery.ilike('user_name', `%${filters.user}%`);
         if (filters.tanggal) countQuery = countQuery.eq('tgl', filters.tanggal);
         if (filters.tglScan) countQuery = countQuery.eq('tgl_scan', filters.tglScan);
         if (filters.isAdjustment) countQuery = countQuery.eq('is_adjustment', filters.isAdjustment === 'true');
@@ -3384,6 +3316,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
             const dotW = rawW.replace(/:/g, '.');
             batchQuery = batchQuery.or(`waktu.ilike.%${rawW}%,waktu.ilike.%${colonW}%,waktu.ilike.%${dotW}%`);
           }
+          if (filters.user) batchQuery = batchQuery.ilike('user_name', `%${filters.user}%`);
           if (filters.logUpdateUser) batchQuery = batchQuery.ilike('log_update_user', `%${filters.logUpdateUser}%`);
           if (filters.tanggal) batchQuery = batchQuery.eq('tgl', filters.tanggal);
           if (filters.tglScan) batchQuery = batchQuery.eq('tgl_scan', filters.tglScan);
@@ -4043,6 +3976,30 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                         <Building2 className="h-4 w-4" />
                         <span className="uppercase text-[10px] font-black">Mutasi LT4 ➔ LT2</span>
                       </button>
+
+                      {/* DEVMODE: FILTER USER SYSTEM (CEK RAK) */}
+                      <button
+                        onClick={() => {
+                          if (filters.user === 'System (Cek Rak)') {
+                            setFilters(prev => ({ ...prev, user: '' }));
+                            showToast('Filter User System (Cek Rak) dinonaktifkan', 'info');
+                          } else {
+                            setFilters(prev => ({ ...prev, user: 'System (Cek Rak)' }));
+                            showToast('Memfilter data User: System (Cek Rak)', 'success');
+                          }
+                        }}
+                        className={`h-12 px-5 font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border ${
+                          filters.user === 'System (Cek Rak)'
+                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-300 ring-2 ring-emerald-300 shadow-emerald-950/40'
+                            : 'bg-gradient-to-r from-emerald-700 to-teal-700 hover:from-emerald-600 hover:to-teal-600 text-white border-emerald-400/40'
+                        }`}
+                        title="Filter Cepat Kolom User: System (Cek Rak)"
+                      >
+                        <UserCheck className="h-4 w-4" />
+                        <span className="uppercase text-[10px] font-black">
+                          {filters.user === 'System (Cek Rak)' ? '✓ System (Cek Rak)' : 'User: Cek Rak'}
+                        </span>
+                      </button>
                     </div>
                   )}
 
@@ -4092,6 +4049,50 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   </span>
                 </Button>
               </div>
+            </div>
+
+            {/* QUICK FILTER BAR */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-slate-200/90 p-3 rounded-2xl shadow-sm mb-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-black text-slate-500 uppercase tracking-wider flex items-center gap-1.5 mr-1">
+                  <Filter className="w-3.5 h-3.5 text-blue-600" /> Filter Cepat:
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (filters.user === 'System (Cek Rak)') {
+                      setFilters(prev => ({ ...prev, user: '' }));
+                    } else {
+                      setFilters(prev => ({ ...prev, user: 'System (Cek Rak)' }));
+                    }
+                  }}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border ${
+                    filters.user === 'System (Cek Rak)'
+                      ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm ring-2 ring-emerald-300'
+                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
+                  }`}
+                  title="Filter khusus log dari user System (Cek Rak)"
+                >
+                  <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>User: System (Cek Rak)</span>
+                  {filters.user === 'System (Cek Rak)' && (
+                    <span className="ml-1 bg-white/25 text-white px-1.5 py-0.2 rounded text-[10px] font-black uppercase">
+                      AKTIF
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {Boolean(filters.sku || filters.type || filters.gudang || filters.rak || filters.user || filters.tanggal || filters.tglScan || filters.waktu || filters.subRak || filters.logUpdateUser || filters.isAdjustment) && (
+                <button
+                  type="button"
+                  onClick={clearAllFilters}
+                  className="text-xs text-rose-600 hover:text-rose-800 font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <RotateCcw className="w-3 h-3" /> Reset Semua Filter
+                </button>
+              )}
             </div>
 
             <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 ${showFixDates ? 'xl:grid-cols-5' : 'xl:grid-cols-7'} gap-4`}>
@@ -4362,6 +4363,56 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   </div>
                 </>
               )}
+
+              {/* FILTER USER */}
+              <div>
+                <div className="bg-blue-600 text-white px-3 py-2 rounded-t-md flex items-center justify-between">
+                  <span className="font-medium">User</span>
+                  {filters.user && (
+                    <span className="text-[10px] bg-blue-800 px-1.5 py-0.2 rounded font-bold">Aktif</span>
+                  )}
+                </div>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={filters.user}
+                    onChange={(e) => setFilters({ ...filters, user: e.target.value })}
+                    placeholder="Cari User..."
+                    className="w-full px-3 py-2 border border-gray-300 border-t-0 rounded-b-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white pr-8 text-sm"
+                  />
+                  {filters.user && (
+                    <button
+                      type="button"
+                      onClick={() => setFilters({ ...filters, user: '' })}
+                      className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-md"
+                      title="Hapus Filter User"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="mt-1 flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (filters.user === 'System (Cek Rak)') {
+                        setFilters({ ...filters, user: '' });
+                      } else {
+                        setFilters({ ...filters, user: 'System (Cek Rak)' });
+                      }
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
+                      filters.user === 'System (Cek Rak)'
+                        ? 'bg-emerald-600 text-white border-emerald-700'
+                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                    }`}
+                    title="Klik untuk filter System (Cek Rak)"
+                  >
+                    <UserCheck className="w-3 h-3" />
+                    <span>System (Cek Rak)</span>
+                  </button>
+                </div>
+              </div>
 
               <div>
                 <div className="bg-amber-600 text-white px-3 py-2 rounded-t-md">
@@ -4725,18 +4776,16 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       </thead>
                       <tbody>
                         {dataLoaded && filteredEntries.map((entry, index) => {
-                          const pair = transferPairs.get(entry.id);
                           const isSelected = selectedIds.has(entry.id);
+                          const isTransfer = (entry.gudang || '').toUpperCase().includes('TRANSFER') || (entry.type === 'MOVE');
 
-                          // Row styling: Selected > Transfer Pair > Adjustment > Zebra
+                          // Row styling: Selected > Adjustment > Transfer Highlight > Zebra
                           const rowClass = isSelected
                             ? 'bg-blue-200 hover:bg-blue-300'
-                            : pair
-                              ? pair.role === 'OUT_ORIGIN'
-                                ? 'bg-purple-50/90 hover:bg-purple-100/90 border-l-4 border-l-purple-600'
-                                : 'bg-indigo-50/90 hover:bg-indigo-100/90 border-l-4 border-l-indigo-600'
-                              : entry.is_adjustment
-                                ? 'bg-amber-50 hover:bg-amber-100'
+                            : entry.is_adjustment
+                              ? 'bg-amber-50 hover:bg-amber-100'
+                              : isTransfer
+                                ? 'bg-purple-50/50 hover:bg-purple-100/60 border-l-4 border-l-purple-400'
                                 : index % 2 === 0
                                   ? 'bg-blue-50/40 hover:bg-blue-100/60'
                                   : 'bg-white hover:bg-blue-50';
@@ -4788,61 +4837,25 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                 {entry.jumlah}
                               </td>
                               <td className="px-4 py-2 text-center border-r border-gray-200">
-                                {pair ? (
-                                  <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-black shadow-sm ${
-                                    entry.type === 'OUT'
-                                      ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                                      : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                  }`}>
-                                    <ArrowRightLeft className="h-3 w-3" />
-                                    {entry.type === 'OUT' ? 'OUT (MUTASI)' : 'IN (MUTASI)'}
-                                  </span>
-                                ) : (
-                                  <span className={`px-2 py-1 rounded text-xs font-medium ${
-                                    entry.type === 'IN' ? 'bg-green-100 text-green-800' :
-                                    entry.type === 'OUT' ? 'bg-red-100 text-red-800' :
-                                    'bg-blue-100 text-blue-800'
-                                  }`}>
-                                    {entry.type}
-                                  </span>
-                                )}
+                                <span className={`px-2.5 py-1 rounded text-xs font-bold ${
+                                  entry.type === 'IN' ? 'bg-green-100 text-green-800 border border-green-300' :
+                                  entry.type === 'OUT' ? 'bg-red-100 text-red-800 border border-red-300' :
+                                  'bg-blue-100 text-blue-800 border border-blue-300'
+                                }`}>
+                                  {entry.type}
+                                </span>
                               </td>
                               <td className="px-4 py-2 text-sm border-r border-gray-200">
-                                {pair ? (
-                                  <div className="flex flex-col gap-0.5">
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-black bg-purple-600 text-white shadow-sm w-fit">
-                                      <ArrowRightLeft className="h-3 w-3" />
-                                      TRANSFER
-                                    </span>
-                                    <span className="text-[10px] text-purple-700 font-bold whitespace-nowrap">
-                                      {pair.role === 'OUT_ORIGIN' ? '↗ Dari Rak Asal' : '↘ Ke Rak Tujuan'}
-                                    </span>
-                                  </div>
+                                {isTransfer ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-purple-100 text-purple-800 border border-purple-300 shadow-2xs">
+                                    {entry.gudang}
+                                  </span>
                                 ) : (
                                   entry.gudang
                                 )}
                               </td>
-                              <td className="px-4 py-2 text-sm border-r border-gray-200">
-                                {pair ? (
-                                  <div>
-                                    <span className="font-black text-gray-900">{entry.rak}</span>
-                                    <div className="text-[10px] font-bold flex items-center gap-1 mt-0.5 whitespace-nowrap">
-                                      {pair.role === 'OUT_ORIGIN' ? (
-                                        <>
-                                          <span className="text-purple-700">Pindah ➔</span>
-                                          <span className="bg-purple-200/80 text-purple-900 px-1.5 py-0.2 rounded font-mono font-black">{pair.partnerRak}</span>
-                                        </>
-                                      ) : (
-                                        <>
-                                          <span className="text-indigo-700">Terima 🠔</span>
-                                          <span className="bg-indigo-200/80 text-indigo-900 px-1.5 py-0.2 rounded font-mono font-black">{pair.partnerRak}</span>
-                                        </>
-                                      )}
-                                    </div>
-                                  </div>
-                                ) : (
-                                  entry.rak
-                                )}
+                              <td className="px-4 py-2 text-sm border-r border-gray-200 font-medium">
+                                {entry.rak}
                               </td>
                               <td
                                 className="px-4 py-2 text-sm border-r border-gray-200 cursor-pointer hover:bg-blue-200 transition-colors font-medium"
@@ -4851,7 +4864,20 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                               >
                                 {formatDateDisplay(entry.tgl_scan)}
                               </td>
-                              <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600">{entry.user}</td>
+                              <td
+                                className="px-4 py-2 text-sm border-r border-gray-200 text-gray-700 cursor-pointer hover:bg-blue-100 transition-colors font-medium"
+                                onClick={() => setFilters({ ...filters, user: entry.user || '' })}
+                                title="Klik untuk filter User ini"
+                              >
+                                {entry.user === 'System (Cek Rak)' ? (
+                                  <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                    <UserCheck className="w-3 h-3 text-emerald-600" />
+                                    {entry.user}
+                                  </span>
+                                ) : (
+                                  entry.user
+                                )}
+                              </td>
                               <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600">{entry.sub_rak}</td>
                               <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600 font-mono text-xs">{entry.log_update_user}</td>
                               <td className="px-4 py-2 text-center">
@@ -4890,8 +4916,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     </div>
                     <div className="divide-y divide-gray-200">
                       {dataLoaded && filteredEntries.map((entry, index) => {
-                        const pair = transferPairs.get(entry.id);
                         const isSelected = selectedIds.has(entry.id);
+                        const isTransfer = (entry.gudang || '').toUpperCase().includes('TRANSFER') || (entry.type === 'MOVE');
 
                         return (
                           <div
@@ -4899,28 +4925,13 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                             className={`p-4 ${
                               isSelected
                                 ? 'bg-blue-100'
-                                : pair
-                                  ? pair.role === 'OUT_ORIGIN'
-                                    ? 'bg-purple-50/80 border-l-4 border-l-purple-600'
-                                    : 'bg-indigo-50/80 border-l-4 border-l-indigo-600'
-                                  : entry.is_adjustment
-                                    ? 'bg-amber-50'
+                                : entry.is_adjustment
+                                  ? 'bg-amber-50'
+                                  : isTransfer
+                                    ? 'bg-purple-50/50 border-l-4 border-l-purple-400'
                                     : 'bg-white'
                             } active:bg-blue-50 transition-colors relative`}
                           >
-                            {pair && (
-                              <div className="mb-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center justify-between shadow-sm">
-                                <span className="flex items-center gap-1.5">
-                                  <ArrowRightLeft className="h-3.5 w-3.5" />
-                                  {pair.role === 'OUT_ORIGIN'
-                                    ? `MUTASI KELUAR: ${entry.rak} ➔ ${pair.partnerRak}`
-                                    : `MUTASI MASUK: ${entry.rak} 🠔 ${pair.partnerRak}`}
-                                </span>
-                                <span className="bg-white/20 px-2 py-0.5 rounded text-[10px] font-black">
-                                  {pair.qty} PCS
-                                </span>
-                              </div>
-                            )}
                             <div className="flex items-start gap-3">
                               <div className="pt-1">
                                 <input
@@ -4979,16 +4990,19 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                     <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Lokasi Rak</p>
                                     <p className="text-sm font-bold text-blue-600">
                                       {entry.rak}
-                                      {pair && (
-                                        <span className="block text-[10px] text-purple-700 font-semibold">
-                                          {pair.role === 'OUT_ORIGIN' ? `➔ ke ${pair.partnerRak}` : `🠔 dari ${pair.partnerRak}`}
-                                        </span>
-                                      )}
                                     </p>
                                   </div>
                                   <div>
                                     <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Gudang</p>
-                                    <p className="text-sm font-medium text-gray-700">{entry.gudang}</p>
+                                    <p className="text-sm font-medium text-gray-700">
+                                      {isTransfer ? (
+                                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-purple-100 text-purple-800 border border-purple-300">
+                                          {entry.gudang}
+                                        </span>
+                                      ) : (
+                                        entry.gudang
+                                      )}
+                                    </p>
                                   </div>
                                   <div>
                                     <p className="text-[10px] uppercase font-bold text-gray-400 mb-0.5">Sub Rak</p>
