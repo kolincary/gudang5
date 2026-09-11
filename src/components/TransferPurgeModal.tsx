@@ -15,12 +15,15 @@ import {
   ChevronsLeft,
   ChevronsRight,
   CheckSquare,
-  Square
+  Square,
+  FileText,
+  ListPlus
 } from 'lucide-react';
 import {
   TransferPurgeItem,
   TransferPurgeScanResult,
-  PROTECTED_TRANSFER_RAKS
+  PROTECTED_TRANSFER_RAKS,
+  parseMultipleSkus
 } from '../services/transferPurgeService';
 
 interface TransferPurgeModalProps {
@@ -60,10 +63,16 @@ export const TransferPurgeModal: React.FC<TransferPurgeModalProps> = ({
 }) => {
   const [filterTab, setFilterTab] = useState<'DELETABLE' | 'PROTECTED'>('DELETABLE');
   const [searchTerm, setSearchTerm] = useState('');
+  const [isMultiLineInput, setIsMultiLineInput] = useState(false);
   const [confirmModalItem, setConfirmModalItem] = useState<TransferPurgeItem | null>(null);
   const [confirmModalBulk, setConfirmModalBulk] = useState<'SELECTED' | 'ALL' | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+
+  // Parse multi-SKU from skuInput
+  const detectedSkus = useMemo(() => {
+    return parseMultipleSkus(skuInput);
+  }, [skuInput]);
 
   const deletableList = useMemo(() => scanResult?.deletableLogs || [], [scanResult]);
   const protectedList = useMemo(() => scanResult?.protectedLogs || [], [scanResult]);
@@ -130,7 +139,7 @@ export const TransferPurgeModal: React.FC<TransferPurgeModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-rose-100/90 font-medium">
-                Hapus transaksi TRANSFER (IN & OUT) dengan proteksi ketat rak khusus (LANTAI 2, 4, ECER, BLOK-I)
+                Hapus transaksi TRANSFER (IN & OUT) dengan pencarian multi-SKU & proteksi rak khusus (LANTAI 2, 4, ECER, BLOK-I)
               </p>
             </div>
           </div>
@@ -145,54 +154,104 @@ export const TransferPurgeModal: React.FC<TransferPurgeModalProps> = ({
 
         {/* Action Controls & Metric Badges */}
         <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50/70 space-y-3 flex-shrink-0">
-          <div className="flex flex-col md:flex-row gap-3 items-center justify-between">
-            {/* SKU Input & Scan */}
-            <div className="flex items-center gap-2 w-full md:w-auto flex-1 max-w-lg">
-              <div className="relative flex-1">
+          <div className="flex flex-col md:flex-row gap-3 items-start justify-between">
+            {/* Multi-SKU Input & Scan */}
+            <div className="w-full md:w-auto flex-1 max-w-xl space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-slate-500">
+                <div className="flex items-center gap-1.5 font-medium">
+                  <Package className="h-3.5 w-3.5 text-rose-600" />
+                  <span>Cari SKU (Bisa Banyak SKU sekaligus)</span>
+                  {detectedSkus.length > 1 && (
+                    <span className="px-2 py-0.5 bg-rose-100 text-rose-700 font-bold rounded-full text-[10px] border border-rose-200">
+                      {detectedSkus.length} SKU Terdeteksi
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsMultiLineInput(!isMultiLineInput)}
+                    className="text-rose-600 hover:text-rose-800 font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <ListPlus className="w-3 h-3" />
+                    {isMultiLineInput ? 'Mode Baris Tunggal' : 'Mode Paste Banyak Baris'}
+                  </button>
+                  {skuInput && (
+                    <button
+                      type="button"
+                      onClick={() => setSkuInput('')}
+                      className="text-slate-400 hover:text-rose-600 cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2">
+                <div className="relative flex-1">
+                  {isMultiLineInput ? (
+                    <textarea
+                      rows={3}
+                      placeholder="Paste banyak SKU di sini (pisahkan dengan baris baru, koma, atau titik koma)...&#10;Contoh:&#10;PAINT-OP-12S&#10;PAINT-OP-24S&#10;LAMINATING-LM-01"
+                      value={skuInput}
+                      onChange={(e) => setSkuInput(e.target.value)}
+                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none bg-white font-mono shadow-inner resize-y"
+                    />
+                  ) : (
+                    <div className="relative">
+                      <input
+                        type="text"
+                        list="sku-options-purge"
+                        placeholder="Ketik SKU atau paste beberapa SKU (pisahkan koma)..."
+                        value={skuInput}
+                        onChange={(e) => setSkuInput(e.target.value)}
+                        className="w-full pl-9 pr-4 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none bg-white font-mono shadow-sm"
+                      />
+                      <Package className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
+                      <datalist id="sku-options-purge">
+                        {skuOptions.slice(0, 100).map(s => (
+                          <option key={s} value={s} />
+                        ))}
+                      </datalist>
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={() => onRescan(skuInput)}
+                  disabled={isScanning || isDeleting}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-black shadow-md transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer whitespace-nowrap h-9 self-start"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isScanning ? 'animate-spin' : ''}`} />
+                  <span>
+                    {isScanning 
+                      ? 'Memindai...' 
+                      : detectedSkus.length > 1 
+                        ? `Pindai (${detectedSkus.length} SKU)` 
+                        : 'Pindai TRANSFER'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Search in List & Batch Actions */}
+            <div className="flex flex-col sm:flex-row items-center gap-2 w-full md:w-auto">
+              <div className="relative w-full sm:w-56">
                 <input
                   type="text"
-                  list="sku-options-purge"
-                  placeholder="Ketik SKU spesifik (atau kosongkan untuk semua)..."
-                  value={skuInput}
-                  onChange={(e) => setSkuInput(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none bg-white font-mono"
+                  placeholder="Filter tabel hasil..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 outline-none bg-white shadow-sm"
                 />
-                <Package className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
-                <datalist id="sku-options-purge">
-                  {skuOptions.slice(0, 100).map(s => (
-                    <option key={s} value={s} />
-                  ))}
-                </datalist>
+                <Search className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
               </div>
 
               <button
-                onClick={() => onRescan(skuInput)}
-                disabled={isScanning || isDeleting}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-black shadow-md transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${isScanning ? 'animate-spin' : ''}`} />
-                <span>{isScanning ? 'Memindai...' : 'Pindai TRANSFER'}</span>
-              </button>
-            </div>
-
-            {/* Quick Search in List */}
-            <div className="relative w-full md:w-64">
-              <input
-                type="text"
-                placeholder="Cari di hasil (SKU, rak, tgl)..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 outline-none bg-white"
-              />
-              <Search className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
-            </div>
-
-            {/* Batch Action Buttons */}
-            <div className="flex items-center gap-2 w-full md:w-auto justify-end">
-              <button
                 onClick={() => setConfirmModalBulk('SELECTED')}
                 disabled={selectedIds.size === 0 || isDeleting}
-                className="px-4 py-2 bg-rose-500 hover:bg-rose-600 disabled:opacity-40 text-white rounded-xl text-xs font-black shadow-md transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="w-full sm:w-auto px-3.5 py-2 bg-rose-500 hover:bg-rose-600 disabled:opacity-40 text-white rounded-xl text-xs font-black shadow-md transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 <span>Hapus Terpilih ({selectedIds.size})</span>
@@ -201,10 +260,14 @@ export const TransferPurgeModal: React.FC<TransferPurgeModalProps> = ({
               <button
                 onClick={() => setConfirmModalBulk('ALL')}
                 disabled={totalDeletable === 0 || isDeleting}
-                className="px-4 py-2 bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-700 hover:to-rose-800 disabled:opacity-40 text-white rounded-xl text-xs font-black shadow-md transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer whitespace-nowrap border border-red-400/30"
+                className="w-full sm:w-auto px-3.5 py-2 bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-700 hover:to-rose-800 disabled:opacity-40 text-white rounded-xl text-xs font-black shadow-md transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap border border-red-400/30"
               >
                 <AlertTriangle className="h-3.5 w-3.5" />
-                <span>Hapus SEMUA ({totalDeletable})</span>
+                <span>
+                  {detectedSkus.length > 0
+                    ? `Hapus Hasil Pencarian (${totalDeletable})`
+                    : `Hapus SEMUA (${totalDeletable})`}
+                </span>
               </button>
             </div>
           </div>
@@ -240,201 +303,217 @@ export const TransferPurgeModal: React.FC<TransferPurgeModalProps> = ({
             </div>
           </div>
 
-          {/* Filter Tabs */}
-          <div className="flex gap-2 border-b border-slate-200 pb-1">
-            <button
-              onClick={() => setFilterTab('DELETABLE')}
-              className={`px-3 py-1.5 text-xs font-extrabold rounded-lg transition-all cursor-pointer ${
-                filterTab === 'DELETABLE'
-                  ? 'bg-rose-600 text-white shadow-sm'
-                  : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-              }`}
-            >
-              Siap Dihapus ({totalDeletable})
-            </button>
-            <button
-              onClick={() => setFilterTab('PROTECTED')}
-              className={`px-3 py-1.5 text-xs font-extrabold rounded-lg transition-all cursor-pointer ${
-                filterTab === 'PROTECTED'
-                  ? 'bg-emerald-600 text-white shadow-sm'
-                  : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-              }`}
-            >
-              Diproteksi / Aman ({totalProtected})
-            </button>
+          {/* Tab Filter Switcher */}
+          <div className="flex items-center justify-between pt-1 border-t border-slate-200/80">
+            <div className="flex space-x-1.5">
+              <button
+                onClick={() => setFilterTab('DELETABLE')}
+                className={`px-4 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer ${
+                  filterTab === 'DELETABLE'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'bg-slate-200/80 text-slate-700 hover:bg-slate-300'
+                }`}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Siap Dihapus ({totalDeletable})</span>
+              </button>
+
+              <button
+                onClick={() => setFilterTab('PROTECTED')}
+                className={`px-4 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer ${
+                  filterTab === 'PROTECTED'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'bg-slate-200/80 text-slate-700 hover:bg-slate-300'
+                }`}
+              >
+                <ShieldCheck className="h-3.5 w-3.5" />
+                <span>Diproteksi / Aman ({totalProtected})</span>
+              </button>
+            </div>
+
+            {/* Pagination Controls in Header */}
+            {totalPages > 1 && (
+              <div className="flex items-center space-x-1.5 text-xs text-slate-500 font-medium">
+                <span>Hal. {currentPage}/{totalPages} ({filteredList.length} data)</span>
+                <button
+                  onClick={() => setCurrentPage(1)}
+                  disabled={currentPage === 1}
+                  className="p-1 rounded-lg hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                  title="Halaman Pertama"
+                >
+                  <ChevronsLeft className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="p-1 rounded-lg hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                  title="Halaman Sebelumnya"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="p-1 rounded-lg hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                  title="Halaman Selanjutnya"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={currentPage === totalPages}
+                  className="p-1 rounded-lg hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                  title="Halaman Terakhir"
+                >
+                  <ChevronsRight className="h-4 w-4" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Selection Shortcuts Bar */}
-        {filterTab === 'DELETABLE' && (
-          <div className="px-5 py-2 bg-slate-100/70 border-b border-slate-200 flex flex-wrap items-center justify-between text-xs text-slate-600 flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => onSelectAllVisible(currentPageDeletableIds)}
-                className="px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg text-[11px] font-bold text-slate-700 cursor-pointer shadow-2xs"
-              >
-                {isPageAllSelected ? 'Batal Pilih Halaman Ini' : 'Pilih Semua di Halaman Ini'}
-              </button>
-              <button
-                onClick={() => onSelectAllVisible(allFilteredDeletableIds)}
-                className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-lg text-[11px] font-bold text-rose-800 cursor-pointer shadow-2xs"
-              >
-                Pilih SEMUA Hasil Filter ({filteredList.length})
-              </button>
-              {selectedIds.size > 0 && (
-                <button
-                  onClick={onClearSelection}
-                  className="px-2.5 py-1 text-slate-600 hover:text-slate-800 font-bold text-[11px] cursor-pointer"
-                >
-                  Kosongkan Pilihan
-                </button>
-              )}
+        {/* Content Table Area */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5 relative bg-slate-50/40">
+          {isScanning ? (
+            <div className="h-64 flex flex-col items-center justify-center space-y-3">
+              <RefreshCw className="h-8 w-8 text-rose-600 animate-spin" />
+              <p className="text-sm font-bold text-slate-600">Memindai data log TRANSFER di database...</p>
             </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] text-slate-500">Tampilkan per halaman:</span>
-              <select
-                value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value));
-                  setCurrentPage(1);
-                }}
-                className="px-2 py-0.5 border border-slate-300 rounded-md text-[11px] bg-white font-bold text-slate-700"
-              >
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-                <option value={200}>200</option>
-              </select>
-            </div>
-          </div>
-        )}
-
-        {/* Table Content (with optimized pagination) */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-5">
-          {filteredList.length === 0 ? (
-            <div className="h-64 flex flex-col items-center justify-center text-center">
-              <div className="p-4 bg-slate-100 rounded-full border border-slate-200 mb-3">
-                <CheckCircle2 className="h-10 w-10 text-slate-400" />
-              </div>
-              <h3 className="text-sm font-black text-slate-700">
-                {isScanning ? 'Sedang memindai data TRANSFER...' : 'Tidak ada data TRANSFER yang ditemukan'}
-              </h3>
-              <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                {isScanning
-                  ? 'Mengambil dan menganalisis log transaksi TRANSFER...'
-                  : 'Tidak ditemukan baris transaksi TRANSFER yang sesuai dengan kriteria filter.'}
+          ) : paginatedList.length === 0 ? (
+            <div className="h-64 flex flex-col items-center justify-center space-y-2 text-center">
+              <CheckCircle2 className="h-10 w-10 text-emerald-500" />
+              <p className="text-sm font-black text-slate-700">
+                {filterTab === 'DELETABLE'
+                  ? 'Tidak ada data log TRANSFER siap hapus.'
+                  : 'Tidak ada data TRANSFER yang termasuk daftar rak diproteksi.'}
               </p>
+              {searchTerm && <p className="text-xs text-slate-400">Coba ubah kata kunci pencarian Anda.</p>}
             </div>
           ) : (
-            <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-sm bg-white">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <table className="w-full text-left text-xs border-collapse">
-                <thead className="bg-slate-100 border-b border-slate-200 text-slate-700 sticky top-0 z-10 font-bold">
+                <thead className="bg-slate-100/90 text-slate-600 font-black border-b border-slate-200 sticky top-0 z-10 backdrop-blur-sm">
                   <tr>
                     {filterTab === 'DELETABLE' && (
                       <th className="p-3 w-10 text-center">
-                        <input
-                          type="checkbox"
-                          checked={isPageAllSelected}
-                          onChange={() => onSelectAllVisible(currentPageDeletableIds)}
-                          className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 h-4 w-4 cursor-pointer"
-                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isPageAllSelected) {
+                              onSelectAllVisible(
+                                Array.from(selectedIds).filter(id => !currentPageDeletableIds.includes(id))
+                              );
+                            } else {
+                              onSelectAllVisible(
+                                Array.from(new Set([...Array.from(selectedIds), ...currentPageDeletableIds]))
+                              );
+                            }
+                          }}
+                          className="text-slate-500 hover:text-slate-800 cursor-pointer"
+                          title={isPageAllSelected ? 'Batal Pilih Halaman Ini' : 'Pilih Semua Halaman Ini'}
+                        >
+                          {isPageAllSelected ? (
+                            <CheckSquare className="h-4 w-4 text-rose-600" />
+                          ) : (
+                            <Square className="h-4 w-4" />
+                          )}
+                        </button>
                       </th>
                     )}
-                    <th className="p-3">SKU Produk</th>
-                    <th className="p-3 text-center">Tipe</th>
-                    <th className="p-3 text-right">Qty</th>
-                    <th className="p-3">Rak</th>
-                    <th className="p-3">Sub Rak</th>
-                    <th className="p-3">Tgl Scan & Tanggal</th>
-                    <th className="p-3">User</th>
-                    <th className="p-3 text-center">Aksi / Status</th>
+                    <th className="p-3">SKU & JML</th>
+                    <th className="p-3">TIPE & GUDANG</th>
+                    <th className="p-3">RAK & SUB RAK</th>
+                    <th className="p-3">TGL / TGL SCAN</th>
+                    <th className="p-3">WAKTU & USER</th>
+                    <th className="p-3">STATUS</th>
+                    {filterTab === 'DELETABLE' && <th className="p-3 text-right">AKSI</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {paginatedList.map((item) => {
+                  {paginatedList.map(item => {
                     const isSelected = selectedIds.has(item.id);
                     return (
                       <tr
                         key={item.id}
                         className={`hover:bg-slate-50/80 transition-colors ${
-                          isSelected ? 'bg-rose-50/50' : ''
+                          isSelected ? 'bg-rose-50/60' : ''
                         }`}
                       >
                         {filterTab === 'DELETABLE' && (
                           <td className="p-3 text-center">
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={() => onToggleSelect(item.id)}
-                              className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 h-4 w-4 cursor-pointer"
-                            />
+                            <button
+                              type="button"
+                              onClick={() => onToggleSelect(item.id)}
+                              className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                            >
+                              {isSelected ? (
+                                <CheckSquare className="h-4 w-4 text-rose-600" />
+                              ) : (
+                                <Square className="h-4 w-4" />
+                              )}
+                            </button>
                           </td>
                         )}
-                        <td className="p-3 font-mono font-bold text-slate-900">
-                          {item.sku}
-                        </td>
-                        <td className="p-3 text-center">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
-                              item.type === 'IN'
-                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                : 'bg-amber-100 text-amber-800 border border-amber-300'
-                            }`}
-                          >
-                            {item.type}
-                          </span>
-                        </td>
-                        <td className="p-3 text-right font-mono font-black text-slate-800">
-                          {item.jumlah}
+                        <td className="p-3">
+                          <div className="font-mono font-bold text-slate-800">{item.sku}</div>
+                          <div className="text-[11px] text-slate-500">
+                            Jumlah: <span className="font-bold text-slate-700">{item.jumlah} pcs</span>
+                          </div>
                         </td>
                         <td className="p-3">
-                          <span
-                            className={`px-2 py-0.5 rounded-lg font-mono font-bold text-xs inline-block ${
-                              item.isProtected
-                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                : 'bg-slate-100 text-slate-800 border border-slate-200'
-                            }`}
-                          >
-                            {item.rak}
-                          </span>
-                        </td>
-                        <td className="p-3 font-mono text-slate-600">
-                          {item.sub_rak || '-'}
-                        </td>
-                        <td className="p-3 text-[11px] text-slate-600 whitespace-nowrap">
-                          <div className="flex items-center gap-1 font-semibold text-slate-700">
-                            <Calendar className="h-3 w-3 text-slate-400" />
-                            <span>{item.tgl_scan || item.tgl}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                item.type === 'OUT'
+                                  ? 'bg-rose-100 text-rose-700 border border-rose-200'
+                                  : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                              }`}
+                            >
+                              {item.type}
+                            </span>
+                            <span className="font-bold text-slate-700">{item.gudang}</span>
                           </div>
-                          {item.waktu && (
-                            <div className="flex items-center gap-1 text-[10px] text-slate-400 mt-0.5">
-                              <Clock className="h-3 w-3 text-slate-300" />
-                              <span>{item.waktu}</span>
-                            </div>
+                        </td>
+                        <td className="p-3">
+                          <div className="font-bold text-slate-800">{item.rak || '-'}</div>
+                          {item.sub_rak && item.sub_rak !== item.rak && (
+                            <div className="text-[10px] text-slate-400 font-mono">Sub: {item.sub_rak}</div>
                           )}
                         </td>
-                        <td className="p-3 text-[11px] text-slate-500 max-w-[120px] truncate">
-                          {item.user || '-'}
+                        <td className="p-3 font-mono text-[11px]">
+                          <div>Tgl: {item.tgl || '-'}</div>
+                          <div className="text-slate-400">Scan: {item.tgl_scan || '-'}</div>
                         </td>
-                        <td className="p-3 text-center whitespace-nowrap">
+                        <td className="p-3 text-[11px] text-slate-500">
+                          <div>{item.waktu || '-'}</div>
+                          <div className="truncate max-w-[140px] text-[10px] text-slate-400">{item.user || '-'}</div>
+                        </td>
+                        <td className="p-3">
                           {item.isProtected ? (
-                            <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg font-bold text-[10px] inline-flex items-center gap-1">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                               <ShieldCheck className="h-3 w-3 text-emerald-600" />
                               Aman (Diproteksi)
                             </span>
                           ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                              <AlertTriangle className="h-3 w-3 text-rose-600" />
+                              Siap Dihapus
+                            </span>
+                          )}
+                        </td>
+                        {filterTab === 'DELETABLE' && (
+                          <td className="p-3 text-right">
                             <button
                               onClick={() => setConfirmModalItem(item)}
                               disabled={isDeleting}
-                              className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg font-bold text-[11px] transition-all cursor-pointer inline-flex items-center gap-1 shadow-2xs"
+                              className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-[11px] font-bold transition-all active:scale-95 cursor-pointer inline-flex items-center gap-1"
                               title="Hapus baris ini saja untuk uji coba"
                             >
                               <Trash2 className="h-3 w-3" />
                               <span>Hapus 1 Baris</span>
                             </button>
-                          )}
-                        </td>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -444,181 +523,151 @@ export const TransferPurgeModal: React.FC<TransferPurgeModalProps> = ({
           )}
         </div>
 
-        {/* Bottom Footer with Pagination & Actions */}
-        <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
-          {/* Pagination Controls */}
-          <div className="flex items-center gap-1.5 text-xs text-slate-600">
-            <button
-              onClick={() => setCurrentPage(1)}
-              disabled={currentPage === 1}
-              className="p-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
-              title="Halaman Pertama"
-            >
-              <ChevronsLeft className="h-3.5 w-3.5" />
-            </button>
-            <button
-              onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-              disabled={currentPage === 1}
-              className="p-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
-              title="Halaman Sebelumnya"
-            >
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </button>
-
-            <span className="px-2 text-xs font-semibold text-slate-700">
-              Hal <strong className="text-slate-900">{currentPage}</strong> dari <strong>{totalPages}</strong> ({filteredList.length} baris)
+        {/* Footer / Pagination Bar */}
+        <div className="p-4 bg-white border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 flex-shrink-0 text-xs">
+          <div className="flex items-center gap-3 text-slate-500">
+            <span>
+              Menampilkan {paginatedList.length} dari {filteredList.length} baris
             </span>
-
-            <button
-              onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-              disabled={currentPage === totalPages}
-              className="p-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
-              title="Halaman Selanjutnya"
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold outline-none cursor-pointer"
             >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
-            <button
-              onClick={() => setCurrentPage(totalPages)}
-              disabled={currentPage === totalPages}
-              className="p-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
-              title="Halaman Terakhir"
-            >
-              <ChevronsRight className="h-3.5 w-3.5" />
-            </button>
+              <option value={25}>25 per halaman</option>
+              <option value={50}>50 per halaman</option>
+              <option value={100}>100 per halaman</option>
+            </select>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               onClick={onClose}
-              className="px-4 py-2 border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition-all cursor-pointer"
             >
               Tutup
-            </button>
-            <button
-              onClick={() => setConfirmModalBulk('SELECTED')}
-              disabled={selectedIds.size === 0 || isDeleting}
-              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-40 text-white text-xs font-black rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              <span>Hapus Terpilih ({selectedIds.size})</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Confirmation Modal - Single Item */}
+      {/* CONFIRMATION MODAL - SINGLE ITEM (z-[120]) */}
       {confirmModalItem && (
-        <div
-          className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setConfirmModalItem(null);
-          }}
-        >
-          <div className="relative z-[130] bg-white border border-rose-300 w-full max-w-md rounded-2xl shadow-2xl p-6 space-y-4 pointer-events-auto">
-            <div className="flex items-start space-x-3">
-              <div className="p-3 bg-rose-100 text-rose-700 rounded-2xl flex-shrink-0">
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center space-x-3 text-rose-600">
+              <div className="p-3 bg-rose-100 rounded-2xl">
                 <Trash2 className="h-6 w-6" />
               </div>
               <div>
-                <h3 className="text-base font-black text-slate-800">Konfirmasi Hapus 1 Baris</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Anda akan menghapus log TRANSFER berikut dari database_log:
-                </p>
+                <h3 className="text-base font-black text-slate-900">Konfirmasi Hapus 1 Baris</h3>
+                <p className="text-xs text-slate-500">Uji coba hapus satu baris transaksi TRANSFER</p>
               </div>
             </div>
 
-            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1.5 font-mono">
-              <div><strong>SKU:</strong> {confirmModalItem.sku}</div>
-              <div><strong>Tipe:</strong> {confirmModalItem.type} | <strong>Qty:</strong> {confirmModalItem.jumlah}</div>
-              <div><strong>Rak:</strong> {confirmModalItem.rak} (Sub: {confirmModalItem.sub_rak || '-'})</div>
-              <div><strong>Tgl Scan:</strong> {confirmModalItem.tgl_scan || confirmModalItem.tgl}</div>
+            <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 space-y-1 text-xs">
+              <div>
+                <span className="text-slate-400">SKU:</span>{' '}
+                <strong className="font-mono text-slate-800">{confirmModalItem.sku}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400">Tipe / Gudang:</span>{' '}
+                <strong className="text-slate-800">{confirmModalItem.type} / {confirmModalItem.gudang}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400">Rak / Qty:</span>{' '}
+                <strong className="text-slate-800">{confirmModalItem.rak} ({confirmModalItem.jumlah} pcs)</strong>
+              </div>
+              <div>
+                <span className="text-slate-400">Tgl Scan:</span>{' '}
+                <strong className="font-mono text-slate-800">{confirmModalItem.tgl_scan || confirmModalItem.tgl}</strong>
+              </div>
             </div>
 
-            <p className="text-[11px] text-rose-700 font-semibold">
-              ⚠️ Data yang dihapus tidak dapat dikembalikan. Lanjutkan penghapusan 1 baris ini?
-            </p>
-
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex items-center justify-end space-x-2 pt-2">
               <button
                 type="button"
                 onClick={() => setConfirmModalItem(null)}
                 disabled={isDeleting}
-                className="px-4 py-2 border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-xl cursor-pointer"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
               >
                 Batal
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  const item = confirmModalItem;
+                onClick={async () => {
+                  const target = confirmModalItem;
                   setConfirmModalItem(null);
-                  onDeleteSelected([item]);
+                  await onDeleteSelected([target]);
                 }}
                 disabled={isDeleting}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-black rounded-xl shadow-md cursor-pointer flex items-center gap-1.5 active:scale-95 transition-all"
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-md transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                <span>Ya, Hapus Baris Ini</span>
+                <span>Ya, Hapus 1 Baris Ini</span>
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Confirmation Modal - Bulk */}
+      {/* CONFIRMATION MODAL - BULK (z-[120]) */}
       {confirmModalBulk && (
-        <div
-          className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setConfirmModalBulk(null);
-          }}
-        >
-          <div className="relative z-[130] bg-white border border-rose-300 w-full max-w-md rounded-2xl shadow-2xl p-6 space-y-4 pointer-events-auto">
-            <div className="flex items-start space-x-3">
-              <div className="p-3 bg-rose-100 text-rose-700 rounded-2xl flex-shrink-0">
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center space-x-3 text-red-600">
+              <div className="p-3 bg-red-100 rounded-2xl">
                 <AlertTriangle className="h-6 w-6" />
               </div>
               <div>
-                <h3 className="text-base font-black text-slate-800">
-                  {confirmModalBulk === 'SELECTED' ? 'Konfirmasi Hapus Data Terpilih' : 'Konfirmasi Hapus SEMUA Data'}
+                <h3 className="text-base font-black text-slate-900">
+                  {confirmModalBulk === 'SELECTED' ? 'Hapus Transaksi Terpilih' : 'Hapus SEMUA Transaksi TRANSFER'}
                 </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {confirmModalBulk === 'SELECTED'
-                    ? `Menghapus ${selectedIds.size} baris log TRANSFER yang dipilih.`
-                    : `Menghapus SEMUA (${totalDeletable}) baris log TRANSFER yang terdeteksi (rak diproteksi tetap aman).`}
-                </p>
+                <p className="text-xs text-slate-500">Tindakan ini permanen dan tidak dapat dibatalkan</p>
               </div>
             </div>
 
-            <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-800 space-y-1">
-              <p className="font-bold">Perhatian Penting:</p>
-              <p className="text-[11px]">
-                Operasi ini akan menghapus log TRANSFER permanen dari tabel database_log. Rak yang diproteksi ({PROTECTED_TRANSFER_RAKS.join(', ')}) tidak akan terhapus.
-              </p>
-            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {confirmModalBulk === 'SELECTED' ? (
+                <>
+                  Anda akan menghapus{' '}
+                  <strong className="text-red-600 font-bold">{selectedIds.size} baris</strong> log TRANSFER yang
+                  dipilih. Rak diproteksi (<strong className="font-mono">{PROTECTED_TRANSFER_RAKS.join(', ')}</strong>)
+                  tetap aman dan tidak akan terhapus.
+                </>
+              ) : (
+                <>
+                  Anda akan menghapus SEMUA{' '}
+                  <strong className="text-red-600 font-bold">{totalDeletable} baris</strong> log TRANSFER
+                  {detectedSkus.length > 0 ? ` untuk ${detectedSkus.length} SKU yang dicari` : ''}. Rak diproteksi (
+                  <strong className="font-mono">{PROTECTED_TRANSFER_RAKS.join(', ')}</strong>) tetap aman dan tidak
+                  akan terhapus.
+                </>
+              )}
+            </p>
 
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex items-center justify-end space-x-2 pt-2">
               <button
                 type="button"
                 onClick={() => setConfirmModalBulk(null)}
                 disabled={isDeleting}
-                className="px-4 py-2 border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-xl cursor-pointer"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
               >
                 Batal
               </button>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   const mode = confirmModalBulk;
                   setConfirmModalBulk(null);
                   if (mode === 'SELECTED') {
-                    onDeleteSelected();
+                    await onDeleteSelected();
                   } else {
-                    onDeleteAll();
+                    await onDeleteAll();
                   }
                 }}
                 disabled={isDeleting}
-                className="px-4 py-2 bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-700 hover:to-rose-800 text-white text-xs font-black rounded-xl shadow-md cursor-pointer flex items-center gap-1.5 active:scale-95 transition-all"
+                className="px-4 py-2 bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-700 hover:to-rose-800 text-white rounded-xl text-xs font-black shadow-md transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 <span>

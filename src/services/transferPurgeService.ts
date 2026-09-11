@@ -39,35 +39,81 @@ export const isProtectedTransferRak = (rak: string | null | undefined): boolean 
   return PROTECTED_TRANSFER_RAKS.some(p => clean === p);
 };
 
-export async function scanTransferLogs(skuFilter?: string): Promise<TransferPurgeScanResult> {
+/**
+ * Parses user input that may contain multiple SKUs separated by commas, newlines, tabs, or semicolons
+ */
+export function parseMultipleSkus(input?: string | string[]): string[] {
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    return Array.from(new Set(input.map(s => s.trim().toUpperCase()).filter(Boolean)));
+  }
+  return Array.from(new Set(
+    input
+      .split(/[\r\n,;\t]+/)
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean)
+  ));
+}
+
+export async function scanTransferLogs(skuFilter?: string | string[]): Promise<TransferPurgeScanResult> {
+  const parsedSkus = parseMultipleSkus(skuFilter);
   const pageSize = 1000;
   let allLogs: any[] = [];
-  let page = 0;
 
-  while (true) {
-    let query = supabase
-      .from('database_log')
-      .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
-      .eq('gudang', 'TRANSFER');
+  if (parsedSkus.length > 0) {
+    const chunkSize = 50;
+    for (let i = 0; i < parsedSkus.length; i += chunkSize) {
+      const chunk = parsedSkus.slice(i, i + chunkSize);
+      let page = 0;
+      while (true) {
+        let query = supabase
+          .from('database_log')
+          .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
+          .eq('gudang', 'TRANSFER');
 
-    if (skuFilter && skuFilter.trim()) {
-      query = query.eq('sku', skuFilter.trim());
+        if (chunk.length === 1) {
+          query = query.eq('sku', chunk[0]);
+        } else {
+          query = query.in('sku', chunk);
+        }
+
+        const { data, error } = await query
+          .order('created_at', { ascending: false })
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) {
+          console.error('Error fetching TRANSFER logs:', error);
+          throw error;
+        }
+
+        if (!data || data.length === 0) break;
+        allLogs.push(...data);
+        if (data.length < pageSize) break;
+        page++;
+        if (page > 30) break;
+      }
     }
+  } else {
+    let page = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from('database_log')
+        .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
+        .eq('gudang', 'TRANSFER')
+        .order('created_at', { ascending: false })
+        .range(page * pageSize, (page + 1) * pageSize - 1);
 
-    const { data, error } = await query
-      .order('created_at', { ascending: false })
-      .range(page * pageSize, (page + 1) * pageSize - 1);
+      if (error) {
+        console.error('Error fetching TRANSFER logs:', error);
+        throw error;
+      }
 
-    if (error) {
-      console.error('Error fetching TRANSFER logs:', error);
-      throw error;
+      if (!data || data.length === 0) break;
+      allLogs.push(...data);
+      if (data.length < pageSize) break;
+      page++;
+      if (page > 30) break; // safety guard up to 30k rows
     }
-
-    if (!data || data.length === 0) break;
-    allLogs.push(...data);
-    if (data.length < pageSize) break;
-    page++;
-    if (page > 30) break; // safety guard up to 30k rows
   }
 
   const deletableLogs: TransferPurgeItem[] = [];
