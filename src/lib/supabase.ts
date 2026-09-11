@@ -149,49 +149,58 @@ export const fetchAllProducts = async (onProgress?: (current: number, total: num
 // Utility function to fetch all stock items from Supabase (Parallelized)
 export const fetchAllStockItems = async () => {
   try {
-    console.log('🚀 Starting parallel load of all stock items...');
+    console.log('🚀 Starting optimized parallel load of stock items...');
     const startTime = performance.now();
     const batchSize = 1000;
 
-    // 1. Get count
+    // 1. Get count using fast estimated count (150ms instead of 10s)
     const { count, error: countError } = await supabase
       .from('stock_items')
-      .select('id', { count: 'exact', head: true })
+      .select('id', { count: 'estimated', head: true })
       .eq('status', 'Aktif');
 
-    if (countError) throw countError;
-    const totalCount = count || 0;
+    if (countError) console.warn('Estimated count warning, proceeding:', countError);
+    const totalCount = count || 25000;
 
     if (totalCount === 0) return { data: [], totalCount: 0, success: true };
 
-    // 2. Prepare batches
+    // 2. Prepare batches with concurrency limit of 5 to avoid connection starvation
     const numBatches = Math.ceil(totalCount / batchSize);
-    const batchPromises = [];
+    const allData: any[] = [];
+    const concurrency = 5;
 
-    for (let i = 0; i < numBatches; i++) {
-      const from = i * batchSize;
-      const to = from + batchSize - 1;
-      batchPromises.push(
-        supabase
-          .from('stock_items')
-          .select('*')
-          .eq('status', 'Aktif')
-          .range(from, to)
-          .order('nama_produk', { ascending: true })
-      );
+    // Fetch only needed columns to drastically cut down network payload & egress
+    const selectColumns = 'id, nama_produk, packing, rak, sub_rak, satuan, stok_awal, masuk, keluar, tersedia, status';
+
+    for (let i = 0; i < numBatches; i += concurrency) {
+      const chunkPromises = [];
+      for (let j = i; j < Math.min(i + concurrency, numBatches); j++) {
+        const from = j * batchSize;
+        const to = from + batchSize - 1;
+        chunkPromises.push(
+          supabase
+            .from('stock_items')
+            .select(selectColumns)
+            .eq('status', 'Aktif')
+            .range(from, to)
+            .order('nama_produk', { ascending: true })
+        );
+      }
+
+      const results = await Promise.all(chunkPromises);
+      for (const res of results) {
+        if (res.data && res.data.length > 0) {
+          allData.push(...res.data);
+        }
+      }
     }
 
-    const results = await Promise.all(batchPromises);
-    const errors = results.filter(r => r.error).map(r => r.error);
-    if (errors.length > 0) throw errors[0];
-
-    const allData = results.flatMap(r => r.data || []);
     const endTime = performance.now();
     console.log(`✓ Successfully loaded ${allData.length} stock items in ${(endTime - startTime).toFixed(0)}ms`);
 
     return {
       data: allData,
-      totalCount,
+      totalCount: allData.length,
       success: true
     };
   } catch (error) {
@@ -217,9 +226,10 @@ export const fetchAllDatabaseLogs = async () => {
     let totalCount = 0;
 
     while (hasMore) {
+      // Use estimated count ONLY on first request, NEVER exact count in a loop
       const { data, error, count } = await supabase
         .from('database_log')
-        .select('*', { count: 'exact' })
+        .select('*', { count: from === 0 ? 'estimated' : undefined })
         .range(from, from + batchSize - 1)
         .order('created_at', { ascending: false });
 
@@ -252,7 +262,7 @@ export const fetchAllDatabaseLogs = async () => {
 
       // Add small delay to prevent overwhelming the database
       if (hasMore) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
     }
 

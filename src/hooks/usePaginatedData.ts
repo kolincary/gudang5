@@ -45,9 +45,10 @@ export function usePaginatedData<T>(
         const from = (page - 1) * options.pageSize;
         const to = from + options.pageSize - 1;
 
+        const hasFilters = options.filters && Object.values(options.filters).some(v => v !== null && v !== undefined && v !== '');
         let query = supabase
           .from(options.table)
-          .select('*', { count: 'exact' })
+          .select('*', { count: hasFilters ? 'exact' : 'estimated' })
           .range(from, to);
 
         if (options.orderBy) {

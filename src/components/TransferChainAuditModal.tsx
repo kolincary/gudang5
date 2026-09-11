@@ -61,8 +61,6 @@ export const TransferChainAuditModal: React.FC<TransferChainAuditModalProps> = (
   searchTerm,
   setSearchTerm
 }) => {
-  if (!isOpen) return null;
-
   const allBroken = useMemo(() => {
     if (!summary) return [];
     return [...summary.brokenTransfers, ...summary.brokenNonTransferOuts];
@@ -92,6 +90,8 @@ export const TransferChainAuditModal: React.FC<TransferChainAuditModalProps> = (
   const totalTransfers = summary?.brokenTransfers.length || 0;
   const totalOuts = summary?.brokenNonTransferOuts.length || 0;
   const totalBroken = allBroken.length;
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">

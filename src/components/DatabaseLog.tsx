@@ -11,6 +11,10 @@ import { ExportHistoryModal } from './ExportHistoryModal';
 import { skuConversionService } from '../services/skuConversionService';
 import { TransferChainAuditModal } from './TransferChainAuditModal';
 import { auditTransferChains, fixTransferChainLinks, ChainAuditSummary, BrokenChainLink } from '../services/transferChainService';
+import { TransferPurgeModal } from './TransferPurgeModal';
+import { TransferPurgeItem, TransferPurgeScanResult, scanTransferLogs, deleteTransferLogs } from '../services/transferPurgeService';
+import { SyncOutRakModal } from './SyncOutRakModal';
+import { MismatchedOutRakItem, SyncOutRakScanResult, scanMismatchedOutLogs, restoreOutRakLogs } from '../services/syncOutRakService';
 
 export interface DatabaseLogEntry {
   id: string;
@@ -455,6 +459,22 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const [selectedChainLinkIds, setSelectedChainLinkIds] = useState<Set<string>>(new Set());
   const [chainFilterTab, setChainFilterTab] = useState<'ALL' | 'TRANSFERS' | 'NON_TRANSFER_OUTS'>('ALL');
   const [chainSearchTerm, setChainSearchTerm] = useState('');
+
+  // --- TRANSFER PURGE (HAPUS LOG TRANSFER DENGAN PROTEKSI) STATE ---
+  const [isTransferPurgeModalOpen, setIsTransferPurgeModalOpen] = useState(false);
+  const [purgeSkuInput, setPurgeSkuInput] = useState('');
+  const [purgeScanResult, setPurgeScanResult] = useState<TransferPurgeScanResult | null>(null);
+  const [isScanningPurge, setIsScanningPurge] = useState(false);
+  const [isDeletingPurge, setIsDeletingPurge] = useState(false);
+  const [selectedPurgeIds, setSelectedPurgeIds] = useState<Set<string>>(new Set());
+
+  // --- SINKRON RAK OUT NOTA MASUK (J & H) STATE ---
+  const [isSyncOutRakModalOpen, setIsSyncOutRakModalOpen] = useState(false);
+  const [syncOutSkuInput, setSyncOutSkuInput] = useState('');
+  const [syncOutScanResult, setSyncOutScanResult] = useState<SyncOutRakScanResult | null>(null);
+  const [isScanningSyncOut, setIsScanningSyncOut] = useState(false);
+  const [isFixingSyncOut, setIsFixingSyncOut] = useState(false);
+  const [selectedSyncOutIds, setSelectedSyncOutIds] = useState<Set<string>>(new Set());
 
   const handleAnalyzeStockBalance = async (skuToAnalyze: string) => {
     if (!skuToAnalyze) {
@@ -1689,6 +1709,179 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     await handleFixSelectedChainLinks(allBroken);
   };
 
+  // --- TRANSFER PURGE HANDLERS ---
+  const handleScanTransferPurge = async (skuToScan?: string) => {
+    try {
+      setIsScanningPurge(true);
+      setSelectedPurgeIds(new Set());
+      const target = (skuToScan !== undefined ? skuToScan : purgeSkuInput).trim();
+      const result = await scanTransferLogs(target || undefined);
+      setPurgeScanResult(result);
+      if (result.deletableLogs.length > 0) {
+        showToast(`Ditemukan ${result.deletableLogs.length} baris log TRANSFER siap hapus (${result.protectedLogs.length} diproteksi).`, 'info');
+      } else if (result.protectedLogs.length > 0) {
+        showToast(`Semua ${result.protectedLogs.length} log TRANSFER diproteksi aman (tidak boleh dihapus).`, 'info');
+      } else {
+        showToast('Tidak ada data TRANSFER yang ditemukan.', 'success');
+      }
+    } catch (err: any) {
+      console.error('Error scanning TRANSFER logs:', err);
+      showToast('Gagal memindai log TRANSFER: ' + (err?.message || err), 'error');
+    } finally {
+      setIsScanningPurge(false);
+    }
+  };
+
+  const handleToggleSelectPurge = (id: string) => {
+    setSelectedPurgeIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAllVisiblePurge = (visibleIds: string[]) => {
+    setSelectedPurgeIds(prev => {
+      const allSelected = visibleIds.length > 0 && visibleIds.every(id => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) {
+        visibleIds.forEach(id => next.delete(id));
+      } else {
+        visibleIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const handleClearPurgeSelection = () => {
+    setSelectedPurgeIds(new Set());
+  };
+
+  const handleDeleteSelectedPurge = async (items?: TransferPurgeItem[]) => {
+    if (!purgeScanResult) return;
+    const targets = items || purgeScanResult.deletableLogs.filter(item => selectedPurgeIds.has(item.id));
+    if (targets.length === 0) {
+      showToast('Pilih setidaknya satu baris TRANSFER untuk dihapus.', 'info');
+      return;
+    }
+
+    try {
+      setIsDeletingPurge(true);
+      const targetIds = targets.map(t => t.id);
+      const { successCount, errorCount } = await deleteTransferLogs(targetIds);
+      if (errorCount === 0) {
+        showToast(`Berhasil menghapus ${successCount} baris log TRANSFER!`, 'success');
+      } else {
+        showToast(`Berhasil menghapus ${successCount} baris, ${errorCount} gagal.`, 'warning');
+      }
+
+      await handleScanTransferPurge(purgeSkuInput);
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (err: any) {
+      console.error('Error deleting TRANSFER logs:', err);
+      showToast('Terjadi kesalahan saat menghapus data: ' + (err?.message || err), 'error');
+    } finally {
+      setIsDeletingPurge(false);
+    }
+  };
+
+  const handleDeleteAllPurge = async () => {
+    if (!purgeScanResult || purgeScanResult.deletableLogs.length === 0) {
+      showToast('Tidak ada log TRANSFER yang dapat dihapus.', 'info');
+      return;
+    }
+    await handleDeleteSelectedPurge(purgeScanResult.deletableLogs);
+  };
+
+  // --- SINKRON RAK OUT HANDLERS ---
+  const handleScanSyncOut = async (skuToScan?: string) => {
+    try {
+      setIsScanningSyncOut(true);
+      setSelectedSyncOutIds(new Set());
+      const target = (skuToScan !== undefined ? skuToScan : syncOutSkuInput).trim();
+      const result = await scanMismatchedOutLogs(target || undefined);
+      setSyncOutScanResult(result);
+      if (result.mismatchedItems.length > 0) {
+        showToast(`Ditemukan ${result.mismatchedItems.length} baris transaksi OUT dengan rak tidak sesuai nota masuk.`, 'warning');
+      } else {
+        showToast('Semua transaksi OUT sudah sesuai dengan nota masuk Gudang J/H!', 'success');
+      }
+    } catch (err: any) {
+      console.error('Error scanning mismatched OUT logs:', err);
+      showToast('Gagal memindai rak OUT: ' + (err?.message || err), 'error');
+    } finally {
+      setIsScanningSyncOut(false);
+    }
+  };
+
+  const handleToggleSelectSyncOut = (id: string) => {
+    setSelectedSyncOutIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAllVisibleSyncOut = (visibleIds: string[]) => {
+    setSelectedSyncOutIds(prev => {
+      const allSelected = visibleIds.length > 0 && visibleIds.every(id => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) {
+        visibleIds.forEach(id => next.delete(id));
+      } else {
+        visibleIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const handleClearSyncOutSelection = () => {
+    setSelectedSyncOutIds(new Set());
+  };
+
+  const handleFixSelectedSyncOut = async (items?: MismatchedOutRakItem[]) => {
+    if (!syncOutScanResult) return;
+    const targets = items || syncOutScanResult.mismatchedItems.filter(item => selectedSyncOutIds.has(item.id));
+    if (targets.length === 0) {
+      showToast('Pilih setidaknya satu baris transaksi OUT untuk dikembalikan raknya.', 'info');
+      return;
+    }
+
+    try {
+      setIsFixingSyncOut(true);
+      const updatePayload = targets.map(t => ({
+        id: t.id,
+        correctRak: t.correctRak,
+        correctSubRak: t.correctSubRak
+      }));
+
+      const { successCount, errorCount } = await restoreOutRakLogs(updatePayload);
+      if (errorCount === 0) {
+        showToast(`Berhasil mengembalikan rak ${successCount} transaksi OUT sesuai nota masuk!`, 'success');
+      } else {
+        showToast(`Berhasil mengembalikan ${successCount} baris, ${errorCount} gagal.`, 'warning');
+      }
+
+      await handleScanSyncOut(syncOutSkuInput);
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (err: any) {
+      console.error('Error restoring OUT rak:', err);
+      showToast('Terjadi kesalahan saat mengembalikan rak: ' + (err?.message || err), 'error');
+    } finally {
+      setIsFixingSyncOut(false);
+    }
+  };
+
+  const handleFixAllSyncOut = async () => {
+    if (!syncOutScanResult || syncOutScanResult.mismatchedItems.length === 0) {
+      showToast('Tidak ada transaksi OUT yang perlu diperbaiki.', 'info');
+      return;
+    }
+    await handleFixSelectedSyncOut(syncOutScanResult.mismatchedItems);
+  };
+
   useEffect(() => {
     if (isAccessGranted) {
       loadTotalCount();
@@ -1803,8 +1996,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
       const { count, error } = await supabase
         .from('database_log')
-        .select('*', { count: 'exact', head: true })
-        .not('gudang', 'in', '("VERIFY","UNVERIFY")');
+        .select('*', { count: 'estimated', head: true });
 
       if (error) {
         console.error('Error loading count:', error);
@@ -1989,9 +2181,22 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       let safePerPage = Number(perPage);
       if (isNaN(safePerPage) || safePerPage < 1) safePerPage = 100;
 
+      const hasSpecificFilter = Boolean(
+        currentFilters.sku || 
+        currentFilters.type || 
+        currentFilters.gudang || 
+        currentFilters.rak || 
+        currentFilters.subRak || 
+        currentFilters.waktu || 
+        currentFilters.logUpdateUser || 
+        currentFilters.tanggal || 
+        currentFilters.tglScan
+      );
+      const countMode = hasSpecificFilter ? 'exact' : 'estimated';
+
       let query = supabase
         .from('database_log')
-        .select('*', { count: 'exact' })
+        .select('*', { count: countMode })
         .not('gudang', 'in', '("VERIFY","UNVERIFY")');
 
       if (sortConfig) {
@@ -3694,6 +3899,36 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       >
                         <Link className="h-4 w-4" />
                         <span className="uppercase text-[10px] font-black">Audit Transfer Chain</span>
+                      </button>
+
+                      {/* DEVMODE: HAPUS LOG TRANSFER */}
+                      <button
+                        onClick={() => {
+                          setIsTransferPurgeModalOpen(true);
+                          const targetSku = filters.sku || purgeSkuInput;
+                          setPurgeSkuInput(targetSku || '');
+                          handleScanTransferPurge(targetSku || '');
+                        }}
+                        className="h-12 px-5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-rose-400/40"
+                        title="Pembersihan & Hapus Log TRANSFER (Dengan Proteksi Rak Khusus)"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        <span className="uppercase text-[10px] font-black">Hapus Log Transfer</span>
+                      </button>
+
+                      {/* DEVMODE: SINKRON RAK OUT NOTA */}
+                      <button
+                        onClick={() => {
+                          setIsSyncOutRakModalOpen(true);
+                          const targetSku = filters.sku || syncOutSkuInput;
+                          setSyncOutSkuInput(targetSku || '');
+                          handleScanSyncOut(targetSku || '');
+                        }}
+                        className="h-12 px-5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-emerald-400/40"
+                        title="Sinkron / Kembalikan Rak OUT Sesuai Nota Masuk Asli (Gudang J/H)"
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                        <span className="uppercase text-[10px] font-black">Sinkron Rak OUT Nota</span>
                       </button>
                     </div>
                   )}
@@ -5784,6 +6019,44 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         setFilterTab={setChainFilterTab}
         searchTerm={chainSearchTerm}
         setSearchTerm={setChainSearchTerm}
+      />
+
+      {/* DEVMODE: MODAL PEMBERSIHAN LOG TRANSFER */}
+      <TransferPurgeModal
+        isOpen={isTransferPurgeModalOpen}
+        onClose={() => setIsTransferPurgeModalOpen(false)}
+        scanResult={purgeScanResult}
+        isScanning={isScanningPurge}
+        isDeleting={isDeletingPurge}
+        onRescan={handleScanTransferPurge}
+        selectedIds={selectedPurgeIds}
+        onToggleSelect={handleToggleSelectPurge}
+        onSelectAllVisible={handleSelectAllVisiblePurge}
+        onClearSelection={handleClearPurgeSelection}
+        onDeleteSelected={handleDeleteSelectedPurge}
+        onDeleteAll={handleDeleteAllPurge}
+        skuInput={purgeSkuInput}
+        setSkuInput={setPurgeSkuInput}
+        skuOptions={allSkus}
+      />
+
+      {/* DEVMODE: MODAL SINKRONISASI RAK OUT NOTA MASUK */}
+      <SyncOutRakModal
+        isOpen={isSyncOutRakModalOpen}
+        onClose={() => setIsSyncOutRakModalOpen(false)}
+        scanResult={syncOutScanResult}
+        isScanning={isScanningSyncOut}
+        isFixing={isFixingSyncOut}
+        onRescan={handleScanSyncOut}
+        selectedIds={selectedSyncOutIds}
+        onToggleSelect={handleToggleSelectSyncOut}
+        onSelectAllVisible={handleSelectAllVisibleSyncOut}
+        onClearSelection={handleClearSyncOutSelection}
+        onFixSelected={handleFixSelectedSyncOut}
+        onFixAll={handleFixAllSyncOut}
+        skuInput={syncOutSkuInput}
+        setSkuInput={setSyncOutSkuInput}
+        skuOptions={allSkus}
       />
 
       <Toast
