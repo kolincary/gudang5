@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Download, Upload, FileText, CheckCircle, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link } from 'lucide-react';
+import { Download, Upload, FileText, CheckCircle, Check, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { saveExportHistory } from '../lib/exportHistoryService';
@@ -318,6 +318,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const [bulkEditMode, setBulkEditMode] = useState<'tanggal' | 'gudang' | 'user' | 'rak' | 'tgl_scan' | null>(null);
   const [bulkEditValue, setBulkEditValue] = useState('');
   const [isBulkOperationLoading, setIsBulkOperationLoading] = useState(false);
+  const [isCopiedSku, setIsCopiedSku] = useState(false);
 
   // --- MANUAL DATE / TIME FILTER STATE ---
   const [isManualDateModalOpen, setIsManualDateModalOpen] = useState(false);
@@ -2721,6 +2722,98 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
   };
 
+  const handleCopySelectedSkus = async () => {
+    if (selectedIds.size === 0) {
+      showToast('Pilih setidaknya satu data terlebih dahulu', 'warning');
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const selectedArray = Array.from(selectedIds);
+      let skuList: string[] = [];
+
+      // Check if all selected IDs are already present in current page `filteredEntries`
+      const entriesMap = new Map<string, string>();
+      filteredEntries.forEach(item => {
+        if (item.id && item.sku) {
+          entriesMap.set(item.id, item.sku);
+        }
+      });
+
+      const allInCurrentPage = selectedArray.every(id => entriesMap.has(id));
+
+      if (allInCurrentPage) {
+        skuList = selectedArray.map(id => entriesMap.get(id) || '').filter(Boolean);
+      } else {
+        // Fetch SKUs in safe small batches (50 UUIDs max per GET request) to avoid 400 Bad Request / URL length limit
+        const batchSize = 50;
+        const batches: string[][] = [];
+        for (let i = 0; i < selectedArray.length; i += batchSize) {
+          batches.push(selectedArray.slice(i, i + batchSize));
+        }
+
+        // Process in concurrent pools of 6 requests for ultra fast completion
+        const concurrency = 6;
+        for (let i = 0; i < batches.length; i += concurrency) {
+          const chunk = batches.slice(i, i + concurrency);
+          await Promise.all(
+            chunk.map(async (batchIds) => {
+              const { data, error } = await supabase
+                .from('database_log')
+                .select('id, sku')
+                .in('id', batchIds);
+
+              if (error) throw error;
+              if (data) {
+                data.forEach((row: any) => {
+                  if (row.sku) {
+                    entriesMap.set(row.id, row.sku);
+                  }
+                });
+              }
+            })
+          );
+        }
+        skuList = selectedArray.map(id => entriesMap.get(id) || '').filter(Boolean);
+      }
+
+      if (skuList.length === 0) {
+        showToast('Tidak ada data SKU yang dapat disalin', 'warning');
+        return;
+      }
+
+      // Format vertikal (newline \n) agar saat di-paste di Excel / Spreadsheet masuk ke baris kolom A1, A2, A3...
+      const textToCopy = skuList.join('\n');
+
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(textToCopy);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = textToCopy;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        textArea.remove();
+      }
+
+      setIsCopiedSku(true);
+      showToast(`Berhasil menyalin ${skuList.length} SKU (format vertikal) ke clipboard!`, 'success');
+      setTimeout(() => {
+        setIsCopiedSku(false);
+      }, 2500);
+    } catch (err) {
+      console.error('Error copying SKUs:', err);
+      showToast('Gagal menyalin SKU ke clipboard', 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
   const handleSyncTglScanWithTgl = async () => {
     if (selectedIds.size === 0) return;
 
@@ -3928,9 +4021,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       <button
                         onClick={() => {
                           setIsSyncOutRakModalOpen(true);
-                          const targetSku = filters.sku || syncOutSkuInput;
-                          setSyncOutSkuInput(targetSku || '');
-                          handleScanSyncOut(targetSku || '');
+                          const targetSku = (filters.sku || syncOutSkuInput || '').trim();
+                          setSyncOutSkuInput(targetSku);
+                          if (targetSku) {
+                            handleScanSyncOut(targetSku);
+                          }
                         }}
                         className="h-12 px-5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-emerald-400/40"
                         title="Sinkron / Kembalikan Rak OUT Sesuai Nota Masuk Asli (Gudang J/H)"
@@ -4331,6 +4426,24 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   </div>
 
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:flex lg:flex-wrap items-center gap-2">
+                    <Button
+                      onClick={handleCopySelectedSkus}
+                      className="h-9 px-3.5 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white font-bold rounded-lg shadow-md transition-all flex items-center justify-center border border-blue-400/30"
+                      disabled={isBulkOperationLoading}
+                      title="Salin semua SKU dari baris data terpilih (format vertikal ke bawah untuk Excel / Spreadsheet)"
+                    >
+                      {isCopiedSku ? (
+                        <>
+                          <Check className="h-3.5 w-3.5 mr-1.5 text-white" />
+                          <span className="text-[10px] uppercase tracking-wider font-extrabold">Tersalin!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3.5 w-3.5 mr-1.5" />
+                          <span className="text-[10px] uppercase tracking-wider font-extrabold">Salin SKU</span>
+                        </>
+                      )}
+                    </Button>
                     <Button
                       onClick={() => { setBulkEditMode('tanggal'); setBulkEditValue(''); }}
                       className="h-9 px-3 bg-white hover:bg-blue-50 text-blue-700 font-bold rounded-lg border border-blue-200 shadow-sm transition-all flex items-center justify-center"

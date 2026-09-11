@@ -375,6 +375,32 @@ export const SyncOutRakModal: React.FC<SyncOutRakModalProps> = ({
               <RefreshCw className="h-8 w-8 text-teal-600 animate-spin" />
               <p className="text-sm font-bold text-slate-600">Memindai dan mencocokkan rak OUT dengan nota masuk...</p>
             </div>
+          ) : !scanResult ? (
+            <div className="h-64 flex flex-col items-center justify-center space-y-3 text-center px-4">
+              <div className="p-3.5 bg-teal-50 rounded-2xl border border-teal-100 shadow-sm">
+                <Package className="h-8 w-8 text-teal-600" />
+              </div>
+              <div className="max-w-md">
+                <h4 className="text-sm font-black text-slate-800">Siap Memindai Transaksi OUT</h4>
+                <p className="text-xs text-slate-500 mt-1">
+                  Masukkan / Paste SKU yang ingin diperiksa pada kotak input di atas, lalu klik tombol <strong className="text-teal-700 font-bold">"Pindai"</strong>.
+                </p>
+              </div>
+              <button
+                onClick={() => onRescan(skuInput)}
+                disabled={isScanning || isFixing}
+                className="px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-black shadow-md transition-all active:scale-95 flex items-center gap-2 cursor-pointer mt-1"
+              >
+                <RefreshCw className="h-4 w-4" />
+                <span>
+                  {detectedSkus.length > 1
+                    ? `Mulai Pindai (${detectedSkus.length} SKU)`
+                    : skuInput.trim()
+                      ? `Mulai Pindai SKU`
+                      : `Mulai Pindai Semua Database`}
+                </span>
+              </button>
+            </div>
           ) : paginatedList.length === 0 ? (
             <div className="h-64 flex flex-col items-center justify-center space-y-2 text-center">
               <CheckCircle2 className="h-10 w-10 text-emerald-500" />

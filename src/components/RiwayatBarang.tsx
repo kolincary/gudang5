@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Download, X, RefreshCw, QrCode, ChevronDown, Filter, Calendar, Package, Building, Layers, ArrowRightLeft, List, Tag, Calculator, AlertCircle, Search, Edit2, ArrowRight, CheckCircle, ArrowUpDown, Database, History, Copy, Check } from 'lucide-react';
+import { Download, X, RefreshCw, QrCode, ChevronDown, Filter, Calendar, Package, Building, Layers, ArrowRightLeft, List, Tag, Calculator, AlertCircle, AlertTriangle, Search, Edit2, ArrowRight, CheckCircle, ArrowUpDown, Database, History, Copy, Check } from 'lucide-react';
 import { supabase, fetchAllProducts } from '../lib/supabase';
 import { runDateMigration } from '../lib/dateMigration';
 import { realtimeManager } from '../lib/realtimeManager';
@@ -497,7 +497,7 @@ export function RiwayatBarang() {
       realtimeManager.unsubscribe(subId);
     };
   }, [userRole, userEmail]);
-  const [qrModalData, setQrModalData] = useState<{ sku: string; tgl: string; tgl_scan: string } | null>(null);
+  const [qrModalData, setQrModalData] = useState<{ sku: string; tgl: string; tgl_scan: string; rak?: string; gudang?: string } | null>(null);
   const [filters, setFilters] = useState({
     barang: '',
     tanggal_awal: '',
@@ -2121,7 +2121,7 @@ export function RiwayatBarang() {
                               </div>
                               {item.type === 'IN' && !hideRiwayatQr && (
                                 <Button
-                                  onClick={() => setQrModalData({ sku: item.sku, tgl: item.tgl, tgl_scan: item.tgl_scan })}
+                                  onClick={() => setQrModalData({ sku: item.sku, tgl: item.tgl, tgl_scan: item.tgl_scan, rak: item.rak, gudang: item.gudang })}
                                   className="h-8 w-8 p-0 bg-gradient-to-br from-blue-400 to-blue-600 hover:from-blue-500 hover:to-blue-700 text-white font-bold rounded-lg shadow-[0_4px_10px_rgba(37,99,235,0.3)] hover:shadow-blue-500/40 transition-all duration-300 transform hover:scale-110 active:scale-90 flex items-center justify-center border border-white/20 backdrop-blur-md ml-2"
                                   title="Tampilkan QR Code"
                                 >
@@ -2651,41 +2651,97 @@ export function RiwayatBarang() {
 
           return (
             <div
-              className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200"
               onClick={() => setQrModalData(null)}
             >
               <div
-                className="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full relative transform transition-all duration-300 scale-95 animate-in fade-in-0 zoom-in-95"
+                className="bg-white p-6 md:p-8 rounded-3xl shadow-2xl max-w-xl w-full relative max-h-[90vh] overflow-y-auto transform transition-all duration-300 scale-100 animate-in zoom-in-95 border border-slate-100"
                 onClick={(e) => e.stopPropagation()}
               >
+                {/* Close Button */}
                 <button
                   onClick={() => setQrModalData(null)}
-                  className="absolute top-2 right-2 text-gray-400 hover:text-gray-600"
+                  className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-all"
+                  title="Tutup"
                 >
-                  <X className="h-6 w-6" />
+                  <X className="h-5 w-5" />
                 </button>
 
-                <h2 className="text-xl font-bold text-gray-800 mb-4 border-b pb-2">Informasi & QR Code</h2>
-
-                <div className="space-y-3 text-gray-700">
-                  <div>
-                    <label className="font-semibold text-sm">Tanggal:</label>
-                    <p className="text-lg bg-gray-100 p-2 rounded">{modalFormattedDate}</p>
+                {/* Header */}
+                <div className="flex items-center gap-3 mb-5 border-b border-slate-100 pb-3">
+                  <div className="p-2.5 bg-blue-50 text-blue-600 rounded-2xl border border-blue-100/80">
+                    <QrCode className="h-6 w-6" />
                   </div>
                   <div>
-                    <label className="font-semibold text-sm">SKU/Nama Barang:</label>
-                    <p className="text-lg bg-gray-100 p-2 rounded break-words">{qrModalData.sku}</p>
+                    <h2 className="text-lg md:text-xl font-black text-slate-900 leading-tight">Informasi & QR Code</h2>
+                    <p className="text-xs text-slate-500 font-medium">Barcode generator untuk proses transaksi barang</p>
                   </div>
                 </div>
 
-                <div className="mt-4 pt-4 border-t">
-                  <img
-                    src={qrCodeUrl}
-                    alt={`QR Code untuk ${qrModalData.sku}`}
-                    className="mx-auto w-[250px] h-[250px] rounded-md"
-                  />
-                  <p className="text-center text-xs text-gray-500 mt-2">
-                    Pindai QR Code untuk input data
+                {/* Info Fields Grid */}
+                <div className="space-y-3 mb-5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="bg-slate-50/80 p-3.5 rounded-2xl border border-slate-100">
+                      <label className="text-[11px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                        Tanggal (Tgl Scan)
+                      </label>
+                      <p className="text-sm md:text-base font-bold text-slate-800 font-mono">{modalFormattedDate}</p>
+                    </div>
+
+                    <div className="bg-amber-50/70 p-3.5 rounded-2xl border border-amber-200/70">
+                      <label className="text-[11px] font-black uppercase tracking-wider text-amber-700 block mb-1 flex items-center gap-1">
+                        <Layers className="h-3 w-3" /> Lokasi Rak (Informasi)
+                      </label>
+                      <p className="text-sm md:text-base font-black text-amber-900">
+                        {qrModalData.rak ? qrModalData.rak : '-'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50/80 p-3.5 rounded-2xl border border-slate-100">
+                    <label className="text-[11px] font-black uppercase tracking-wider text-slate-400 block mb-1">
+                      SKU / Nama Barang
+                    </label>
+                    <p className="text-sm md:text-base font-bold text-slate-900 break-words font-mono bg-white p-2.5 rounded-xl border border-slate-200/70">
+                      {qrModalData.sku}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Warning Card */}
+                <div className="bg-rose-50/90 border-2 border-rose-200/80 rounded-2xl p-4 mb-5 shadow-sm shadow-rose-100/50">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 bg-rose-100 text-rose-700 rounded-xl shrink-0 mt-0.5">
+                      <AlertTriangle className="h-5 w-5 animate-pulse" />
+                    </div>
+                    <div className="flex-1 text-left">
+                      <h4 className="text-xs md:text-sm font-black text-rose-800 uppercase tracking-wide mb-1 flex items-center gap-1.5">
+                        <span>Peringatan Disiplin & SOP Gudang</span>
+                      </h4>
+                      <p className="text-xs md:text-[13px] font-semibold text-rose-900/90 leading-relaxed mb-1.5">
+                        <strong>DILARANG KERAS</strong> melakukan scan barcode / QR Code secara sembarangan tanpa mencocokkan fisik barang dan nomor rak aslinya.
+                      </p>
+                      <div className="text-[11px] md:text-xs text-rose-700 bg-rose-100/80 p-2 rounded-lg border border-rose-200 font-medium">
+                        ⚠️ <em>Setiap scan terekam otomatis di sistem audit log (User & Waktu). Staf yang terbukti asal scan dan menyebabkan selisih stok akan dikenakan <strong>Sanksi Tegas / SP</strong>.</em>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* QR Code Frame */}
+                <div className="pt-2 border-t border-slate-100 flex flex-col items-center">
+                  <div className="p-3 bg-white rounded-2xl shadow-md border border-slate-100">
+                    <img
+                      src={qrCodeUrl}
+                      alt={`QR Code untuk ${qrModalData.sku}`}
+                      className="w-[220px] h-[220px] md:w-[240px] md:h-[240px] object-contain rounded-lg"
+                    />
+                  </div>
+                  <p className="text-center text-xs font-semibold text-slate-500 mt-2.5">
+                    Pindai QR Code untuk input data logistik
+                  </p>
+                  <p className="text-center text-[10px] text-slate-400">
+                    (Format data QR: Tanggal & SKU)
                   </p>
                 </div>
               </div>

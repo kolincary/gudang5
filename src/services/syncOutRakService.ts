@@ -68,74 +68,193 @@ export function parseMultipleSkus(input?: string | string[]): string[] {
   ));
 }
 
+/**
+ * Helper to run async tasks in parallel with a concurrency pool
+ */
+async function runParallel<T, R>(
+  items: T[],
+  fn: (item: T) => Promise<R>,
+  concurrency = 6
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array(items.length);
+  let index = 0;
+
+  async function worker() {
+    while (index < items.length) {
+      const currentIndex = index++;
+      results[currentIndex] = await fn(items[currentIndex]);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 export async function scanMismatchedOutLogs(
   skuFilter?: string | string[],
   onProgress?: (stage: string, percent: number) => void
 ): Promise<SyncOutRakScanResult> {
   const parsedSkus = parseMultipleSkus(skuFilter);
   const pageSize = 1000;
+  const chunkSize = 50; // Keep URL length safe from HTTP 400
 
-  // --- Step 1: Fetch IN receipts (gudang J or H) ---
-  if (onProgress) onProgress('Memindai Nota Barang Masuk (Gudang J & H)...', 15);
+  if (onProgress) onProgress('Memindai Nota Masuk & Transaksi OUT secara paralel...', 10);
 
   let inLogs: any[] = [];
+  let outLogs: any[] = [];
+
   if (parsedSkus.length > 0) {
-    const chunkSize = 50;
+    const chunks: string[][] = [];
     for (let i = 0; i < parsedSkus.length; i += chunkSize) {
-      const chunk = parsedSkus.slice(i, i + chunkSize);
-      let inPage = 0;
-      while (true) {
-        let inQuery = supabase
-          .from('database_log')
-          .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
-          .eq('type', 'IN')
-          .or('gudang.eq.J,gudang.eq.H');
-
-        if (chunk.length === 1) {
-          inQuery = inQuery.eq('sku', chunk[0]);
-        } else {
-          inQuery = inQuery.in('sku', chunk);
-        }
-
-        const { data, error } = await inQuery
-          .order('created_at', { ascending: false })
-          .range(inPage * pageSize, (inPage + 1) * pageSize - 1);
-
-        if (error) {
-          console.error('Error fetching IN receipts:', error);
-          throw error;
-        }
-
-        if (!data || data.length === 0) break;
-        inLogs.push(...data);
-        if (data.length < pageSize) break;
-        inPage++;
-        if (inPage > 100) break;
-      }
+      chunks.push(parsedSkus.slice(i, i + chunkSize));
     }
+
+    // Step 1 & 2: Fetch IN and OUT concurrently with pooled parallel chunk requests
+    const [inResults, outResults] = await Promise.all([
+      // Parallel IN Chunks
+      runParallel(
+        chunks,
+        async (chunk) => {
+          const chunkLogs: any[] = [];
+          let page = 0;
+          while (true) {
+            let inQuery = supabase
+              .from('database_log')
+              .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
+              .eq('type', 'IN')
+              .or('gudang.eq.J,gudang.eq.H');
+
+            if (chunk.length === 1) {
+              inQuery = inQuery.eq('sku', chunk[0]);
+            } else {
+              inQuery = inQuery.in('sku', chunk);
+            }
+
+            const { data, error } = await inQuery
+              .range(page * pageSize, (page + 1) * pageSize - 1);
+
+            if (error) {
+              console.error('Error fetching IN receipts:', error);
+              throw error;
+            }
+
+            if (!data || data.length === 0) break;
+            chunkLogs.push(...data);
+            if (data.length < pageSize) break;
+            page++;
+            if (page > 50) break;
+          }
+          return chunkLogs;
+        },
+        8
+      ),
+
+      // Parallel OUT Chunks
+      runParallel(
+        chunks,
+        async (chunk) => {
+          const chunkLogs: any[] = [];
+          let page = 0;
+          while (true) {
+            let outQuery = supabase
+              .from('database_log')
+              .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
+              .eq('type', 'OUT')
+              .neq('gudang', 'TRANSFER');
+
+            if (chunk.length === 1) {
+              outQuery = outQuery.eq('sku', chunk[0]);
+            } else {
+              outQuery = outQuery.in('sku', chunk);
+            }
+
+            const { data, error } = await outQuery
+              .range(page * pageSize, (page + 1) * pageSize - 1);
+
+            if (error) {
+              console.error('Error fetching OUT logs:', error);
+              throw error;
+            }
+
+            if (!data || data.length === 0) break;
+            chunkLogs.push(...data);
+            if (data.length < pageSize) break;
+            page++;
+            if (page > 100) break;
+          }
+          return chunkLogs;
+        },
+        8
+      )
+    ]);
+
+    inLogs = inResults.flat();
+    outLogs = outResults.flat();
   } else {
-    let inPage = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .from('database_log')
-        .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
-        .eq('type', 'IN')
-        .or('gudang.eq.J,gudang.eq.H')
-        .order('created_at', { ascending: false })
-        .range(inPage * pageSize, (inPage + 1) * pageSize - 1);
+    // Global scan: fetch IN and OUT concurrently
+    const [globalIn, globalOut] = await Promise.all([
+      (async () => {
+        const list: any[] = [];
+        let page = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('database_log')
+            .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
+            .eq('type', 'IN')
+            .or('gudang.eq.J,gudang.eq.H')
+            .range(page * pageSize, (page + 1) * pageSize - 1);
 
-      if (error) {
-        console.error('Error fetching IN receipts:', error);
-        throw error;
-      }
+          if (error) {
+            console.error('Error fetching IN receipts:', error);
+            throw error;
+          }
 
-      if (!data || data.length === 0) break;
-      inLogs.push(...data);
-      if (data.length < pageSize) break;
-      inPage++;
-      if (inPage > 100) break;
-    }
+          if (!data || data.length === 0) break;
+          list.push(...data);
+          if (data.length < pageSize) break;
+          page++;
+          if (page > 100) break;
+        }
+        return list;
+      })(),
+
+      (async () => {
+        const list: any[] = [];
+        let page = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('database_log')
+            .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
+            .eq('type', 'OUT')
+            .neq('gudang', 'TRANSFER')
+            .range(page * pageSize, (page + 1) * pageSize - 1);
+
+          if (error) {
+            console.error('Error fetching OUT logs:', error);
+            throw error;
+          }
+
+          if (!data || data.length === 0) break;
+          list.push(...data);
+          if (data.length < pageSize) break;
+          page++;
+          if (page > 250) break;
+        }
+        return list;
+      })()
+    ]);
+
+    inLogs = globalIn;
+    outLogs = globalOut;
   }
+
+  // --- Step 3: Match OUT with IN and identify rak differences ---
+  if (onProgress) onProgress('Menganalisis & Mencocokkan Ketidaksesuaian Rak...', 85);
 
   // Group IN receipts by `${sku}|${tgl_scan}`
   const inReceiptsMap = new Map<string, any[]>();
@@ -147,71 +266,6 @@ export async function scanMismatchedOutLogs(
     }
     inReceiptsMap.get(key)!.push(r);
   });
-
-  // --- Step 2: Fetch OUT logs (non-TRANSFER) ---
-  if (onProgress) onProgress('Memindai Transaksi Potong Keluar (OUT)...', 50);
-
-  let outLogs: any[] = [];
-  if (parsedSkus.length > 0) {
-    const chunkSize = 50;
-    for (let i = 0; i < parsedSkus.length; i += chunkSize) {
-      const chunk = parsedSkus.slice(i, i + chunkSize);
-      let outPage = 0;
-      while (true) {
-        let outQuery = supabase
-          .from('database_log')
-          .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
-          .eq('type', 'OUT')
-          .neq('gudang', 'TRANSFER');
-
-        if (chunk.length === 1) {
-          outQuery = outQuery.eq('sku', chunk[0]);
-        } else {
-          outQuery = outQuery.in('sku', chunk);
-        }
-
-        const { data, error } = await outQuery
-          .order('created_at', { ascending: false })
-          .range(outPage * pageSize, (outPage + 1) * pageSize - 1);
-
-        if (error) {
-          console.error('Error fetching OUT logs:', error);
-          throw error;
-        }
-
-        if (!data || data.length === 0) break;
-        outLogs.push(...data);
-        if (data.length < pageSize) break;
-        outPage++;
-        if (outPage > 250) break;
-      }
-    }
-  } else {
-    let outPage = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .from('database_log')
-        .select('id, sku, type, gudang, rak, sub_rak, jumlah, tgl, tgl_scan, waktu, user_name, created_at')
-        .eq('type', 'OUT')
-        .neq('gudang', 'TRANSFER')
-        .order('created_at', { ascending: false })
-        .range(outPage * pageSize, (outPage + 1) * pageSize - 1);
-
-      if (error) {
-        console.error('Error fetching OUT logs:', error);
-        throw error;
-      }
-
-      if (!data || data.length === 0) break;
-      outLogs.push(...data);
-      if (data.length < pageSize) break;
-      outPage++;
-      if (outPage > 250) break;
-    }
-  }
-
-  // --- Step 3: Match OUT with IN and identify rak differences ---
-  if (onProgress) onProgress('Menganalisis Ketidaksesuaian Rak...', 85);
 
   const mismatchedItems: MismatchedOutRakItem[] = [];
   const restorableItems: MismatchedOutRakItem[] = [];
@@ -241,7 +295,7 @@ export async function scanMismatchedOutLogs(
     if (isRakMismatch || isSubRakMismatch) {
       const isProt = isProtectedSyncRak(currentRak) || isProtectedSyncRak(correctRak);
       const protectReason = isProt
-        ? `Rak ${currentRak} termasuk daftar rak khusus (LANTAI 2, LANTAI 4, ECER, BLOK-I) yang diproteksi`
+        ? `Rak ${currentRak} termasuk daftar rak khusus (${PROTECTED_SYNC_RAKS.join(', ')}) yang diproteksi`
         : undefined;
 
       const item: MismatchedOutRakItem = {
@@ -310,35 +364,48 @@ export async function restoreOutRakLogs(
     groupedUpdates.get(key)!.ids.push(u.id);
   });
 
+  // Flatten batches for concurrent processing
+  const updateTasks: Array<{ rak: string; sub_rak: string; chunkIds: string[] }> = [];
+  for (const group of groupedUpdates.values()) {
+    for (let i = 0; i < group.ids.length; i += batchSize) {
+      updateTasks.push({
+        rak: group.rak,
+        sub_rak: group.sub_rak,
+        chunkIds: group.ids.slice(i, i + batchSize)
+      });
+    }
+  }
+
   let processed = 0;
   const total = updates.length;
 
-  for (const group of groupedUpdates.values()) {
-    for (let i = 0; i < group.ids.length; i += batchSize) {
-      const chunkIds = group.ids.slice(i, i + batchSize);
+  await runParallel(
+    updateTasks,
+    async (task) => {
       const { error } = await supabase
         .from('database_log')
         .update({
-          rak: group.rak,
-          sub_rak: group.sub_rak,
+          rak: task.rak,
+          sub_rak: task.sub_rak,
           log_update_user: 'DEVMODE: Sync Rak OUT Nota Masuk'
         })
-        .in('id', chunkIds);
+        .in('id', task.chunkIds);
 
       if (error) {
         console.error('Error updating OUT rak batch:', error);
-        errorCount += chunkIds.length;
+        errorCount += task.chunkIds.length;
         errors.push(error);
       } else {
-        successCount += chunkIds.length;
+        successCount += task.chunkIds.length;
       }
 
-      processed += chunkIds.length;
+      processed += task.chunkIds.length;
       if (onProgress) {
         onProgress(Math.min(processed, total), total);
       }
-    }
-  }
+    },
+    6
+  );
 
   return { successCount, errorCount, errors };
 }
