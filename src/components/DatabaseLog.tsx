@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Download, Upload, FileText, CheckCircle, Check, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, UserCheck, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link } from 'lucide-react';
+import { Download, Upload, FileText, CheckCircle, Check, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, UserCheck, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link, Layers, AlertTriangle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { saveExportHistory } from '../lib/exportHistoryService';
@@ -363,6 +363,152 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   };
 
 
+
+  // --- GROUPING (SKU + TGL SCAN + IN/OUT) & OUT RAK MISMATCH AUDIT STATE ---
+  const [isGroupedMode, setIsGroupedMode] = useState(false);
+  const [groupedSubFilter, setGroupedSubFilter] = useState<'ALL' | 'MISMATCH' | 'DEFICIT'>('ALL');
+
+  interface BatchGroupItem {
+    id: string;
+    sku: string;
+    tglScan: string;
+    rawTglScan: string;
+    inEntries: DatabaseLogEntry[];
+    outEntries: DatabaseLogEntry[];
+    sortedEntries: (DatabaseLogEntry & { isRakMismatch?: boolean; mismatchInitialRaks?: string[] })[];
+    initialInRaks: Set<string>;
+    initialInRaksList: string[];
+    totalIn: number;
+    totalOut: number;
+    balance: number;
+    hasRakMismatch: boolean;
+    mismatchCount: number;
+  }
+
+  const batchGroupData = useMemo(() => {
+    const groupsMap = new Map<string, {
+      sku: string;
+      tglScan: string;
+      rawTglScan: string;
+      entries: DatabaseLogEntry[];
+    }>();
+
+    filteredEntries.forEach(entry => {
+      const normSku = (entry.sku || '').trim().toUpperCase();
+      const rawScan = (entry.tgl_scan || '').trim();
+      const normScan = formatDateDisplay(rawScan) || rawScan || 'Tanpa Tgl Scan';
+      const key = `${normSku}|${normScan}`;
+
+      if (!groupsMap.has(key)) {
+        groupsMap.set(key, {
+          sku: entry.sku,
+          tglScan: normScan,
+          rawTglScan: rawScan,
+          entries: []
+        });
+      }
+      groupsMap.get(key)!.entries.push(entry);
+    });
+
+    const result: BatchGroupItem[] = [];
+
+    groupsMap.forEach((group, key) => {
+      const inEntries: DatabaseLogEntry[] = [];
+      const outEntries: DatabaseLogEntry[] = [];
+      const initialInRaks = new Set<string>();
+
+      group.entries.forEach(entry => {
+        const type = (entry.type || '').toUpperCase();
+        if (type === 'IN') {
+          inEntries.push(entry);
+          if (entry.rak && entry.rak.trim()) {
+            initialInRaks.add(entry.rak.trim().toUpperCase());
+          }
+        } else {
+          outEntries.push(entry);
+        }
+      });
+
+      // Sort IN entries chronologically
+      inEntries.sort((a, b) => {
+        const dtA = `${a.tgl} ${a.waktu}`;
+        const dtB = `${b.tgl} ${b.waktu}`;
+        return dtA.localeCompare(dtB);
+      });
+
+      const initialInRaksList = Array.from(initialInRaks);
+      let mismatchCount = 0;
+
+      // Sort OUT entries chronologically and detect mismatch against IN racks
+      const enrichedOutEntries = outEntries
+        .sort((a, b) => {
+          const dtA = `${a.tgl} ${a.waktu}`;
+          const dtB = `${b.tgl} ${b.waktu}`;
+          return dtA.localeCompare(dtB);
+        })
+        .map(entry => {
+          const outRak = (entry.rak || '').trim().toUpperCase();
+          const isRakMismatch = initialInRaks.size > 0 && !initialInRaks.has(outRak);
+          if (isRakMismatch) {
+            mismatchCount++;
+          }
+          return {
+            ...entry,
+            isRakMismatch,
+            mismatchInitialRaks: initialInRaksList
+          };
+        });
+
+      const enrichedInEntries = inEntries.map(entry => ({
+        ...entry,
+        isRakMismatch: false,
+        mismatchInitialRaks: initialInRaksList
+      }));
+
+      const sortedEntries = [...enrichedInEntries, ...enrichedOutEntries];
+      const totalIn = inEntries.reduce((sum, e) => sum + (Number(e.jumlah) || 0), 0);
+      const totalOut = outEntries.reduce((sum, e) => sum + (Number(e.jumlah) || 0), 0);
+      const balance = totalIn - totalOut;
+      const hasRakMismatch = mismatchCount > 0;
+
+      result.push({
+        id: key,
+        sku: group.sku,
+        tglScan: group.tglScan,
+        rawTglScan: group.rawTglScan,
+        inEntries,
+        outEntries,
+        sortedEntries,
+        initialInRaks,
+        initialInRaksList,
+        totalIn,
+        totalOut,
+        balance,
+        hasRakMismatch,
+        mismatchCount
+      });
+    });
+
+    return result;
+  }, [filteredEntries]);
+
+  const filteredBatchGroups = useMemo(() => {
+    if (groupedSubFilter === 'MISMATCH') {
+      return batchGroupData.filter(g => g.hasRakMismatch);
+    }
+    if (groupedSubFilter === 'DEFICIT') {
+      return batchGroupData.filter(g => g.balance < 0);
+    }
+    return batchGroupData;
+  }, [batchGroupData, groupedSubFilter]);
+
+  const batchSummaryStats = useMemo(() => {
+    const totalGroups = batchGroupData.length;
+    const mismatchGroups = batchGroupData.filter(g => g.hasRakMismatch).length;
+    const deficitGroups = batchGroupData.filter(g => g.balance < 0).length;
+    const totalMismatchRows = batchGroupData.reduce((sum, g) => sum + g.mismatchCount, 0);
+    return { totalGroups, mismatchGroups, deficitGroups, totalMismatchRows };
+  }, [batchGroupData]);
 
   // --- STOCK BALANCE ANALYSIS & DEFICIT AUDIT STATE ---
   const [isAnalysisModalOpen, setIsAnalysisModalOpen] = useState(false);
@@ -4082,6 +4228,65 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     </span>
                   )}
                 </button>
+
+                {/* TOGGLE MODE GROUPING (SKU + TGL SCAN + IN/OUT) */}
+                <button
+                  type="button"
+                  onClick={() => setIsGroupedMode(prev => !prev)}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border ${
+                    isGroupedMode
+                      ? 'bg-gradient-to-r from-blue-700 to-indigo-700 text-white border-blue-600 shadow-sm ring-2 ring-blue-300'
+                      : 'bg-blue-50 hover:bg-blue-100 text-blue-900 border-blue-300'
+                  }`}
+                  title="Kelompokkan data berdasarkan SKU, Tgl Scan, dan Type (IN di atas, OUT di bawah) dengan subtotal jumlah"
+                >
+                  <Layers className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Mode Kelompok (SKU + Tgl Scan)</span>
+                  {isGroupedMode && (
+                    <span className="ml-1 bg-white/25 text-white px-1.5 py-0.2 rounded text-[10px] font-black uppercase">
+                      {batchSummaryStats.totalGroups} BATCH
+                    </span>
+                  )}
+                </button>
+
+                {isGroupedMode && (
+                  <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-xl border border-slate-200">
+                    <button
+                      type="button"
+                      onClick={() => setGroupedSubFilter('ALL')}
+                      className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all ${
+                        groupedSubFilter === 'ALL'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Semua ({batchSummaryStats.totalGroups})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGroupedSubFilter('MISMATCH')}
+                      className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 ${
+                        groupedSubFilter === 'MISMATCH'
+                          ? 'bg-amber-500 text-white shadow-xs'
+                          : 'text-amber-800 hover:text-amber-900'
+                      }`}
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      Rak Beda ({batchSummaryStats.mismatchGroups})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGroupedSubFilter('DEFICIT')}
+                      className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all ${
+                        groupedSubFilter === 'DEFICIT'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-red-700 hover:text-red-900'
+                      }`}
+                    >
+                      Defisit ({batchSummaryStats.deficitGroups})
+                    </button>
+                  </div>
+                )}
               </div>
 
               {Boolean(filters.sku || filters.type || filters.gudang || filters.rak || filters.user || filters.tanggal || filters.tglScan || filters.waktu || filters.subRak || filters.logUpdateUser || filters.isAdjustment) && (
@@ -4775,7 +4980,225 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                         </tr>
                       </thead>
                       <tbody>
-                        {dataLoaded && filteredEntries.map((entry, index) => {
+                        {isGroupedMode ? (
+                          filteredBatchGroups.map((group, groupIdx) => {
+                            return (
+                              <React.Fragment key={group.id}>
+                                {/* GROUP HEADER BAR */}
+                                <tr className="bg-slate-800 text-white text-xs border-t-4 border-t-blue-600">
+                                  <td colSpan={13} className="px-4 py-2.5">
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                      <div className="flex flex-wrap items-center gap-2.5">
+                                        <span className="bg-blue-600 text-white font-black px-2.5 py-0.5 rounded text-[11px] uppercase tracking-wider shadow-2xs">
+                                          Batch #{groupIdx + 1}
+                                        </span>
+                                        <span className="font-mono font-black text-sm text-yellow-300">
+                                          {group.sku}
+                                        </span>
+                                        <span className="text-slate-400">|</span>
+                                        <span className="text-slate-200 font-medium flex items-center gap-1">
+                                          <Calendar className="w-3.5 h-3.5 text-blue-400" />
+                                          Tgl Scan: <strong className="text-white">{group.tglScan}</strong>
+                                        </span>
+                                        {group.initialInRaksList.length > 0 && (
+                                          <span className="bg-slate-700/90 text-slate-200 px-2.5 py-0.5 rounded text-[11px] font-medium border border-slate-600">
+                                            Rak Masuk (IN): <strong className="text-emerald-300 font-bold">{group.initialInRaksList.join(', ')}</strong>
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      <div className="flex items-center gap-2 text-xs">
+                                        {group.hasRakMismatch ? (
+                                          <span className="bg-amber-500/25 text-amber-300 border border-amber-500/40 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-2xs">
+                                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                                            {group.mismatchCount} Rak OUT Berbeda
+                                          </span>
+                                        ) : (
+                                          <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-2xs">
+                                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                            Rak Sesuai
+                                          </span>
+                                        )}
+                                        <span className="text-slate-400 font-mono text-[11px]">
+                                          ({group.sortedEntries.length} Transaksi: {group.inEntries.length} IN, {group.outEntries.length} OUT)
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+
+                                {/* GROUP ROWS */}
+                                {group.sortedEntries.map((entry) => {
+                                  const isSelected = selectedIds.has(entry.id);
+                                  const isTransfer = (entry.gudang || '').toUpperCase().includes('TRANSFER') || (entry.type === 'MOVE');
+                                  const isMismatch = entry.isRakMismatch;
+
+                                  const rowClass = isSelected
+                                    ? 'bg-blue-200 hover:bg-blue-300'
+                                    : isMismatch
+                                      ? 'bg-amber-50/90 hover:bg-amber-100/90 border-l-4 border-l-amber-500'
+                                      : entry.is_adjustment
+                                        ? 'bg-amber-50/50 hover:bg-amber-100/60'
+                                        : isTransfer
+                                          ? 'bg-purple-50/50 hover:bg-purple-100/60 border-l-4 border-l-purple-400'
+                                          : entry.type === 'IN'
+                                            ? 'bg-emerald-50/20 hover:bg-emerald-50/50'
+                                            : 'bg-white hover:bg-slate-50';
+
+                                  return (
+                                    <tr key={entry.id} className={`${rowClass} border-b border-gray-200 transition-colors`}>
+                                      <td className="px-3 py-2 text-center border-r border-gray-200 w-12">
+                                        <input
+                                          type="checkbox"
+                                          checked={isSelected}
+                                          onChange={() => handleCheckboxChange(entry.id)}
+                                          className="w-4 h-4 cursor-pointer"
+                                        />
+                                      </td>
+                                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200 font-medium">
+                                        {formatDateDisplay(entry.tgl)}
+                                      </td>
+                                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200 font-mono">
+                                        {entry.waktu}
+                                      </td>
+                                      <td className="px-4 py-2 text-sm border-r border-gray-200 font-mono">
+                                        <div className="flex items-center justify-between">
+                                          <span className={entry.is_adjustment ? 'font-bold text-amber-800' : 'font-semibold text-gray-900'}>{entry.sku}</span>
+                                          {entry.is_adjustment && (
+                                            <span className="flex items-center gap-1 bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded-full font-bold ml-2 shadow-sm border border-amber-200 shrink-0">
+                                              <Tag className="h-2.5 w-2.5" />
+                                              PENYESUAIAN
+                                            </span>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-2 text-sm text-center border-r border-gray-200 font-black text-gray-900">
+                                        {entry.jumlah}
+                                      </td>
+                                      <td className="px-4 py-2 text-center border-r border-gray-200">
+                                        <span className={`px-2.5 py-1 rounded text-xs font-bold ${
+                                          entry.type === 'IN' ? 'bg-green-100 text-green-800 border border-green-300' :
+                                          entry.type === 'OUT' ? 'bg-red-100 text-red-800 border border-red-300' :
+                                          'bg-blue-100 text-blue-800 border border-blue-300'
+                                        }`}>
+                                          {entry.type}
+                                        </span>
+                                      </td>
+                                      <td className="px-4 py-2 text-sm border-r border-gray-200">
+                                        {isTransfer ? (
+                                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-purple-100 text-purple-800 border border-purple-300 shadow-2xs">
+                                            {entry.gudang}
+                                          </span>
+                                        ) : (
+                                          entry.gudang
+                                        )}
+                                      </td>
+                                      <td className="px-4 py-2 text-sm border-r border-gray-200 font-medium">
+                                        {isMismatch ? (
+                                          <div className="flex flex-col gap-0.5">
+                                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-100 text-amber-950 border border-amber-300 rounded-lg text-xs font-black shadow-2xs w-fit">
+                                              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                              <span>{entry.rak}</span>
+                                            </span>
+                                            <span className="text-[10px] text-amber-800 font-bold whitespace-nowrap">
+                                              ⚠ Beda dr IN ({group.initialInRaksList.join(', ')})
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          entry.rak
+                                        )}
+                                      </td>
+                                      <td
+                                        className="px-4 py-2 text-sm border-r border-gray-200 cursor-pointer hover:bg-blue-200 transition-colors font-medium"
+                                        onClick={() => setFilters({ ...filters, tglScan: entry.tgl_scan || '' })}
+                                        title="Klik untuk filter Tgl Scan"
+                                      >
+                                        {formatDateDisplay(entry.tgl_scan)}
+                                      </td>
+                                      <td
+                                        className="px-4 py-2 text-sm border-r border-gray-200 text-gray-700 cursor-pointer hover:bg-blue-100 transition-colors font-medium"
+                                        onClick={() => setFilters({ ...filters, user: entry.user || '' })}
+                                        title="Klik untuk filter User ini"
+                                      >
+                                        {entry.user === 'System (Cek Rak)' ? (
+                                          <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                            <UserCheck className="w-3 h-3 text-emerald-600" />
+                                            {entry.user}
+                                          </span>
+                                        ) : (
+                                          entry.user
+                                        )}
+                                      </td>
+                                      <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600">{entry.sub_rak}</td>
+                                      <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600 font-mono text-xs">{entry.log_update_user}</td>
+                                      <td className="px-4 py-2 text-center">
+                                        <div className="flex justify-center space-x-2">
+                                          <Button
+                                            onClick={() => handleEdit(entry)}
+                                            className="h-8 w-8 p-0 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 rounded-lg transition-all border border-blue-200 backdrop-blur-sm flex items-center justify-center"
+                                          >
+                                            <Edit2 className="h-4 w-4" />
+                                          </Button>
+                                          <Button
+                                            onClick={() => handleDelete(entry.id)}
+                                            className="h-8 w-8 p-0 bg-red-500/10 hover:bg-red-500/20 text-red-600 rounded-lg transition-all border border-red-200 backdrop-blur-sm flex items-center justify-center"
+                                          >
+                                            <Trash2 className="h-4 w-4" />
+                                          </Button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+
+                                {/* GROUP SUBTOTAL / SUMMARY ROW */}
+                                <tr className="bg-slate-100/95 border-b-4 border-b-slate-300 text-xs font-bold text-slate-800">
+                                  <td colSpan={4} className="px-4 py-2.5 text-left border-r border-slate-300">
+                                    <span className="font-black text-slate-700 uppercase tracking-wider">
+                                      Total {group.sku} ({group.tglScan}):
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-2.5 text-center border-r border-slate-300">
+                                    <div className="flex items-center justify-center gap-1.5 font-mono text-xs">
+                                      <span className="text-emerald-700 font-black">IN: {group.totalIn.toLocaleString()}</span>
+                                      <span className="text-slate-400">|</span>
+                                      <span className="text-rose-700 font-black">OUT: {group.totalOut.toLocaleString()}</span>
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-2.5 text-center border-r border-slate-300">
+                                    {group.balance === 0 ? (
+                                      <span className="inline-flex px-2.5 py-1 rounded-md bg-emerald-100 text-emerald-800 font-black text-[11px] border border-emerald-300">
+                                        Sisa: 0 (Pas)
+                                      </span>
+                                    ) : group.balance > 0 ? (
+                                      <span className="inline-flex px-2.5 py-1 rounded-md bg-blue-100 text-blue-800 font-black text-[11px] border border-blue-300">
+                                        Sisa: +{group.balance.toLocaleString()}
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex px-2.5 py-1 rounded-md bg-red-100 text-red-800 font-black text-[11px] border border-red-300">
+                                        Sisa: {group.balance.toLocaleString()}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td colSpan={7} className="px-4 py-2.5 text-left text-slate-600">
+                                    {group.hasRakMismatch ? (
+                                      <span className="text-amber-900 font-bold flex items-center gap-1">
+                                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                                        Ditemukan {group.mismatchCount} transaksi OUT pada rak berbeda dari nota masuk awal ({group.initialInRaksList.join(', ')})
+                                      </span>
+                                    ) : (
+                                      <span className="text-emerald-800 font-medium flex items-center gap-1">
+                                        <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                                        Seluruh transaksi OUT sesuai dengan rak nota masuk awal ({group.initialInRaksList.join(', ') || '-'})
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              </React.Fragment>
+                            );
+                          })
+                        ) : (
+                          dataLoaded && filteredEntries.map((entry, index) => {
                           const isSelected = selectedIds.has(entry.id);
                           const isTransfer = (entry.gudang || '').toUpperCase().includes('TRANSFER') || (entry.type === 'MOVE');
 
@@ -4898,7 +5321,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                               </td>
                             </tr>
                           );
-                        })}
+                        })
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -4915,7 +5339,172 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       <span className="font-bold text-sm">Pilih Semua di Halaman Ini</span>
                     </div>
                     <div className="divide-y divide-gray-200">
-                      {dataLoaded && filteredEntries.map((entry, index) => {
+                      {isGroupedMode ? (
+                        filteredBatchGroups.map((group, groupIdx) => (
+                          <div key={group.id} className="bg-slate-50 border-b-4 border-slate-300">
+                            {/* Mobile Group Header */}
+                            <div className="bg-slate-800 text-white p-3.5 space-y-2 border-t-4 border-t-blue-600">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="bg-blue-600 text-white font-black px-2 py-0.5 rounded text-[10px] uppercase tracking-wider">
+                                  Batch #{groupIdx + 1}
+                                </span>
+                                <span className="font-mono font-black text-sm text-yellow-300">
+                                  {group.sku}
+                                </span>
+                              </div>
+                              <div className="text-xs text-slate-300 flex items-center justify-between">
+                                <span>Scan: <strong>{group.tglScan}</strong></span>
+                                {group.hasRakMismatch ? (
+                                  <span className="bg-amber-500/25 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded font-bold text-[10px] flex items-center gap-1">
+                                    <AlertTriangle className="w-3 h-3 text-amber-400" />
+                                    {group.mismatchCount} Rak Beda
+                                  </span>
+                                ) : (
+                                  <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded font-bold text-[10px] flex items-center gap-1">
+                                    <Check className="w-3 h-3 text-emerald-400" />
+                                    Rak Sesuai
+                                  </span>
+                                )}
+                              </div>
+                              {group.initialInRaksList.length > 0 && (
+                                <div className="text-[11px] text-slate-300 bg-slate-700/80 px-2 py-1 rounded border border-slate-600">
+                                  Rak Masuk (IN): <strong className="text-emerald-300">{group.initialInRaksList.join(', ')}</strong>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Mobile Group Rows */}
+                            <div className="divide-y divide-gray-200">
+                              {group.sortedEntries.map((entry) => {
+                                const isSelected = selectedIds.has(entry.id);
+                                const isTransfer = (entry.gudang || '').toUpperCase().includes('TRANSFER') || (entry.type === 'MOVE');
+                                const isMismatch = entry.isRakMismatch;
+
+                                return (
+                                  <div
+                                    key={entry.id}
+                                    className={`p-3.5 ${
+                                      isSelected
+                                        ? 'bg-blue-100'
+                                        : isMismatch
+                                          ? 'bg-amber-50/90 border-l-4 border-l-amber-500'
+                                          : entry.is_adjustment
+                                            ? 'bg-amber-50'
+                                            : isTransfer
+                                              ? 'bg-purple-50/50 border-l-4 border-l-purple-400'
+                                              : entry.type === 'IN'
+                                                ? 'bg-emerald-50/30'
+                                                : 'bg-white'
+                                    } transition-colors relative`}
+                                  >
+                                    <div className="flex items-start gap-3">
+                                      <div className="pt-1">
+                                        <input
+                                          type="checkbox"
+                                          checked={isSelected}
+                                          onChange={() => handleCheckboxChange(entry.id)}
+                                          className="w-5 h-5 cursor-pointer rounded"
+                                        />
+                                      </div>
+                                      <div className="flex-1 space-y-2.5">
+                                        {/* Header Card: Type, Waktu, Qty */}
+                                        <div className="flex justify-between items-center">
+                                          <div className="flex items-center gap-2">
+                                            <span className={`px-2.5 py-0.5 rounded text-xs font-bold ${
+                                              entry.type === 'IN' ? 'bg-green-100 text-green-800 border border-green-300' :
+                                              entry.type === 'OUT' ? 'bg-red-100 text-red-800 border border-red-300' :
+                                              'bg-blue-100 text-blue-800 border border-blue-300'
+                                            }`}>
+                                              {entry.type}
+                                            </span>
+                                            <span className="text-xs font-mono text-gray-500">{entry.waktu}</span>
+                                          </div>
+                                          <span className="font-black text-sm text-gray-900">{entry.jumlah} Unit</span>
+                                        </div>
+
+                                        {/* Rak & Gudang */}
+                                        <div className="grid grid-cols-2 gap-2 text-xs bg-gray-50/90 p-2.5 rounded-lg border border-gray-100">
+                                          <div>
+                                            <p className="text-[10px] uppercase font-bold text-gray-400">Lokasi Rak</p>
+                                            {isMismatch ? (
+                                              <div className="mt-0.5">
+                                                <span className="inline-flex items-center gap-1 font-black text-amber-900 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded text-xs">
+                                                  <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                                                  {entry.rak}
+                                                </span>
+                                                <p className="text-[10px] text-amber-800 font-bold mt-0.5">
+                                                  ⚠ Beda dr IN ({group.initialInRaksList.join(', ')})
+                                                </p>
+                                              </div>
+                                            ) : (
+                                              <p className="font-bold text-blue-600 text-xs mt-0.5">{entry.rak}</p>
+                                            )}
+                                          </div>
+                                          <div>
+                                            <p className="text-[10px] uppercase font-bold text-gray-400">Gudang</p>
+                                            <p className="font-medium text-gray-700 text-xs mt-0.5">{entry.gudang}</p>
+                                          </div>
+                                        </div>
+
+                                        {/* Tanggal & User */}
+                                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
+                                          <span>Nota: {formatDateDisplay(entry.tgl)}</span>
+                                          <span>User: {entry.user}</span>
+                                        </div>
+
+                                        {/* Actions */}
+                                        <div className="flex justify-end gap-2 pt-1">
+                                          <Button
+                                            onClick={() => handleEdit(entry)}
+                                            className="h-8 px-3 bg-blue-50 text-blue-600 rounded-lg font-bold text-xs flex items-center justify-center border border-blue-100 flex-1"
+                                          >
+                                            <Edit2 className="h-3.5 w-3.5 mr-1" /> Edit
+                                          </Button>
+                                          <Button
+                                            onClick={() => handleDelete(entry.id)}
+                                            className="h-8 px-3 bg-red-50 text-red-600 rounded-lg font-bold text-xs flex items-center justify-center border border-red-100 flex-1"
+                                          >
+                                            <Trash2 className="h-3.5 w-3.5 mr-1" /> Hapus
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* Mobile Group Subtotal Footer */}
+                            <div className="bg-slate-100 p-3 text-xs space-y-1.5 border-t border-slate-200">
+                              <div className="flex items-center justify-between font-bold">
+                                <span className="text-slate-700 uppercase">Subtotal {group.sku}:</span>
+                                <div className="flex items-center gap-2 font-mono">
+                                  <span className="text-emerald-700">IN: {group.totalIn}</span>
+                                  <span className="text-slate-400">|</span>
+                                  <span className="text-rose-700">OUT: {group.totalOut}</span>
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between pt-1 border-t border-slate-200/80">
+                                <span className="text-slate-600">Sisa Stok:</span>
+                                {group.balance === 0 ? (
+                                  <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-black border border-emerald-300">
+                                    0 (Pas)
+                                  </span>
+                                ) : group.balance > 0 ? (
+                                  <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-black border border-blue-300">
+                                    +{group.balance.toLocaleString()}
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded bg-red-100 text-red-800 font-black border border-red-300">
+                                    {group.balance.toLocaleString()}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        dataLoaded && filteredEntries.map((entry, index) => {
                         const isSelected = selectedIds.has(entry.id);
                         const isTransfer = (entry.gudang || '').toUpperCase().includes('TRANSFER') || (entry.type === 'MOVE');
 
@@ -5047,7 +5636,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                             </div>
                           </div>
                         );
-                      })}
+                      })
+                      )}
                     </div>
                   </div>
 
