@@ -149,7 +149,7 @@ export const KarantinaRevisiOutModal: React.FC<KarantinaRevisiOutModalProps> = (
             sisaText = `\n⚠️ *Sisa Fisik Belum Ada Data:* ${item.sisa_fisik_belum_cocok} pcs (Perlu Pengecekan Admin/Accurate)`;
         }
 
-        return `🚨 *LAPORAN FISIK TIDAK TURUN (CEK RAK 2)*
+        return `🚨 *LAPORAN FISIK TIDAK TURUN (STOCK OPNAME)*
 ━━━━━━━━━━━━━━━━━━
 📦 *SKU:* ${item.sku}
 🎯 *Sub-Rak Tujuan:* ${item.sub_rak_tujuan || '-'}
@@ -241,7 +241,7 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
                                 )}
                             </div>
                             <p className="text-xs sm:text-sm text-amber-100/90 font-medium">
-                                Data OUT yang batal turun &amp; ditarik di Cek Rak 2 (Dilaporkan ke Tim Crosscheck &amp; Accurate)
+                                Data OUT yang batal turun &amp; ditarik di Stock Opname (Dilaporkan ke Tim Crosscheck &amp; Accurate)
                             </p>
                         </div>
                     </div>
@@ -464,7 +464,7 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
 
                                             <div className="bg-slate-50 p-2.5 rounded-xl">
                                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">
-                                                    Penarik di Cek Rak 2
+                                                    Penarik di Stock Opname
                                                 </span>
                                                 <p className="font-extrabold text-slate-800">
                                                     {item.user_penarik || 'Staf'}
@@ -568,7 +568,7 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
                 {/* Footer */}
                 <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center text-xs text-slate-500">
                     <p>
-                        💡 <strong>Catatan:</strong> Data di wadah ini adalah transaksi OUT yang batal turun &amp; ditarik ke sub-rak di menu Cek Rak 2.
+                        💡 <strong>Catatan:</strong> Data di wadah ini adalah transaksi OUT yang batal turun &amp; ditarik ke sub-rak di menu Stock Opname.
                     </p>
                     <button
                         onClick={onClose}

@@ -124,6 +124,7 @@ function AuthenticatedApp() {
           <Route path="/transfer-sync" element={<TransferSync />} />
           <Route path="/cek-rak" element={<CekRak />} />
           <Route path="/cek-rak-2" element={<CekRak2 />} />
+          <Route path="/stock-opname" element={<CekRak2 />} />
           <Route path="/user-management" element={<UserManagement />} />
           <Route path="/daily-quest-manager" element={<DailyQuestManager />} />
           <Route path="/database-settings" element={<DatabaseSettings />} />
