@@ -7,7 +7,7 @@ import {
     QrCode, Camera, Menu, X, ChevronRight, ArrowRightLeft, Loader, 
     MoveRight, Lock, MapPin, LayoutGrid, List, Sparkles, Layers, History,
     ArrowUpRight, BarChart3, CheckSquare, Compass, SlidersHorizontal,
-    Box, ExternalLink, HelpCircle, Eye, Check, Table, Grid3X3, ShieldCheck
+    Box, ExternalLink, HelpCircle, Eye, Check, Copy, Table, Grid3X3, ShieldCheck, MessageSquare
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Toast } from './ui/Toast';
@@ -19,6 +19,7 @@ import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
 import { getOriginalReceiptDate } from '../lib/transferDateHelper';
+import { KarantinaRevisiOutModal } from './KarantinaRevisiOutModal';
 
 interface StockItem {
     id: string;
@@ -33,8 +34,9 @@ interface StockItem {
 }
 
 export function CekRak2() {
-    const { userRole, user } = useAuth();
+    const { userRole, user, userName } = useAuth();
     const isDeveloper = userRole === 'developer' || user?.email === 'devmode' || localStorage.getItem('devmode') === 'true';
+    const isAdminOrDev = isDeveloper || userRole === 'admin' || userRole?.includes('admin');
 
     const [rackId, setRackId] = useState('');
     const [items, setItems] = useState<StockItem[]>([]);
@@ -126,11 +128,11 @@ export function CekRak2() {
         setShowGlobalResults(true);
         try {
             const cleanTerm = term.trim();
-            // Search flexibly across nama_produk, sku, and rak without rigid status restriction
+            // Search flexibly across nama_produk and rak without rigid status restriction
             const { data, error } = await supabase
                 .from('stock_items')
                 .select('*')
-                .or(`nama_produk.ilike.%${cleanTerm}%,sku.ilike.%${cleanTerm}%,rak.ilike.%${cleanTerm}%`)
+                .or(`nama_produk.ilike.%${cleanTerm}%,rak.ilike.%${cleanTerm}%`)
                 .neq('status', 'Non-Aktif')
                 .gt('tersedia', 0)
                 .order('nama_produk', { ascending: true })
@@ -200,6 +202,24 @@ export function CekRak2() {
     const [pullItem, setPullItem] = useState<any>(null);
     const [pullQuantity, setPullQuantity] = useState<number | ''>('');
     const [isPulling, setIsPulling] = useState(false);
+
+    // Wadah Karantina Revisi State
+    const [showKarantinaModal, setShowKarantinaModal] = useState(false);
+    const [pendingKarantinaCount, setPendingKarantinaCount] = useState(0);
+
+    // OUT History Trace (Fisik Ada Tapi Data 0) State
+    const [showOutTraceModal, setShowOutTraceModal] = useState(false);
+    const [outTraceSku, setOutTraceSku] = useState('');
+    const [outTracePhysicalQty, setOutTracePhysicalQty] = useState<number | ''>('');
+    const [outTraceLogs, setOutTraceLogs] = useState<any[]>([]);
+    const [isLoadingOutLogs, setIsLoadingOutLogs] = useState(false);
+    const [selectedOutLog, setSelectedOutLog] = useState<any | null>(null);
+    const [isExecutingOutTrace, setIsExecutingOutTrace] = useState(false);
+
+    // WhatsApp Report Success Modal State
+    const [showWaSuccessModal, setShowWaSuccessModal] = useState(false);
+    const [waReportData, setWaReportData] = useState<any | null>(null);
+    const [isWaCopied, setIsWaCopied] = useState(false);
 
     const [rackOptions, setRackOptions] = useState<string[]>([]);
     const [lastScanned, setLastScanned] = useState<string | null>(null);
@@ -298,10 +318,34 @@ export function CekRak2() {
         });
     }, [rackOptions, selectedPrefixTab, explorerSearch]);
 
-    // Fetch rack options on mount
+    // Fetch rack options & pending karantina count on mount
     useEffect(() => {
         fetchRackOptions();
+        fetchPendingKarantinaCount();
+
+        const channel = supabase
+            .channel('realtime:cekrak2_karantina_count')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'karantina_revisi_out' }, () => {
+                fetchPendingKarantinaCount();
+            })
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
     }, []);
+
+    const fetchPendingKarantinaCount = async () => {
+        try {
+            const { data } = await DatabaseService.fetchKarantina();
+            if (data) {
+                const pending = data.filter((item: any) => item.status === 'MENUNGGU_REVISI').length;
+                setPendingKarantinaCount(pending);
+            }
+        } catch {
+            // Abaikan jika tabel belum siap
+        }
+    };
 
     const fetchRackOptions = async () => {
         try {
@@ -1025,6 +1069,291 @@ export function CekRak2() {
         }
     };
 
+    // Handler Penelusuran OUT (Fisik Ada Tapi Data 0 - Opsi 2)
+    const handleOpenOutTrace = (skuToSearch?: string) => {
+        const targetSku = (skuToSearch || pullSearchTerm || '').trim();
+        setOutTraceSku(targetSku);
+        setOutTracePhysicalQty('');
+        setSelectedOutLog(null);
+        setShowOutTraceModal(true);
+        if (targetSku) {
+            fetchOutLogsForSku(targetSku);
+        } else {
+            setOutTraceLogs([]);
+        }
+    };
+
+    const fetchOutLogsForSku = async (sku: string) => {
+        if (!sku.trim()) return;
+        setIsLoadingOutLogs(true);
+        setSelectedOutLog(null);
+        try {
+            const { data, error } = await supabase
+                .from('database_log')
+                .select('*')
+                .ilike('sku', `%${sku.trim()}%`)
+                .eq('type', 'OUT')
+                .order('created_at', { ascending: false })
+                .limit(25);
+
+            if (error) throw error;
+            setOutTraceLogs(data || []);
+        } catch (err: any) {
+            console.error('Error fetching OUT logs for trace:', err);
+            setToast({
+                isOpen: true,
+                message: `Gagal mencari riwayat OUT: ${err.message}`,
+                type: 'error'
+            });
+        } finally {
+            setIsLoadingOutLogs(false);
+        }
+    };
+
+    const handleConfirmOutTrace = async () => {
+        if (!lastScanned || !selectedOutLog || outTracePhysicalQty === '' || Number(outTracePhysicalQty) <= 0) {
+            setToast({
+                isOpen: true,
+                message: 'Silakan isi jumlah fisik yang ditemukan dan pilih salah satu transaksi OUT!',
+                type: 'error'
+            });
+            return;
+        }
+
+        const physical = Number(outTracePhysicalQty);
+        const pulihQty = Number(selectedOutLog.jumlah);
+        const sisaBelumAdaData = Math.max(0, physical - pulihQty);
+
+        setIsExecutingOutTrace(true);
+        try {
+            const targetRak = lastScanned.trim().toUpperCase();
+            const actor = userName || user?.email || 'Staf Gudang';
+
+            // 1. Simpan ke wadah karantina_revisi_out (Dual-write Supabase & Firestore)
+            try {
+                const karantinaRow = {
+                    original_log_id: String(selectedOutLog.id),
+                    sku: selectedOutLog.sku,
+                    nama_barang: selectedOutLog.nama_barang || selectedOutLog.sku,
+                    packing: selectedOutLog.packing || '',
+                    jumlah: pulihQty,
+                    rak_asal: selectedOutLog.rak || 'TEMP-A',
+                    sub_rak_tujuan: targetRak,
+                    tgl_out_asli: selectedOutLog.tgl_scan || selectedOutLog.tgl || '',
+                    user_pemotong_out: selectedOutLog.user_name || 'System',
+                    user_penarik: actor,
+                    keterangan_out_asli: selectedOutLog.status || '-',
+                    status: 'MENUNGGU_REVISI',
+                    sisa_fisik_belum_cocok: sisaBelumAdaData,
+                    created_at: new Date().toISOString()
+                };
+
+                await DatabaseService.insertKarantina(karantinaRow, writeMode);
+                fetchPendingKarantinaCount();
+            } catch (kErr) {
+                console.warn('Karantina insert error:', kErr);
+            }
+
+            // 2. Update log OUT di database_log menjadi MOVE agar tidak memotong saldo aktif (tetap mematuhi check constraint database_log_type_check: IN, OUT, MOVE)
+            try {
+                const { error: updateLogErr } = await supabase
+                    .from('database_log')
+                    .update({
+                        type: 'MOVE',
+                        status: 'REVISI_KARANTINA',
+                        log_update_user: `[REVISI KARANTINA] Dipindahkan oleh ${actor} ke sub-rak ${targetRak}`
+                    })
+                    .eq('id', selectedOutLog.id);
+
+                if (updateLogErr) {
+                    console.warn('Gagal update log OUT di database_log:', updateLogErr);
+                }
+            } catch (upErr) {
+                console.warn('Error updating database_log:', upErr);
+            }
+
+            // 3. Masukkan transfer resmi (OUT dari rak asal dan IN ke sub-rak target)
+            const now = new Date();
+            const tglNormalized = now.toISOString().split('T')[0];
+            const tglFormatted = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+            const waktuFormatted = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+            const tglScanFinal = selectedOutLog.tgl_scan || tglNormalized;
+
+            const transferLogs = [
+                {
+                    sku: selectedOutLog.sku,
+                    rak: selectedOutLog.rak || 'TEMP-A',
+                    sub_rak: selectedOutLog.rak || 'TEMP-A',
+                    jumlah: pulihQty,
+                    type: 'OUT',
+                    gudang: 'TRANSFER',
+                    tgl: selectedOutLog.tgl || tglFormatted,
+                    waktu: selectedOutLog.waktu || waktuFormatted,
+                    tgl_scan: tglScanFinal,
+                    tgl_normalized: tglNormalized,
+                    user_name: `System (Revisi: ${actor})`,
+                    status: 'TRANSFER_REVISI',
+                    matched_log_id: String(selectedOutLog.id),
+                    created_at: new Date(now.getTime() + 500).toISOString()
+                },
+                {
+                    sku: selectedOutLog.sku,
+                    rak: targetRak,
+                    sub_rak: targetRak,
+                    jumlah: pulihQty,
+                    type: 'IN',
+                    gudang: 'TRANSFER',
+                    tgl: selectedOutLog.tgl || tglFormatted,
+                    waktu: selectedOutLog.waktu || waktuFormatted,
+                    tgl_scan: tglScanFinal,
+                    tgl_normalized: tglNormalized,
+                    user_name: `System (Revisi: ${actor})`,
+                    status: 'TRANSFER_REVISI',
+                    matched_log_id: String(selectedOutLog.id),
+                    created_at: new Date(now.getTime() + 1000).toISOString()
+                }
+            ];
+
+            await DatabaseService.insertLogs(transferLogs, writeMode);
+
+            // 4. Update atau Insert ke stock_items untuk target sub-rak
+            const { data: existingDest } = await supabase
+                .from('stock_items')
+                .select('*')
+                .eq('nama_produk', selectedOutLog.sku)
+                .eq('rak', targetRak)
+                .limit(1);
+
+            let targetItemRow = existingDest?.[0];
+            if (!targetItemRow) {
+                const { data: newRow } = await DatabaseService.insertStockItems([{
+                    nama_produk: selectedOutLog.sku,
+                    satuan: 'PCS',
+                    stok_awal: 0,
+                    masuk: pulihQty,
+                    keluar: 0,
+                    tersedia: pulihQty,
+                    packing: selectedOutLog.packing || '',
+                    rak: targetRak,
+                    sub_rak: targetRak,
+                    status: 'Aktif'
+                }], writeMode);
+                targetItemRow = newRow?.[0];
+            } else {
+                const newMasuk = (targetItemRow.masuk || 0) + pulihQty;
+                const newTersedia = (targetItemRow.stok_awal || 0) + newMasuk - (targetItemRow.keluar || 0);
+                await DatabaseService.updateStockItem(targetItemRow.id, {
+                    masuk: newMasuk,
+                    tersedia: Math.max(0, newTersedia)
+                }, writeMode);
+            }
+
+            // 5. Auto-mark sebagai terkonfirmasi jika bukan rak TEMP
+            if (!targetRak.startsWith('TEMP')) {
+                const storageKey = `verified_rak_${targetRak}`;
+                const prodName = selectedOutLog.sku.trim().toLowerCase();
+                const existingVerified: string[] = JSON.parse(localStorage.getItem(storageKey) || '[]');
+                if (!existingVerified.includes(prodName)) {
+                    existingVerified.push(prodName);
+                    localStorage.setItem(storageKey, JSON.stringify(existingVerified));
+                }
+
+                if (targetItemRow?.id) {
+                    setVerifiedIds(prev => new Set(prev).add(targetItemRow.id));
+                }
+
+                // Tambah log VERIFY ke database_log agar terkonfirmasi secara universal
+                try {
+                    await supabase.from('database_log').insert([{
+                        sku: selectedOutLog.sku,
+                        jumlah: pulihQty,
+                        type: 'MOVE',
+                        gudang: 'VERIFY',
+                        rak: targetRak,
+                        sub_rak: targetRak,
+                        tgl_scan: tglScanFinal,
+                        user_name: actor,
+                        status: 'VERIFIED',
+                        created_at: new Date(now.getTime() + 1500).toISOString()
+                    }]);
+                } catch (vErr) {
+                    console.warn('Verify log insert warning:', vErr);
+                }
+            }
+
+            // 6. Siapkan Data Laporan WhatsApp
+            const reportPayload = {
+                sku: selectedOutLog.sku,
+                sub_rak_tujuan: targetRak,
+                fisik_ditemukan: physical,
+                pulih_qty: pulihQty,
+                sisa_belum_ada_data: sisaBelumAdaData,
+                original_log_id: selectedOutLog.id,
+                tgl_out_asli: selectedOutLog.tgl_scan || selectedOutLog.tgl,
+                user_pemotong: selectedOutLog.user_name,
+                keterangan_out: selectedOutLog.keterangan,
+                user_penarik: actor,
+                tgl_laporan: new Date().toLocaleDateString('id-ID', {
+                    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+                })
+            };
+
+            setWaReportData(reportPayload);
+            setIsWaCopied(false);
+            setShowWaSuccessModal(true);
+
+            // Tutup modal pemilihan OUT dan Pull modal
+            setShowOutTraceModal(false);
+            setShowPullModal(false);
+
+            // Refresh tampilan rak aktif
+            fetchItems(targetRak, true);
+            fetchPendingKarantinaCount();
+
+            setToast({
+                isOpen: true,
+                message: `✅ Berhasil memulihkan ${pulihQty} pcs ke Rak ${targetRak}!`,
+                type: 'success'
+            });
+
+        } catch (err: any) {
+            console.error('Error executing OUT trace restoration:', err);
+            setToast({
+                isOpen: true,
+                message: `Gagal memproses penarikan: ${err.message}`,
+                type: 'error'
+            });
+        } finally {
+            setIsExecutingOutTrace(false);
+        }
+    };
+
+    const generateWaTextFromPayload = (data: any): string => {
+        if (!data) return '';
+        let sisaLine = '';
+        if (data.sisa_belum_ada_data > 0) {
+            sisaLine = `\n⚠️ *Sisa Fisik Belum Ada Data:* ${data.sisa_belum_ada_data} pcs (Perlu Pengecekan Admin/Accurate)`;
+        }
+
+        return `🚨 *LAPORAN FISIK TIDAK TURUN (CEK RAK 2)*
+━━━━━━━━━━━━━━━━━━
+📦 *SKU:* ${data.sku}
+🎯 *Sub-Rak Tujuan:* ${data.sub_rak_tujuan}
+🔢 *Fisik Ditemukan:* ${data.fisik_ditemukan} pcs
+✅ *Dipulihkan dari OUT:* ${data.pulih_qty} pcs${sisaLine}
+━━━━━━━━━━━━━━━━━━
+📋 *Detail Data OUT yang Dipindahkan:*
+• ID Log Asli: #${data.original_log_id || '-'}
+• Tgl OUT: ${data.tgl_out_asli || '-'}
+• Pemotong OUT: ${data.user_pemotong || '-'}
+• Keterangan OUT: ${data.keterangan_out || '-'}
+━━━━━━━━━━━━━━━━━━
+📌 *Status:* ⏳ MENUNGGU REVISI DI ACCURATE
+👤 *Dilaporkan Oleh:* ${data.user_penarik} (${data.tgl_laporan})
+
+_Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut di Accurate._`;
+    };
+
     // Direct confirmation trigger (opens PIN 1234 Modal with PIN prefilled)
     const handleMarkAsVerified = (item: any) => {
         setPendingConfirmAction({ type: 'single', item });
@@ -1078,6 +1407,14 @@ export function CekRak2() {
     };
 
     const handleMarkAsUnverified = (item: any) => {
+        if (!isAdminOrDev) {
+            setToast({
+                isOpen: true,
+                message: '❌ Hanya Developer & Admin yang dapat membatalkan konfirmasi. Hubungi admin.',
+                type: 'error'
+            });
+            return;
+        }
         setPendingConfirmAction({ type: 'unverify', item });
         setPinInput('1234');
         setShowPinModal(true);
@@ -1901,8 +2238,8 @@ export function CekRak2() {
                     {/* ======================================================== */}
                     {!lastScanned && (
                         <div className="space-y-5 sm:space-y-6 animate-in fade-in duration-300">
-                            {/* QUICK STATS CARDS ROW (3 Clean Informational Cards) */}
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 sm:gap-4">
+                            {/* QUICK STATS CARDS ROW (4 Clean Informational Cards) */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
                                 <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-sm hover:shadow-md transition-all flex items-center gap-3.5">
                                     <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
                                         <Layers className="w-5 h-5 sm:w-6 sm:h-6" />
@@ -1932,6 +2269,25 @@ export function CekRak2() {
                                         <p className="text-sm sm:text-base font-black text-emerald-600 flex items-center gap-1.5">
                                             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                                             Sinkron Aktif
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div 
+                                    onClick={() => setShowKarantinaModal(true)}
+                                    className="bg-gradient-to-br from-amber-50 to-orange-50 hover:from-amber-100 hover:to-orange-100 p-4 sm:p-5 rounded-3xl border border-amber-200/90 shadow-sm hover:shadow-md transition-all flex items-center gap-3.5 cursor-pointer group"
+                                >
+                                    <div className="p-3 bg-amber-500 text-white rounded-2xl shadow-sm shadow-amber-500/20 group-hover:scale-105 transition-transform relative">
+                                        <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6" />
+                                        {pendingKarantinaCount > 0 && (
+                                            <span className="w-2.5 h-2.5 bg-rose-500 rounded-full absolute -top-0.5 -right-0.5 ring-2 ring-white animate-pulse" />
+                                        )}
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Wadah Karantina</p>
+                                        <p className="text-lg sm:text-xl font-black text-amber-900 flex items-center gap-1.5">
+                                            <span>{pendingKarantinaCount}</span>
+                                            <span className="text-xs font-bold text-amber-700">Menunggu</span>
                                         </p>
                                     </div>
                                 </div>
@@ -2136,6 +2492,26 @@ export function CekRak2() {
                     {/* ======================================================== */}
                     {lastScanned && (
                         <div className="space-y-4 sm:space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-400">
+                            {/* BANNER RAK PENAMPUNG SEMENTARA (REORGANISASI) */}
+                            {lastScanned?.toUpperCase().trim().startsWith('TEMP') && (
+                                <div className="bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-amber-500/15 border-2 border-amber-400/80 rounded-3xl p-4 sm:p-5 shadow-md flex items-start sm:items-center gap-3.5 animate-in fade-in">
+                                    <div className="w-10 h-10 rounded-2xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-md shadow-amber-500/30">
+                                        <AlertTriangle className="w-5 h-5" />
+                                    </div>
+                                    <div className="flex-1">
+                                        <h4 className="font-black text-sm text-amber-900 uppercase tracking-tight flex items-center gap-2">
+                                            <span>🔶 Rak Penampung Sementara (Reorganisasi Gudang)</span>
+                                            <span className="px-2 py-0.5 rounded-full bg-amber-200/70 text-amber-900 text-[10px] font-black uppercase">
+                                                Stok Menunggu Ditarik
+                                            </span>
+                                        </h4>
+                                        <p className="text-xs text-amber-800 font-semibold mt-0.5 leading-relaxed">
+                                            Barang di rak ini adalah stok sementara hasil Pindah Real-Time. Buka sub-rak tujuan final Anda (misal: <strong>A1, A2, B1</strong>), lalu gunakan tombol <strong>+ Tarik Barang</strong> di sub-rak tersebut untuk memindahkan barang ke tempat aslinya.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
                             {/* RAK HERO BAR */}
                             <div className="bg-white rounded-3xl p-4 sm:p-6 shadow-xl shadow-slate-900/5 border border-slate-200/90 flex flex-col xl:flex-row xl:items-center justify-between gap-4 sm:gap-5">
                                 <div className="flex flex-col sm:flex-row sm:items-center gap-3.5 sm:gap-4">
@@ -2168,15 +2544,34 @@ export function CekRak2() {
 
                                 {/* ACTION BUTTONS TOOLBAR */}
                                 <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 w-full xl:w-auto">
+                                    {/* Tombol Tarik Barang Permanen */}
+                                    <Button
+                                        onClick={openPullModal}
+                                        className="h-11 px-3.5 sm:px-4 rounded-xl font-black bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-500/20 active:scale-95 transition-all flex items-center justify-center text-xs uppercase tracking-wider cursor-pointer"
+                                        title="Tarik stok fisik barang dari rak lain/TEMP ke sub-rak ini"
+                                    >
+                                        <SearchCode size={16} className="mr-1.5" />
+                                        <span>Tarik Barang</span>
+                                    </Button>
+
+                                    {/* Tombol Wadah Karantina Revisi */}
+                                    <Button
+                                        variant="outline"
+                                        onClick={() => setShowKarantinaModal(true)}
+                                        className="h-11 px-3.5 sm:px-4 rounded-xl font-black bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 shadow-sm flex items-center justify-center text-xs uppercase tracking-wider cursor-pointer relative"
+                                        title="Buka Wadah Karantina Revisi OUT"
+                                    >
+                                        <ShieldCheck size={16} className="mr-1.5 text-amber-600" />
+                                        <span>Karantina</span>
+                                        {pendingKarantinaCount > 0 && (
+                                            <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-rose-500 text-white font-black text-[10px] animate-pulse">
+                                                {pendingKarantinaCount}
+                                            </span>
+                                        )}
+                                    </Button>
+
                                     {isAuditMode ? (
                                         <>
-                                            <Button
-                                                onClick={openPullModal}
-                                                className="h-11 px-3.5 sm:px-4 rounded-xl font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md flex items-center justify-center text-xs uppercase tracking-wider"
-                                            >
-                                                <SearchCode size={16} className="mr-1.5" />
-                                                <span>Tarik Fisik</span>
-                                            </Button>
                                             <Button
                                                 onClick={handleClearRack}
                                                 disabled={isCompletingAudit}
@@ -2198,10 +2593,10 @@ export function CekRak2() {
                                         <Button
                                             variant="outline"
                                             onClick={() => setIsAuditMode(true)}
-                                            className="h-11 px-3.5 sm:px-4 rounded-xl font-bold bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 shadow-sm flex items-center justify-center text-xs uppercase tracking-wider"
+                                            className="h-11 px-3.5 sm:px-4 rounded-xl font-bold bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100 shadow-sm flex items-center justify-center text-xs uppercase tracking-wider"
                                         >
                                             <AlertTriangle size={16} className="mr-1.5 text-amber-600" />
-                                            <span>Mulai Audit</span>
+                                            <span>Mode Audit</span>
                                         </Button>
                                     )}
 
@@ -2490,20 +2885,27 @@ export function CekRak2() {
                                                     {/* Action Controls */}
                                                     <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
                                                         {isVerified ? (
-                                                            <button
-                                                                onClick={() => handleMarkAsUnverified(item)}
-                                                                title="Klik untuk Batal Konfirmasi (Memerlukan PIN)"
-                                                                className="w-full h-10 px-3 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-rose-50 hover:text-rose-700 transition-all flex items-center justify-center font-black text-xs uppercase tracking-wider group/btn cursor-pointer border border-emerald-200 hover:border-rose-200 shadow-sm"
-                                                            >
-                                                                <span className="group-hover/btn:hidden flex items-center gap-1.5">
+                                                            isAdminOrDev ? (
+                                                                <button
+                                                                    onClick={() => handleMarkAsUnverified(item)}
+                                                                    title="Klik untuk Batal Konfirmasi (Memerlukan PIN)"
+                                                                    className="w-full h-10 px-3 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-rose-50 hover:text-rose-700 transition-all flex items-center justify-center font-black text-xs uppercase tracking-wider group/btn cursor-pointer border border-emerald-200 hover:border-rose-200 shadow-sm"
+                                                                >
+                                                                    <span className="group-hover/btn:hidden flex items-center gap-1.5">
+                                                                        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                                                                        Terkonfirmasi (Klik Batal)
+                                                                    </span>
+                                                                    <span className="hidden group-hover/btn:flex items-center gap-1.5 text-rose-600 font-black">
+                                                                        <XCircle className="h-4 w-4" />
+                                                                        Batal Konfirmasi
+                                                                    </span>
+                                                                </button>
+                                                            ) : (
+                                                                <div className="w-full h-10 px-3 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center font-black text-xs uppercase tracking-wider border border-emerald-200 shadow-sm gap-1.5">
                                                                     <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                                                                    Terkonfirmasi (Klik Batal)
-                                                                </span>
-                                                                <span className="hidden group-hover/btn:flex items-center gap-1.5 text-rose-600 font-black">
-                                                                    <XCircle className="h-4 w-4" />
-                                                                    Batal Konfirmasi
-                                                                </span>
-                                                            </button>
+                                                                    <span>Terkonfirmasi</span>
+                                                                </div>
+                                                            )
                                                         ) : (
                                                             <>
                                                                 <button
@@ -2598,14 +3000,21 @@ export function CekRak2() {
                                                             <td className="py-3 px-4 text-center whitespace-nowrap">
                                                                 <div className="flex items-center justify-center gap-2">
                                                                     {isVerified ? (
-                                                                        <button
-                                                                            onClick={() => handleMarkAsUnverified(item)}
-                                                                            className="px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-rose-50 hover:text-rose-700 border border-emerald-200 hover:border-rose-200 font-black text-[11px] uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
-                                                                            title="Batal Konfirmasi"
-                                                                        >
-                                                                            <XCircle className="w-3.5 h-3.5 text-rose-500" />
-                                                                            <span>Batal</span>
-                                                                        </button>
+                                                                        isAdminOrDev ? (
+                                                                            <button
+                                                                                onClick={() => handleMarkAsUnverified(item)}
+                                                                                className="px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-rose-50 hover:text-rose-700 border border-emerald-200 hover:border-rose-200 font-black text-[11px] uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
+                                                                                title="Batal Konfirmasi"
+                                                                            >
+                                                                                <XCircle className="w-3.5 h-3.5 text-rose-500" />
+                                                                                <span>Batal</span>
+                                                                            </button>
+                                                                        ) : (
+                                                                            <span className="px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 font-black text-[11px] uppercase tracking-wider flex items-center gap-1 shadow-sm">
+                                                                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                                                                <span>Terkonfirmasi</span>
+                                                                            </span>
+                                                                        )
                                                                     ) : (
                                                                         <>
                                                                             <button
@@ -2700,30 +3109,59 @@ export function CekRak2() {
 
                                     <div className="flex-1 overflow-y-auto pr-2 pb-4 mt-4 relative">
                                         {pullSearchTerm && pullSearchResults.length === 0 ? (
-                                            <div className="flex flex-col items-center justify-center h-48 text-center bg-red-50/50 rounded-2xl border border-dashed border-red-100">
-                                                <p className="text-red-500 text-sm font-bold">
-                                                    Barang tidak ditemukan di rak manapun.
+                                            <div className="flex flex-col items-center justify-center p-6 text-center bg-amber-50/70 rounded-2xl border-2 border-dashed border-amber-200">
+                                                <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mb-2 shadow-sm">
+                                                    <AlertTriangle className="w-6 h-6" />
+                                                </div>
+                                                <p className="text-slate-900 text-sm font-black uppercase tracking-tight">
+                                                    Data Stok 0 / Tidak Ditemukan
                                                 </p>
+                                                <p className="text-xs text-slate-600 font-medium max-w-xs mt-1 mb-4">
+                                                    Jika fisik barang sebenarnya <strong>ada di rak</strong>, kemungkinan barang sudah terpotong OUT di sistem namun batal turun.
+                                                </p>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleOpenOutTrace(pullSearchTerm)}
+                                                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-black text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                                                >
+                                                    <Search className="w-4 h-4" />
+                                                    <span>Telusuri Data OUT Terakhir (Fisik Ada)</span>
+                                                </button>
                                             </div>
                                         ) : (
-                                            <div className="absolute top-0 left-0 right-0 z-50 bg-white border border-gray-100 rounded-xl shadow-lg max-h-64 overflow-y-auto">
-                                                {pullSearchResults.map((item, index) => (
-                                                    <div 
-                                                        key={index}
-                                                        onClick={() => selectPullItem(item)}
-                                                        className="px-4 py-3 hover:bg-indigo-50 cursor-pointer border-b border-gray-50 last:border-0 transition-colors group"
+                                            <div>
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <span className="text-[11px] font-bold text-slate-400">
+                                                        Hasil pencarian stok aktif:
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleOpenOutTrace(pullSearchTerm)}
+                                                        className="text-[11px] font-black text-amber-700 hover:text-amber-800 flex items-center gap-1 hover:underline cursor-pointer"
                                                     >
-                                                        <div className="flex justify-between items-start mb-1">
-                                                            <p className="font-bold text-gray-900 uppercase text-sm group-hover:text-indigo-700">{item.nama_produk}</p>
-                                                            <span className="text-[10px] font-black bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded uppercase tracking-wider">
-                                                                Rak {item.rak}
-                                                            </span>
+                                                        <Search className="w-3 h-3" />
+                                                        <span>Fisik ada tapi stok 0? Telusuri OUT</span>
+                                                    </button>
+                                                </div>
+                                                <div className="bg-white border border-gray-100 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+                                                    {pullSearchResults.map((item, index) => (
+                                                        <div 
+                                                            key={index}
+                                                            onClick={() => selectPullItem(item)}
+                                                            className="px-4 py-3 hover:bg-indigo-50 cursor-pointer border-b border-gray-50 last:border-0 transition-colors group"
+                                                        >
+                                                            <div className="flex justify-between items-start mb-1">
+                                                                <p className="font-bold text-gray-900 uppercase text-sm group-hover:text-indigo-700">{item.nama_produk}</p>
+                                                                <span className="text-[10px] font-black bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded uppercase tracking-wider">
+                                                                    Rak {item.rak}
+                                                                </span>
+                                                            </div>
+                                                            <div className="text-xs text-gray-500">
+                                                                Tersedia: <span className="font-bold text-indigo-600">{item.tersedia} {item.satuan}</span>
+                                                            </div>
                                                         </div>
-                                                        <div className="text-xs text-gray-500">
-                                                            Tersedia: <span className="font-bold text-indigo-600">{item.tersedia} {item.satuan}</span>
-                                                        </div>
-                                                    </div>
-                                                ))}
+                                                    ))}
+                                                </div>
                                             </div>
                                         )}
                                     </div>
@@ -3193,6 +3631,321 @@ export function CekRak2() {
                         </div>
                     </form>
                 </Modal>
+            )}
+
+            {/* MODAL TELUSURI DATA OUT TERAKHIR (FISIK ADA TAPI DATA 0 - OPSI 2) */}
+            {showOutTraceModal && (
+                <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-[115] flex items-center justify-center p-3 sm:p-5 animate-in fade-in">
+                    <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[92vh] overflow-hidden border border-amber-200">
+                        {/* Modal Header */}
+                        <div className="bg-gradient-to-r from-amber-600 via-orange-600 to-amber-700 p-5 text-white flex justify-between items-center shadow-md">
+                            <div className="flex items-center gap-3">
+                                <div className="w-11 h-11 rounded-2xl bg-white/15 flex items-center justify-center backdrop-blur-sm border border-white/20">
+                                    <Search className="w-6 h-6 text-amber-100" />
+                                </div>
+                                <div>
+                                    <h3 className="text-lg sm:text-xl font-black uppercase tracking-tight">
+                                        Telusuri Riwayat OUT
+                                    </h3>
+                                    <p className="text-xs text-amber-100/90 font-medium">
+                                        Fisik ada di sub-rak <strong>{lastScanned}</strong> tapi data 0 (Opsi 2: Tarik sesuai OUT)
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => {
+                                    setShowOutTraceModal(false);
+                                    setSelectedOutLog(null);
+                                }}
+                                className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors cursor-pointer"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        {/* Search & Inputs */}
+                        <div className="p-4 sm:p-5 bg-slate-50 border-b border-slate-200 space-y-3">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
+                                        SKU / Nama Barang
+                                    </label>
+                                    <div className="relative flex items-center">
+                                        <input
+                                            type="text"
+                                            value={outTraceSku}
+                                            onChange={(e) => setOutTraceSku(e.target.value)}
+                                            placeholder="Ketik SKU untuk dicari..."
+                                            className="w-full px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 focus:border-amber-500 focus:ring-2 focus:ring-amber-200 outline-none uppercase"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => fetchOutLogsForSku(outTraceSku)}
+                                            className="ml-2 px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black uppercase tracking-wider shrink-0 cursor-pointer shadow-sm"
+                                        >
+                                            Cari OUT
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
+                                        Jumlah Fisik Ditemukan (pcs) <span className="text-rose-500">*</span>
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        value={outTracePhysicalQty}
+                                        onChange={(e) => setOutTracePhysicalQty(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))}
+                                        placeholder="Misal: 52"
+                                        className="w-full px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 focus:border-amber-500 focus:ring-2 focus:ring-amber-200 outline-none text-slate-900"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Logs List Area */}
+                        <div className="flex-1 overflow-y-auto p-4 sm:p-5 bg-slate-100/60 space-y-3">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-black uppercase tracking-wider text-slate-500">
+                                    Pilih Transaksi OUT yang Batal Keluar:
+                                </span>
+                                <span className="text-xs font-bold text-slate-400">
+                                    {outTraceLogs.length} Transaksi Ditemukan
+                                </span>
+                            </div>
+
+                            {isLoadingOutLogs ? (
+                                <div className="flex flex-col items-center justify-center py-12 text-slate-500">
+                                    <RefreshCw className="w-7 h-7 animate-spin text-amber-500 mb-2" />
+                                    <p className="text-xs font-bold">Mencari riwayat transaksi OUT di database log...</p>
+                                </div>
+                            ) : outTraceLogs.length === 0 ? (
+                                <div className="flex flex-col items-center justify-center py-10 text-center bg-white rounded-2xl border border-dashed border-slate-300 p-6">
+                                    <AlertTriangle className="w-8 h-8 text-amber-500 mb-2" />
+                                    <p className="font-black text-sm text-slate-800 uppercase">
+                                        Tidak Ditemukan Riwayat OUT
+                                    </p>
+                                    <p className="text-xs text-slate-500 mt-1 max-w-xs">
+                                        Pastikan SKU yang diketik sudah benar. Tidak ada catatan transaksi keluar untuk SKU ini.
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="space-y-2">
+                                    {outTraceLogs.map((log) => {
+                                        const isSelected = selectedOutLog?.id === log.id;
+                                        return (
+                                            <div
+                                                key={log.id}
+                                                onClick={() => setSelectedOutLog(log)}
+                                                className={`p-3.5 rounded-2xl border cursor-pointer transition-all flex items-center justify-between gap-3 ${
+                                                    isSelected
+                                                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300 shadow-sm'
+                                                        : 'bg-white border-slate-200 hover:border-amber-300 hover:bg-slate-50/80 shadow-xs'
+                                                }`}
+                                            >
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`w-5 h-5 rounded-full border flex items-center justify-center ${
+                                                        isSelected ? 'border-amber-600 bg-amber-600 text-white' : 'border-slate-300 bg-white'
+                                                    }`}>
+                                                        {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                                                    </div>
+                                                    <div>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="font-black text-xs text-slate-900 uppercase">
+                                                                {log.sku}
+                                                            </span>
+                                                            <span className="text-[10px] font-bold text-slate-400">
+                                                                ID #{log.id}
+                                                            </span>
+                                                        </div>
+                                                        <p className="text-[11px] text-slate-500 mt-0.5">
+                                                            Tgl: <strong>{log.tgl_scan || log.tgl || '-'}</strong> • User: <strong>{log.user_name || '-'}</strong> • Rak: {log.rak || '-'}
+                                                        </p>
+                                                        {log.keterangan && (
+                                                            <p className="text-[10px] text-slate-400 italic truncate max-w-sm mt-0.5">
+                                                                Ket: {log.keterangan}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                <div className="text-right shrink-0">
+                                                    <span className="text-base font-black text-rose-600 block">
+                                                        -{Number(log.jumlah).toLocaleString()} <span className="text-[10px] uppercase text-slate-400">pcs</span>
+                                                    </span>
+                                                    <span className="text-[10px] font-black uppercase text-amber-700 bg-amber-100 px-2 py-0.5 rounded">
+                                                        Pilih Data Ini
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+
+                            {/* Calculation Summary Box (Opsi 2) */}
+                            {selectedOutLog && outTracePhysicalQty !== '' && Number(outTracePhysicalQty) > 0 && (
+                                <div className="bg-gradient-to-br from-amber-500/10 via-orange-500/10 to-amber-500/10 border-2 border-amber-300 rounded-2xl p-4 animate-in fade-in space-y-2.5">
+                                    <div className="flex items-center justify-between border-b border-amber-200 pb-2">
+                                        <span className="text-xs font-black uppercase text-amber-900">
+                                            Ringkasan Penarikan (Opsi 2):
+                                        </span>
+                                        <span className="text-[10px] font-black text-amber-800 bg-amber-200 px-2 py-0.5 rounded uppercase">
+                                            Sub-Rak Tujuan: {lastScanned}
+                                        </span>
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                                        <div className="bg-white/80 p-2 rounded-xl">
+                                            <span className="text-[10px] font-bold text-slate-500 uppercase block">Fisik Ada</span>
+                                            <strong className="text-sm font-black text-slate-800">{Number(outTracePhysicalQty)} pcs</strong>
+                                        </div>
+                                        <div className="bg-emerald-50 p-2 rounded-xl border border-emerald-200">
+                                            <span className="text-[10px] font-bold text-emerald-700 uppercase block">Ditarik ke {lastScanned}</span>
+                                            <strong className="text-sm font-black text-emerald-700">{Number(selectedOutLog.jumlah)} pcs</strong>
+                                        </div>
+                                        <div className="bg-rose-50 p-2 rounded-xl border border-rose-200">
+                                            <span className="text-[10px] font-bold text-rose-700 uppercase block">Sisa Belum Ada Data</span>
+                                            <strong className="text-sm font-black text-rose-700">
+                                                {Math.max(0, Number(outTracePhysicalQty) - Number(selectedOutLog.jumlah))} pcs
+                                            </strong>
+                                        </div>
+                                    </div>
+                                    <p className="text-[11px] text-amber-900 leading-relaxed font-medium">
+                                        💡 Sebanyak <strong>{Number(selectedOutLog.jumlah)} pcs</strong> akan langsung ditarik ke sub-rak <strong>{lastScanned}</strong> dan auto-terkonfirmasi.
+                                        {Number(outTracePhysicalQty) > Number(selectedOutLog.jumlah) && (
+                                            <span> Sisa <strong>{Number(outTracePhysicalQty) - Number(selectedOutLog.jumlah)} pcs</strong> akan dicatat dan dibuatkan format pesan laporan WhatsApp untuk tim crosscheck/Accurate.</span>
+                                        )}
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowOutTraceModal(false);
+                                    setSelectedOutLog(null);
+                                }}
+                                className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-200 font-bold text-xs uppercase cursor-pointer"
+                            >
+                                Batal
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleConfirmOutTrace}
+                                disabled={isExecutingOutTrace || !selectedOutLog || outTracePhysicalQty === '' || Number(outTracePhysicalQty) <= 0}
+                                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 active:scale-95"
+                            >
+                                {isExecutingOutTrace ? (
+                                    <>
+                                        <RefreshCw className="w-4 h-4 animate-spin" />
+                                        <span>Memproses Penarikan...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <CheckCircle2 className="w-4 h-4" />
+                                        <span>Konfirmasi Pulihkan &amp; Tarik ke {lastScanned}</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* MODAL SUKSES & SALIN FORMAT WHATSAPP */}
+            {showWaSuccessModal && waReportData && (
+                <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-[130] flex items-center justify-center p-4 animate-in fade-in">
+                    <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl p-6 border border-slate-200 animate-in zoom-in-95 flex flex-col">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 shadow-sm">
+                                <CheckCircle2 className="w-7 h-7" />
+                            </div>
+                            <div>
+                                <h4 className="text-lg font-black uppercase text-slate-900 tracking-tight">
+                                    Penarikan Berhasil &amp; Masuk Karantina!
+                                </h4>
+                                <p className="text-xs text-slate-500 font-medium">
+                                    Stok berhasil ditarik ke <strong>{waReportData.sub_rak_tujuan}</strong> dan langsung terkonfirmasi.
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* WhatsApp Message Preview Card */}
+                        <div className="bg-slate-900 text-slate-100 rounded-2xl p-4 font-mono text-xs leading-relaxed max-h-60 overflow-y-auto shadow-inner border border-slate-800 mb-4 whitespace-pre-wrap select-all">
+                            {generateWaTextFromPayload(waReportData)}
+                        </div>
+
+                        <div className="space-y-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const text = generateWaTextFromPayload(waReportData);
+                                    navigator.clipboard.writeText(text).then(() => {
+                                        setIsWaCopied(true);
+                                        setToast({
+                                            isOpen: true,
+                                            message: '📋 Format WhatsApp berhasil disalin!',
+                                            type: 'success'
+                                        });
+                                        setTimeout(() => setIsWaCopied(false), 2500);
+                                    });
+                                }}
+                                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-xs uppercase tracking-wider shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                            >
+                                {isWaCopied ? (
+                                    <>
+                                        <Check className="w-4 h-4" />
+                                        <span>Tersalin ke Clipboard!</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Copy className="w-4 h-4" />
+                                        <span>Salin Laporan WhatsApp</span>
+                                    </>
+                                )}
+                            </button>
+
+                            <div className="flex gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setShowWaSuccessModal(false);
+                                        setShowKarantinaModal(true);
+                                    }}
+                                    className="flex-1 py-2.5 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-black text-xs uppercase tracking-wider transition-colors cursor-pointer"
+                                >
+                                    Lihat Wadah Karantina
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setShowWaSuccessModal(false);
+                                        setWaReportData(null);
+                                    }}
+                                    className="flex-1 py-2.5 px-3 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 font-black text-xs uppercase tracking-wider transition-colors cursor-pointer"
+                                >
+                                    Selesai / Tutup
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* WADAH KARANTINA REVISI OUT MODAL */}
+            {showKarantinaModal && (
+                <KarantinaRevisiOutModal
+                    isOpen={showKarantinaModal}
+                    onClose={() => setShowKarantinaModal(false)}
+                    onDataChanged={() => {
+                        fetchPendingKarantinaCount();
+                        if (lastScanned) fetchItems(lastScanned, true);
+                    }}
+                />
             )}
 
             {toast.isOpen && (

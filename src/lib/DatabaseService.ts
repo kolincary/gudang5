@@ -1028,5 +1028,115 @@ export const DatabaseService = {
       console.error('❌ Error syncing OUT to Lantai 3:', error);
       return { success: false, error };
     }
+  },
+
+  async insertKarantina(item: any, mode: DatabaseWriteMode = 'both') {
+    let supabaseResult: any = null;
+    let supabaseError: any = null;
+    const docId = String(Date.now());
+    const itemWithId = {
+      ...item,
+      id: item.id || docId
+    };
+
+    if (mode === 'supabase' || mode === 'both') {
+      try {
+        const { data, error } = await supabase
+          .from('karantina_revisi_out')
+          .insert([item])
+          .select();
+        
+        if (error) {
+          console.warn('Supabase insertKarantina warning:', error);
+          supabaseError = error;
+        } else {
+          supabaseResult = data;
+        }
+      } catch (err) {
+        console.warn('Supabase insertKarantina exception:', err);
+        supabaseError = err;
+      }
+    }
+
+    // Always dual-write & backup to Firestore
+    try {
+      const docRef = doc(db, 'karantina_revisi_out', docId);
+      await setDoc(docRef, itemWithId, { merge: true });
+      console.log('✅ Firestore dual-write success for karantina_revisi_out');
+    } catch (fbErr) {
+      console.error('Firestore insertKarantina failed:', fbErr);
+    }
+
+    return { data: supabaseResult || [itemWithId], error: supabaseError };
+  },
+
+  async fetchKarantina(mode: DatabaseReadMode = 'supabase') {
+    let result: any[] = [];
+    if (mode === 'supabase') {
+      try {
+        const { data, error } = await supabase
+          .from('karantina_revisi_out')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (!error && data && data.length > 0) {
+          return { data, error: null };
+        }
+      } catch (e) {
+        console.warn('Supabase fetchKarantina error, falling back to Firestore...', e);
+      }
+    }
+
+    // Fallback to Firestore
+    try {
+      const colRef = collection(db, 'karantina_revisi_out');
+      const snap = await getDocs(firestoreQuery(colRef, orderBy('created_at', 'desc')));
+      if (!snap.empty) {
+        result = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        return { data: result, error: null };
+      }
+    } catch (fbErr) {
+      console.warn('Firestore fetchKarantina error:', fbErr);
+    }
+
+    return { data: result, error: null };
+  },
+
+  async updateKarantina(id: string | number, updates: any, mode: DatabaseWriteMode = 'both') {
+    if (mode === 'supabase' || mode === 'both') {
+      try {
+        await supabase
+          .from('karantina_revisi_out')
+          .update(updates)
+          .eq('id', id);
+      } catch (e) {
+        console.warn('Supabase updateKarantina error:', e);
+      }
+    }
+    try {
+      const docRef = doc(db, 'karantina_revisi_out', String(id));
+      await setDoc(docRef, updates, { merge: true });
+    } catch (e) {
+      console.warn('Firestore updateKarantina error:', e);
+    }
+  },
+
+  async deleteKarantina(id: string | number, mode: DatabaseWriteMode = 'both') {
+    if (mode === 'supabase' || mode === 'both') {
+      try {
+        await supabase
+          .from('karantina_revisi_out')
+          .delete()
+          .eq('id', id);
+      } catch (e) {
+        console.warn('Supabase deleteKarantina error:', e);
+      }
+    }
+    try {
+      const docRef = doc(db, 'karantina_revisi_out', String(id));
+      await deleteDoc(docRef);
+    } catch (e) {
+      console.warn('Firestore deleteKarantina error:', e);
+    }
   }
 };
+
