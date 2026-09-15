@@ -45,10 +45,14 @@ export const StokMinus: React.FC = () => {
     const { writeMode } = useDatabaseConfig();
     const { user, userRole, userEmail } = useAuth();
 
-    // Check if current user is developer / devmode
-    const isDeveloper = useMemo(() => {
+    // Check if current user is developer or admin
+    const canManageMarked = useMemo(() => {
+        const role = (userRole || '').trim().toLowerCase();
         return (
-            userRole === 'developer' ||
+            role === 'developer' ||
+            role === 'admin' ||
+            role.includes('admin') ||
+            role.includes('developer') ||
             user?.email === 'devmode' ||
             userEmail === 'rianambong@gmail.com' ||
             userEmail === 'kepin@gmail.com' ||
@@ -127,10 +131,10 @@ export const StokMinus: React.FC = () => {
         }
     };
 
-    // Developer toggle action per row
+    // Developer and Admin toggle action per row
     const handleToggleMarkResolved = async (row: MinusStockRow) => {
-        if (!isDeveloper) {
-            showToast('Hanya role Developer yang dapat mengubah status ini', 'error');
+        if (!canManageMarked) {
+            showToast('Hanya role Developer dan Admin yang dapat mengubah status ini', 'error');
             return;
         }
 
@@ -146,7 +150,7 @@ export const StokMinus: React.FC = () => {
                 status: 'BARCODE_USED',
                 label: 'Barcode Sudah Dipakai (Tidak Perlu Potong)',
                 marked_at: new Date().toISOString(),
-                marked_by: user?.email || userRole || 'developer'
+                marked_by: user?.email || userRole || 'admin'
             };
             await saveResolvedRecords(nextRecords);
             showToast(`✓ Ditandai: Barcode Sudah Dipakai (Tidak Perlu Potong)`, 'success');
@@ -663,7 +667,7 @@ export const StokMinus: React.FC = () => {
                                                                         <CheckCircle2 className="w-3.5 h-3.5 text-purple-600" />
                                                                         Barcode Sudah Dipakai
                                                                     </span>
-                                                                    {isDeveloper && (
+                                                                    {canManageMarked && (
                                                                         <button
                                                                             onClick={() => handleToggleMarkResolved(row)}
                                                                             className="p-1 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors"
@@ -692,7 +696,7 @@ export const StokMinus: React.FC = () => {
                                                                     >
                                                                         <Trash2 className="h-4 w-4" />
                                                                     </Button>
-                                                                    {isDeveloper && (
+                                                                    {canManageMarked && (
                                                                         <Button
                                                                             onClick={() => handleToggleMarkResolved(row)}
                                                                             className="h-8 w-8 p-0 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg border border-purple-200 flex items-center justify-center shadow-2xs"
@@ -733,7 +737,7 @@ export const StokMinus: React.FC = () => {
                                             <CheckCircle2 className="h-4 w-4 text-purple-200" />
                                             Tidak Perlu Potong (Barcode Sudah Dipakai)
                                         </span>
-                                        {isDeveloper && (
+                                        {canManageMarked && (
                                             <button
                                                 onClick={() => handleToggleMarkResolved(row)}
                                                 className="bg-white/20 hover:bg-white/30 text-white px-2 py-0.5 rounded text-[10px] font-black uppercase"
@@ -796,7 +800,7 @@ export const StokMinus: React.FC = () => {
                                                 <CheckCircle2 className="h-4 w-4 text-purple-600" />
                                                 Barcode Sudah Dipakai
                                             </span>
-                                            {isDeveloper && (
+                                            {canManageMarked && (
                                                 <button
                                                     onClick={() => handleToggleMarkResolved(row)}
                                                     className="text-[11px] font-bold text-purple-700 hover:text-red-600 px-2 py-1 bg-white border border-purple-200 rounded-lg shadow-2xs"
@@ -824,7 +828,7 @@ export const StokMinus: React.FC = () => {
                                                 <Trash2 className="h-4 w-4" />
                                                 <span className="tracking-widest uppercase text-[10px]">Hapus</span>
                                             </Button>
-                                            {isDeveloper && (
+                                            {canManageMarked && (
                                                 <Button
                                                     onClick={() => handleToggleMarkResolved(row)}
                                                     className="h-12 px-4 bg-purple-100 text-purple-700 font-black rounded-2xl border border-purple-200 shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"

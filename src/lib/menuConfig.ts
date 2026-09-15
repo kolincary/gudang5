@@ -70,4 +70,6 @@ export const monitoringItems = [
 
 export const additionalMenuItems = [
   { name: 'Cek Rak', href: '/cek-rak', icon: QrCode },
+  { name: 'Cek Rak 2', href: '/cek-rak-2', icon: QrCode },
 ];
+

@@ -33,6 +33,7 @@ import { StokMinus } from './components/StokMinus';
 import { DataKarantina } from './components/DataKarantina';
 import { TransferSync } from './components/TransferSync';
 import { CekRak } from './components/CekRak';
+import { CekRak2 } from './components/CekRak2';
 import { UserManagement } from './components/UserManagement';
 import { realtimeManager } from './lib/realtimeManager';
 import { AppUpdateListener } from './components/AppUpdateListener';
@@ -122,6 +123,7 @@ function AuthenticatedApp() {
           <Route path="/rack-priority-settings" element={<RackPrioritySettings />} />
           <Route path="/transfer-sync" element={<TransferSync />} />
           <Route path="/cek-rak" element={<CekRak />} />
+          <Route path="/cek-rak-2" element={<CekRak2 />} />
           <Route path="/user-management" element={<UserManagement />} />
           <Route path="/daily-quest-manager" element={<DailyQuestManager />} />
           <Route path="/database-settings" element={<DatabaseSettings />} />
