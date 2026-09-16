@@ -1107,10 +1107,41 @@ export function CekRak2() {
                 .ilike('sku', `%${sku.trim()}%`)
                 .eq('type', 'OUT')
                 .order('created_at', { ascending: false })
-                .limit(25);
+                .limit(100);
 
             if (error) throw error;
-            setOutTraceLogs(data || []);
+
+            // Filter out logs created by Dev Mode / Admin / System / Transfer adjustments
+            const filtered = (data || []).filter(log => {
+                const uName = (log.user_name || log.user || '').toLowerCase().trim();
+                const gudang = (log.gudang || '').toUpperCase().trim();
+                const status = (log.status || log.keterangan || '').toLowerCase().trim();
+
+                // Exclude developer / admin / devmode / system users
+                if (
+                    uName.includes('dev mode') || 
+                    uName.includes('devmode') || 
+                    uName.includes('developer') || 
+                    uName.includes('admin') || 
+                    uName.includes('system')
+                ) {
+                    return false;
+                }
+
+                // Exclude transfer / internal adjustment logs
+                if (gudang === 'TRANSFER' || gudang === 'SYSTEM') {
+                    return false;
+                }
+
+                // Exclude revision / karantina / transfer logs
+                if (status.includes('revisi') || status.includes('karantina') || status.includes('transfer')) {
+                    return false;
+                }
+
+                return true;
+            });
+
+            setOutTraceLogs(filtered.slice(0, 30));
         } catch (err: any) {
             console.error('Error fetching OUT logs for trace:', err);
             setToast({
@@ -2629,13 +2660,6 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     >
                                         <RefreshCw className={cn("h-4 w-4 mr-1.5", loading && "animate-spin")} />
                                         <span>Refresh</span>
-                                    </Button>
-                                    <Button
-                                        onClick={handlePrintBarcode}
-                                        className="h-11 px-3.5 sm:px-4 rounded-xl font-black bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 active:scale-95 transition-all flex items-center justify-center text-xs uppercase tracking-wider"
-                                    >
-                                        <QrCode className="h-4 w-4 mr-1.5" />
-                                        <span>Print QR</span>
                                     </Button>
                                     <Button
                                         variant="outline"

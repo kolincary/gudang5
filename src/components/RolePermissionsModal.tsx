@@ -75,9 +75,11 @@ export function RolePermissionsModal({ isOpen, onClose }: RolePermissionsModalPr
                     role: activeTab,
                     menu_path: p
                 }));
-                const { error } = await supabase.from('role_permissions').insert(inserts);
                 if (error) throw error;
             }
+            
+            // Dispatch event for real-time permission sync across components
+            window.dispatchEvent(new CustomEvent('role-permissions-updated', { detail: { role: activeTab } }));
             alert('Hak akses berhasil disimpan!');
         } catch (err: any) {
             alert('Gagal menyimpan: ' + err.message);

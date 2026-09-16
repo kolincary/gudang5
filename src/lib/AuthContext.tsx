@@ -183,6 +183,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
 
         fetchRoleAndPermissions();
+
+        const handlePermUpdate = () => {
+            fetchRoleAndPermissions();
+        };
+
+        window.addEventListener('role-permissions-updated', handlePermUpdate);
+        return () => {
+            window.removeEventListener('role-permissions-updated', handlePermUpdate);
+        };
     }, [user, mockUser]);
 
     const logUserLogin = async (user: User) => {
