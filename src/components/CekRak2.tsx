@@ -6,8 +6,8 @@ import {
     SearchCode, ArrowDownToLine, Archive, AlertTriangle, RefreshCw, 
     QrCode, Camera, Menu, X, ChevronRight, ArrowRightLeft, Loader, 
     MoveRight, Lock, MapPin, LayoutGrid, List, Sparkles, Layers, History,
-    ArrowUpRight, BarChart3, CheckSquare, Compass, SlidersHorizontal,
-    Box, ExternalLink, HelpCircle, Eye, Check, Copy, Table, Grid3X3, ShieldCheck, MessageSquare
+    Box, ExternalLink, HelpCircle, Eye, Check, Copy, Table, Grid3X3, ShieldCheck, MessageSquare, Printer,
+    Compass, ArrowUpRight
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Toast } from './ui/Toast';
@@ -35,10 +35,12 @@ interface StockItem {
 
 export function CekRak2() {
     const { userRole, user, userName } = useAuth();
+    const { writeMode, dbMode } = useDatabaseConfig();
     const isDeveloper = userRole === 'developer' || user?.email === 'devmode' || localStorage.getItem('devmode') === 'true';
     const isAdminOrDev = isDeveloper || userRole === 'admin' || userRole?.includes('admin');
 
     const [rackId, setRackId] = useState('');
+    const [lastScanned, setLastScanned] = useState<string | null>(null);
     const [items, setItems] = useState<StockItem[]>([]);
     const [verifiedIds, setVerifiedIds] = useState<Set<string>>(new Set());
     const [loading, setLoading] = useState(false);
@@ -47,6 +49,12 @@ export function CekRak2() {
 
     // View Mode: 'grid' (Kartu Visual) or 'table' (Tabel Rapat)
     const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+
+    // Main Tab state: 'opname_rak' (Cek & Scan Rak) vs 'selesai_proses' (Data Selesai Diproses Live)
+    const [activeMainTab, setActiveMainTab] = useState<'opname_rak' | 'selesai_proses'>('opname_rak');
+    const [finishedLogs, setFinishedLogs] = useState<any[]>([]);
+    const [isLoadingFinished, setIsLoadingFinished] = useState(false);
+    const [finishedSearchTerm, setFinishedSearchTerm] = useState('');
 
     // Interactive Rack Explorer State
     const [selectedPrefixTab, setSelectedPrefixTab] = useState<string>('ALL');
@@ -59,6 +67,82 @@ export function CekRak2() {
             return [];
         }
     });
+
+    // Audit / Susun Ulang State (New Flow)
+    const [isAuditMode, setIsAuditMode] = useState(false);
+
+    // Global Product Search across all racks
+    const [globalSearchTerm, setGlobalSearchTerm] = useState('');
+    const [globalSearchResults, setGlobalSearchResults] = useState<StockItem[]>([]);
+    const [isGlobalSearching, setIsGlobalSearching] = useState(false);
+    const [showGlobalResults, setShowGlobalResults] = useState(false);
+
+    // Pull Modal State
+    const [showPullModal, setShowPullModal] = useState(false);
+    const [allPullableItems, setAllPullableItems] = useState<any[]>([]);
+    const [pullDropdownOptions, setPullDropdownOptions] = useState<string[]>([]);
+    const [isFetchingPullData, setIsFetchingPullData] = useState(false);
+    const [pullSearchTerm, setPullSearchTerm] = useState('');
+    const [pullSearchResults, setPullSearchResults] = useState<any[]>([]);
+    const [isSearchingPull, setIsSearchingPull] = useState(false);
+    const [isCompletingAudit, setIsCompletingAudit] = useState(false);
+
+    // Pull Quantity Modal State
+    const [showPullQuantityModal, setShowPullQuantityModal] = useState(false);
+    const [pullItem, setPullItem] = useState<any>(null);
+    const [pullQuantity, setPullQuantity] = useState<number | ''>('');
+    const [isPulling, setIsPulling] = useState(false);
+
+    // Wadah Karantina Revisi State
+    const [showKarantinaModal, setShowKarantinaModal] = useState(false);
+    const [pendingKarantinaCount, setPendingKarantinaCount] = useState(0);
+
+    // OUT History Trace (Fisik Ada Tapi Data 0) State
+    const [showOutTraceModal, setShowOutTraceModal] = useState(false);
+    const [outTraceSku, setOutTraceSku] = useState('');
+    const [outTracePhysicalQty, setOutTracePhysicalQty] = useState<number | ''>('');
+    const [outTraceLogs, setOutTraceLogs] = useState<any[]>([]);
+    const [isLoadingOutLogs, setIsLoadingOutLogs] = useState(false);
+    const [selectedOutLog, setSelectedOutLog] = useState<any | null>(null);
+    const [isExecutingOutTrace, setIsExecutingOutTrace] = useState(false);
+
+    // WhatsApp Report Success Modal State
+    const [showWaSuccessModal, setShowWaSuccessModal] = useState(false);
+    const [waReportData, setWaReportData] = useState<any | null>(null);
+    const [isWaCopied, setIsWaCopied] = useState(false);
+
+    const [rackOptions, setRackOptions] = useState<string[]>([]);
+    const [showScanner, setShowScanner] = useState(false);
+    const [isSideMenuOpen, setIsSideMenuOpen] = useState(false);
+    const [toast, setToast] = useState<{ isOpen: boolean; message: string; type: 'success' | 'info' | 'error' | 'warning' }>({
+        isOpen: false,
+        message: '',
+        type: 'info'
+    });
+
+    // Modal Pindah Data State
+    const [showMoveModal, setShowMoveModal] = useState(false);
+    const [selectedMoveItem, setSelectedMoveItem] = useState<StockItem | null>(null);
+    const [moveData, setMoveData] = useState<{ rak_tujuan: string; jumlah_pindah: number | '' }>({ rak_tujuan: '', jumlah_pindah: '' });
+    const [isMoving, setIsMoving] = useState(false);
+    const [showRakTujuanDropdown, setShowRakTujuanDropdown] = useState(false);
+    const rakTujuanInputRef = useRef<HTMLInputElement>(null);
+    const rakDropdownRef = useRef<HTMLDivElement>(null);
+    const submitButtonRef = useRef<HTMLButtonElement>(null);
+
+    // Bulk Unverify (Dev Mode) State & Helpers
+    const [showBulkUnverifyModal, setShowBulkUnverifyModal] = useState(false);
+    const [selectedRacksToUnverify, setSelectedRacksToUnverify] = useState<Set<string>>(new Set());
+    const [bulkPrefixFilter, setBulkPrefixFilter] = useState<string>('ALL');
+    const [bulkStartRack, setBulkStartRack] = useState<string>('');
+    const [bulkEndRack, setBulkEndRack] = useState<string>('');
+    const [bulkRackSearch, setBulkRackSearch] = useState<string>('');
+    const [isBulkUnverifying, setIsBulkUnverifying] = useState(false);
+
+    // PIN 1234 Protection Modal State for Direct Confirmation
+    const [showPinModal, setShowPinModal] = useState(false);
+    const [pinInput, setPinInput] = useState('');
+    const [pendingConfirmAction, setPendingConfirmAction] = useState<{ type: 'single' | 'all' | 'unverify' | 'clear_all_finished'; item?: any } | null>(null);
 
     const updateRecentRacks = (rak: string) => {
         if (!rak) return;
@@ -107,15 +191,6 @@ export function CekRak2() {
             return matchesSearch && matchesStatus;
         });
     }, [items, itemSearchTerm, statusFilter, verifiedIds]);
-
-    // Audit / Susun Ulang State (New Flow)
-    const [isAuditMode, setIsAuditMode] = useState(false);
-
-    // Global Product Search across all racks
-    const [globalSearchTerm, setGlobalSearchTerm] = useState('');
-    const [globalSearchResults, setGlobalSearchResults] = useState<StockItem[]>([]);
-    const [isGlobalSearching, setIsGlobalSearching] = useState(false);
-    const [showGlobalResults, setShowGlobalResults] = useState(false);
 
     const handleGlobalSearch = async (term: string) => {
         setGlobalSearchTerm(term);
@@ -179,6 +254,196 @@ export function CekRak2() {
         }
     };
 
+    // Real-Time Finished / Verified Items Fetching
+    const fetchAllFinishedItems = async () => {
+        setIsLoadingFinished(true);
+        try {
+            const { data, error } = await supabase
+                .from('database_log')
+                .select('*')
+                .or('gudang.eq.VERIFY,status.eq.VERIFIED')
+                .order('created_at', { ascending: false })
+                .limit(300);
+
+            if (error) throw error;
+            setFinishedLogs(data || []);
+        } catch (err: any) {
+            console.error('Error fetching finished stock opname items:', err);
+        } finally {
+            setIsLoadingFinished(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchAllFinishedItems();
+        
+        const channel = supabase
+            .channel('realtime_stock_opname_finished_logs')
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'database_log'
+            }, (payload) => {
+                const row = (payload.new || payload.old) as any;
+                if (row && (row.gudang === 'VERIFY' || row.status === 'VERIFIED')) {
+                    fetchAllFinishedItems();
+                }
+            })
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, []);
+
+    const filteredFinishedLogs = useMemo(() => {
+        if (!finishedSearchTerm.trim()) return finishedLogs;
+        const term = finishedSearchTerm.toLowerCase().trim();
+        return finishedLogs.filter(log => {
+            const sku = (log.sku || log.nama_barang || '').toLowerCase();
+            const rak = (log.sub_rak || log.rak || '').toLowerCase();
+            const user = (log.user_name || '').toLowerCase();
+            const status = (log.status || '').toLowerCase();
+            return sku.includes(term) || rak.includes(term) || user.includes(term) || status.includes(term);
+        });
+    }, [finishedLogs, finishedSearchTerm]);
+
+    const handlePrintThermalLabel = (item: any) => {
+        const sku = item.sku || item.nama_barang || item.nama_produk || '-';
+        const rak = item.sub_rak || item.rak || '-';
+        const qty = item.jumlah || item.tersedia || 0;
+        const packing = item.packing || '';
+        const actor = item.user_name || item.user || 'Staf Gudang';
+        const tgl = item.tgl_scan || item.tgl || new Date().toLocaleDateString('id-ID');
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(sku)}`;
+
+        const win = window.open('', '_blank', 'width=450,height=600');
+        if (win) {
+            win.document.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="utf-8" />
+                    <title>Print Label Thermal - ${sku}</title>
+                    <style>
+                        @page {
+                            size: 58mm auto;
+                            margin: 0;
+                        }
+                        @media print {
+                            body { margin: 0; padding: 4px; }
+                            .no-print { display: none !important; }
+                        }
+                        body {
+                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Courier New", monospace;
+                            width: 54mm;
+                            margin: 0 auto;
+                            padding: 8px 4px;
+                            color: #000;
+                            box-sizing: border-box;
+                            text-align: center;
+                        }
+                        .header-title {
+                            font-size: 12px;
+                            font-weight: 900;
+                            text-transform: uppercase;
+                            letter-spacing: 0.5px;
+                            border-bottom: 2px dashed #000;
+                            padding-bottom: 4px;
+                            margin-bottom: 6px;
+                        }
+                        .sku-title {
+                            font-size: 13px;
+                            font-weight: 900;
+                            word-break: break-word;
+                            margin: 4px 0 6px 0;
+                            line-height: 1.2;
+                            text-transform: uppercase;
+                        }
+                        .qr-container {
+                            margin: 6px auto;
+                        }
+                        .qr-container img {
+                            width: 120px;
+                            height: 120px;
+                            display: block;
+                            margin: 0 auto;
+                        }
+                        .info-table {
+                            width: 100%;
+                            font-size: 11px;
+                            font-weight: bold;
+                            border-collapse: collapse;
+                            margin-top: 6px;
+                            border-top: 1px dashed #000;
+                            border-bottom: 1px dashed #000;
+                            padding: 4px 0;
+                        }
+                        .info-table td {
+                            padding: 2px 0;
+                            text-align: left;
+                        }
+                        .info-table td:last-child {
+                            text-align: right;
+                        }
+                        .big-qty {
+                            font-size: 15px;
+                            font-weight: 900;
+                        }
+                        .footer {
+                            font-size: 9px;
+                            margin-top: 8px;
+                            color: #333;
+                        }
+                        .no-print-btn {
+                            margin-top: 12px;
+                            padding: 8px 16px;
+                            background: #2563eb;
+                            color: #fff;
+                            font-weight: bold;
+                            border: none;
+                            border-radius: 8px;
+                            cursor: pointer;
+                            font-size: 12px;
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div class="header-title">GUDANG KALINDO<br/><span style="font-size: 9px; font-weight: normal;">STOCK OPNAME V5</span></div>
+                    <div class="sku-title">${sku}</div>
+                    <div class="qr-container">
+                        <img src="${qrUrl}" onload="window.print();" />
+                    </div>
+                    <table class="info-table">
+                        <tr>
+                            <td>LOKASI RAK:</td>
+                            <td style="font-size: 12px; font-weight: 900;">${rak}</td>
+                        </tr>
+                        <tr>
+                            <td>QTY FISIK:</td>
+                            <td class="big-qty">${qty} PCS</td>
+                        </tr>
+                        ${packing ? `<tr><td>PACKING:</td><td>${packing}</td></tr>` : ''}
+                        <tr>
+                            <td>TANGGAL:</td>
+                            <td>${tgl}</td>
+                        </tr>
+                        <tr>
+                            <td>PETUGAS:</td>
+                            <td>${actor}</td>
+                        </tr>
+                    </table>
+                    <div class="footer">Status: TERVERIFIKASI &bull; GUDANG 5</div>
+                    <div class="no-print">
+                        <button class="no-print-btn" onclick="window.print()">Print Ulang</button>
+                    </div>
+                </body>
+                </html>
+            `);
+            win.document.close();
+        }
+    };
+
     const handleSelectRackFromSearch = (targetRak: string) => {
         if (!targetRak) return;
         const cleanRak = targetRak.trim().toUpperCase();
@@ -187,76 +452,6 @@ export function CekRak2() {
         setShowGlobalResults(false);
         setGlobalSearchTerm('');
     };
-    const [showPullModal, setShowPullModal] = useState(false);
-
-    const [allPullableItems, setAllPullableItems] = useState<any[]>([]);
-    const [pullDropdownOptions, setPullDropdownOptions] = useState<string[]>([]);
-    const [isFetchingPullData, setIsFetchingPullData] = useState(false);
-
-    const [pullSearchTerm, setPullSearchTerm] = useState('');
-    const [pullSearchResults, setPullSearchResults] = useState<any[]>([]);
-    const [isSearchingPull, setIsSearchingPull] = useState(false);
-    const [isCompletingAudit, setIsCompletingAudit] = useState(false);
-
-    // Pull Quantity Modal State
-    const [showPullQuantityModal, setShowPullQuantityModal] = useState(false);
-    const [pullItem, setPullItem] = useState<any>(null);
-    const [pullQuantity, setPullQuantity] = useState<number | ''>('');
-    const [isPulling, setIsPulling] = useState(false);
-
-    // Wadah Karantina Revisi State
-    const [showKarantinaModal, setShowKarantinaModal] = useState(false);
-    const [pendingKarantinaCount, setPendingKarantinaCount] = useState(0);
-
-    // OUT History Trace (Fisik Ada Tapi Data 0) State
-    const [showOutTraceModal, setShowOutTraceModal] = useState(false);
-    const [outTraceSku, setOutTraceSku] = useState('');
-    const [outTracePhysicalQty, setOutTracePhysicalQty] = useState<number | ''>('');
-    const [outTraceLogs, setOutTraceLogs] = useState<any[]>([]);
-    const [isLoadingOutLogs, setIsLoadingOutLogs] = useState(false);
-    const [selectedOutLog, setSelectedOutLog] = useState<any | null>(null);
-    const [isExecutingOutTrace, setIsExecutingOutTrace] = useState(false);
-
-    // WhatsApp Report Success Modal State
-    const [showWaSuccessModal, setShowWaSuccessModal] = useState(false);
-    const [waReportData, setWaReportData] = useState<any | null>(null);
-    const [isWaCopied, setIsWaCopied] = useState(false);
-
-    const [rackOptions, setRackOptions] = useState<string[]>([]);
-    const [lastScanned, setLastScanned] = useState<string | null>(null);
-    const [showScanner, setShowScanner] = useState(false);
-    const [isSideMenuOpen, setIsSideMenuOpen] = useState(false);
-    const [toast, setToast] = useState<{ isOpen: boolean; message: string; type: 'success' | 'info' | 'error' | 'warning' }>({
-        isOpen: false,
-        message: '',
-        type: 'info'
-    });
-
-    // Modal Pindah Data State
-    const { writeMode, dbMode } = useDatabaseConfig();
-    const [showMoveModal, setShowMoveModal] = useState(false);
-    const [selectedMoveItem, setSelectedMoveItem] = useState<StockItem | null>(null);
-    const [moveData, setMoveData] = useState<{ rak_tujuan: string; jumlah_pindah: number | '' }>({ rak_tujuan: '', jumlah_pindah: '' });
-    const [isMoving, setIsMoving] = useState(false);
-    const [showRakTujuanDropdown, setShowRakTujuanDropdown] = useState(false);
-    const rakTujuanInputRef = useRef<HTMLInputElement>(null);
-    const rakDropdownRef = useRef<HTMLDivElement>(null);
-
-    const submitButtonRef = useRef<HTMLButtonElement>(null);
-
-    // Bulk Unverify (Dev Mode) State & Helpers
-    const [showBulkUnverifyModal, setShowBulkUnverifyModal] = useState(false);
-    const [selectedRacksToUnverify, setSelectedRacksToUnverify] = useState<Set<string>>(new Set());
-    const [bulkPrefixFilter, setBulkPrefixFilter] = useState<string>('ALL');
-    const [bulkStartRack, setBulkStartRack] = useState<string>('');
-    const [bulkEndRack, setBulkEndRack] = useState<string>('');
-    const [bulkRackSearch, setBulkRackSearch] = useState<string>('');
-    const [isBulkUnverifying, setIsBulkUnverifying] = useState(false);
-
-    // PIN 1234 Protection Modal State for Direct Confirmation
-    const [showPinModal, setShowPinModal] = useState(false);
-    const [pinInput, setPinInput] = useState('');
-    const [pendingConfirmAction, setPendingConfirmAction] = useState<{ type: 'single' | 'all' | 'unverify'; item?: any } | null>(null);
 
     // Helper to check if source item in its origin rack is ALREADY verified (global multi-user check)
     const checkIfSourceItemVerified = async (sourceRak: string, prodName: string): Promise<boolean> => {
@@ -1585,7 +1780,98 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
             executeConfirmAll();
         } else if (action?.type === 'unverify' && action.item) {
             executeUnverifyItem(action.item);
+        } else if (action?.type === 'clear_all_finished') {
+            executeClearAllFinished();
         }
+    };
+
+    const executeClearAllFinished = async () => {
+        setIsLoadingFinished(true);
+        try {
+            const now = new Date();
+            const tglHariIni = now.toISOString().split('T')[0];
+            const waktuSekarang = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            const unverifyLogs = finishedLogs.map(log => ({
+                tgl: tglHariIni,
+                waktu: waktuSekarang,
+                sku: log.sku || log.nama_barang || log.nama_produk,
+                jumlah: log.jumlah || 0,
+                type: 'MOVE',
+                gudang: 'UNVERIFY',
+                rak: log.rak || log.sub_rak,
+                tgl_scan: tglHariIni,
+                user_name: user?.email || 'Dev (Clear All Selesai)',
+                sub_rak: log.sub_rak || log.rak
+            }));
+
+            if (unverifyLogs.length > 0) {
+                await DatabaseService.insertLogs(unverifyLogs, writeMode);
+            }
+
+            // Clear local storage verification keys
+            Object.keys(localStorage).forEach(key => {
+                if (key.startsWith('verified_rak_')) {
+                    localStorage.removeItem(key);
+                }
+            });
+
+            setVerifiedIds(new Set());
+            await fetchAllFinishedItems();
+            if (lastScanned) {
+                fetchItems(lastScanned, true);
+            }
+
+            setToast({ isOpen: true, message: 'Seluruh Data Selesai Diproses berhasil dibatalkan dan direset!', type: 'success' });
+        } catch (err) {
+            console.error('Error clearing all finished logs:', err);
+            setToast({ isOpen: true, message: 'Gagal membatalkan seluruh data selesai', type: 'error' });
+        } finally {
+            setIsLoadingFinished(false);
+        }
+    };
+
+    const handleClearAllFinishedPrompt = () => {
+        if (!isAdminOrDev) {
+            setToast({
+                isOpen: true,
+                message: '❌ Hanya Developer & Admin yang dapat membatalkan/reset seluruh data selesai.',
+                type: 'error'
+            });
+            return;
+        }
+
+        if (finishedLogs.length === 0) {
+            setToast({ isOpen: true, message: 'Tidak ada data selesai yang dapat dibatalkan.', type: 'info' });
+            return;
+        }
+
+        if (!window.confirm(`⚠️ PERINGATAN DEV/ADMIN:\n\nApakah Anda yakin ingin membatalkan SEMUA (${finishedLogs.length} baris) Data Selesai Diproses?\n\nSemua barang di seluruh rak akan kembali berstatus "Belum Cek".`)) {
+            return;
+        }
+
+        setPendingConfirmAction({ type: 'clear_all_finished' });
+        setPinInput('1234');
+        setShowPinModal(true);
+    };
+
+    const handleUnverifyFromFinishedLog = (log: any) => {
+        if (!isAdminOrDev) {
+            setToast({
+                isOpen: true,
+                message: '❌ Hanya Developer & Admin yang dapat membatalkan konfirmasi.',
+                type: 'error'
+            });
+            return;
+        }
+        const itemToUnverify = {
+            id: log.id,
+            nama_produk: log.sku || log.nama_barang || log.nama_produk,
+            rak: log.rak || log.sub_rak,
+            sub_rak: log.sub_rak || log.rak,
+            tersedia: log.jumlah
+        };
+        handleMarkAsUnverified(itemToUnverify);
     };
 
     // --- DevMode Bulk Unverify Handlers ---
@@ -2020,9 +2306,9 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 {/* ======================================================== */}
                 {/* PREMIUM RESPONSIVE HEADER & ACTIONS (Mobile & Desktop) */}
                 {/* ======================================================== */}
-                <div className="flex flex-col mb-6 lg:mb-8">
+                <div className="flex flex-col mb-4 sm:mb-6">
                     {/* Full Immersive Background Banner with Floating Shapes */}
-                    <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 pt-[88px] sm:pt-[96px] lg:pt-[100px] pb-8 lg:pb-12 px-4 sm:px-8 lg:px-12 rounded-b-[36px] lg:rounded-b-[52px] shadow-2xl shadow-blue-950/30 relative overflow-hidden transition-all duration-500 flex flex-col justify-center border-b border-blue-900/30">
+                    <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 pt-[88px] sm:pt-[96px] lg:pt-[100px] pb-6 sm:pb-8 lg:pb-10 px-4 sm:px-8 lg:px-12 rounded-b-[32px] lg:rounded-b-[44px] shadow-2xl shadow-blue-950/30 relative overflow-hidden transition-all duration-500 flex flex-col justify-center border-b border-blue-900/30">
 
                         {/* Decorative Background Icon & Ambient Glows */}
                         <div className="absolute -top-10 -right-10 text-blue-500 opacity-5 pointer-events-none">
@@ -2085,7 +2371,81 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 </div>
 
                 {/* MAIN CONTENT CONTAINER */}
-                <div className="max-w-7xl mx-auto w-full px-3.5 sm:px-6 lg:px-8 -mt-6 sm:-mt-8 relative z-20 space-y-5 sm:space-y-6">
+                <div className="max-w-7xl mx-auto w-full px-3.5 sm:px-6 lg:px-8 mt-4 sm:mt-6 lg:mt-8 relative z-20 space-y-5 sm:space-y-6">
+
+                    {/* MAIN NAVIGATION TABS (OPNAME RAK vs DATA SELESAI PROSES) */}
+                    <div className="flex items-center justify-between flex-wrap gap-3 bg-white p-2 sm:p-2.5 rounded-2xl sm:rounded-3xl border border-slate-200/90 shadow-xl shadow-slate-900/5">
+                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                            <button
+                                type="button"
+                                onClick={() => setActiveMainTab('opname_rak')}
+                                className={cn(
+                                    "flex-1 sm:flex-none px-5 py-3 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2.5 cursor-pointer shadow-sm",
+                                    activeMainTab === 'opname_rak'
+                                        ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                )}
+                            >
+                                <MapPin className="w-4 h-4" />
+                                <span>Cek & Scan Rak</span>
+                                <span className={cn(
+                                    "px-2 py-0.5 rounded-full text-[10px] font-bold",
+                                    activeMainTab === 'opname_rak' ? "bg-white/20 text-white" : "bg-slate-200 text-slate-700"
+                                )}>
+                                    {rackOptions.length}
+                                </span>
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setActiveMainTab('selesai_proses');
+                                    fetchAllFinishedItems();
+                                }}
+                                className={cn(
+                                    "flex-1 sm:flex-none px-5 py-3 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2.5 cursor-pointer shadow-sm relative",
+                                    activeMainTab === 'selesai_proses'
+                                        ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-500/25"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                )}
+                            >
+                                <CheckCircle2 className="w-4 h-4" />
+                                <span>Data Selesai Diproses</span>
+                                <span className={cn(
+                                    "px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1",
+                                    activeMainTab === 'selesai_proses' ? "bg-white/20 text-white" : "bg-emerald-100 text-emerald-800"
+                                )}>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                    {finishedLogs.length}
+                                </span>
+                            </button>
+                        </div>
+
+                        {activeMainTab === 'selesai_proses' && (
+                            <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
+                                {isAdminOrDev && finishedLogs.length > 0 && (
+                                    <Button
+                                        onClick={handleClearAllFinishedPrompt}
+                                        className="h-10 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-black rounded-xl text-xs uppercase tracking-wider border border-rose-200 transition-all shadow-sm"
+                                        title="Batal dan reset seluruh data selesai di semua rak (Khusus Dev/Admin)"
+                                    >
+                                        <XCircle className="h-3.5 w-3.5 mr-1.5 text-rose-600" />
+                                        <span>Batal Semua Selesai</span>
+                                    </Button>
+                                )}
+                                <Button
+                                    onClick={fetchAllFinishedItems}
+                                    className="h-10 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider border border-slate-200"
+                                >
+                                    <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", isLoadingFinished && "animate-spin")} />
+                                    <span>Refresh Data</span>
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+
+                    {activeMainTab === 'opname_rak' ? (
+                        <>
 
                     {/* DUAL SEARCH & CONTROL HUB (2 Columns on Desktop) */}
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5">
@@ -3092,6 +3452,183 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     </div>
                                 </div>
                             )}
+                        </div>
+                    )}
+                    </>
+                ) : (
+                        /* ======================================================== */
+                        /* TAB 2: DATA SELESAI DIPROSES (REAL-TIME LIVE TABLE) */
+                        /* ======================================================== */
+                        <div className="space-y-5 sm:space-y-6 animate-in fade-in duration-300">
+                            {/* Summary Metric Cards */}
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-center gap-4">
+                                    <div className="p-3.5 bg-emerald-50 text-emerald-600 rounded-2xl">
+                                        <CheckCheck className="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Transaksi Selesai</p>
+                                        <p className="text-2xl font-black text-slate-900">{finishedLogs.length} <span className="text-xs font-bold text-slate-500">Baris</span></p>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-center gap-4">
+                                    <div className="p-3.5 bg-blue-50 text-blue-600 rounded-2xl">
+                                        <Box className="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Fisik Terverifikasi</p>
+                                        <p className="text-2xl font-black text-blue-600">
+                                            {finishedLogs.reduce((sum, item) => sum + (Number(item.jumlah) || 0), 0).toLocaleString()} <span className="text-xs font-bold text-slate-500">PCS</span>
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-center gap-4">
+                                    <div className="p-3.5 bg-indigo-50 text-indigo-600 rounded-2xl">
+                                        <MapPin className="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Lokasi Rak Tercakup</p>
+                                        <p className="text-2xl font-black text-indigo-600">
+                                            {new Set(finishedLogs.map(l => l.sub_rak || l.rak).filter(Boolean)).size} <span className="text-xs font-bold text-slate-500">Rak</span>
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Table Container */}
+                            <Card className="rounded-3xl shadow-xl shadow-slate-900/5 border border-slate-200/90 bg-white overflow-hidden">
+                                <CardContent className="p-4 sm:p-6 space-y-4">
+                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                                        <div>
+                                            <h3 className="text-base sm:text-lg font-black text-slate-900 uppercase tracking-tight flex items-center gap-2">
+                                                <Table className="w-5 h-5 text-emerald-600" />
+                                                Daftar Riwayat Data Selesai Diproses (Real-Time Live)
+                                            </h3>
+                                            <p className="text-xs font-medium text-slate-500 mt-0.5">
+                                                Menampilkan seluruh item barang dan rak yang telah selesai dikonfirmasi / diverifikasi stok fisiknya.
+                                            </p>
+                                        </div>
+
+                                        {/* Filter / Search inside finished table */}
+                                        <div className="relative w-full sm:w-72">
+                                            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                            <input
+                                                type="text"
+                                                value={finishedSearchTerm}
+                                                onChange={(e) => setFinishedSearchTerm(e.target.value)}
+                                                placeholder="Cari SKU, Rak, Petugas..."
+                                                className="w-full pl-10 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-500 focus:bg-white transition-all uppercase"
+                                            />
+                                            {finishedSearchTerm && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setFinishedSearchTerm('')}
+                                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                                >
+                                                    <X className="w-3.5 h-3.5" />
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Table */}
+                                    {isLoadingFinished ? (
+                                        <div className="flex flex-col items-center justify-center py-16 text-slate-500">
+                                            <RefreshCw className="w-8 h-8 animate-spin text-emerald-500 mb-3" />
+                                            <p className="text-xs font-bold">Memuat data verifikasi real-time...</p>
+                                        </div>
+                                    ) : filteredFinishedLogs.length === 0 ? (
+                                        <div className="flex flex-col items-center justify-center py-16 text-center bg-slate-50/50 rounded-2xl border border-dashed border-slate-200 p-6">
+                                            <CheckCircle2 className="w-12 h-12 text-slate-300 mb-3" />
+                                            <h4 className="font-black text-sm text-slate-700 uppercase">Belum Ada Data Terkonfirmasi</h4>
+                                            <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                                                {finishedSearchTerm ? 'Tidak ditemukan data yang cocok dengan pencarian.' : 'Barang yang telah dikonfirmasi di menu Cek & Scan Rak akan langsung otomatis muncul di sini secara real-time.'}
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <div className="overflow-x-auto rounded-2xl border border-slate-100">
+                                            <table className="w-full text-left border-collapse">
+                                                <thead>
+                                                    <tr className="bg-slate-100/80 text-[11px] font-black uppercase tracking-wider text-slate-600 border-b border-slate-200">
+                                                        <th className="py-3 px-4 text-center w-12">No</th>
+                                                        <th className="py-3 px-4">Waktu / Tgl Selesai</th>
+                                                        <th className="py-3 px-4">Lokasi Rak</th>
+                                                        <th className="py-3 px-4">SKU / Nama Produk</th>
+                                                        <th className="py-3 px-4 text-right">Qty Fisik</th>
+                                                        <th className="py-3 px-4">Petugas / PIC</th>
+                                                        <th className="py-3 px-4 text-center">Status</th>
+                                                        <th className="py-3 px-4 text-center">Aksi</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-100 text-xs">
+                                                    {filteredFinishedLogs.map((log, idx) => (
+                                                        <tr key={log.id || idx} className="hover:bg-slate-50/80 transition-colors">
+                                                            <td className="py-3 px-4 text-center font-bold text-slate-400">
+                                                                {idx + 1}
+                                                            </td>
+                                                            <td className="py-3 px-4 font-bold text-slate-700 whitespace-nowrap">
+                                                                <div>{log.tgl_scan || log.tgl || '-'}</div>
+                                                                <div className="text-[10px] text-slate-400 font-normal">{log.waktu || ''}</div>
+                                                            </td>
+                                                            <td className="py-3 px-4 font-black text-blue-700 whitespace-nowrap">
+                                                                <span className="px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200 text-xs">
+                                                                    {log.sub_rak || log.rak || '-'}
+                                                                </span>
+                                                            </td>
+                                                            <td className="py-3 px-4 font-black text-slate-900 uppercase">
+                                                                <div>{log.sku || log.nama_barang || log.nama_produk || '-'}</div>
+                                                                {log.packing && (
+                                                                    <span className="text-[10px] font-bold text-slate-400 uppercase">
+                                                                        Packing: {log.packing}
+                                                                    </span>
+                                                                )}
+                                                            </td>
+                                                            <td className="py-3 px-4 text-right font-black text-emerald-600 text-sm whitespace-nowrap">
+                                                                {(Number(log.jumlah) || 0).toLocaleString()} <span className="text-[10px] text-slate-500 font-bold">PCS</span>
+                                                            </td>
+                                                            <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
+                                                                {log.user_name || log.user || '-'}
+                                                            </td>
+                                                            <td className="py-3 px-4 text-center whitespace-nowrap">
+                                                                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                                                    ✓ Selesai
+                                                                </span>
+                                                            </td>
+                                                            <td className="py-3 px-4 text-center whitespace-nowrap">
+                                                                <div className="flex items-center justify-center gap-2 mx-auto">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handlePrintThermalLabel(log)}
+                                                                        className="px-3 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black text-[11px] uppercase tracking-wider rounded-xl shadow-sm hover:shadow active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
+                                                                        title="Print QR Label Thermal (58mm/80mm)"
+                                                                    >
+                                                                        <Printer className="w-3.5 h-3.5" />
+                                                                        <span>Print QR</span>
+                                                                    </button>
+
+                                                                    {isAdminOrDev && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => handleUnverifyFromFinishedLog(log)}
+                                                                            className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-black text-[11px] uppercase tracking-wider rounded-xl border border-rose-200 shadow-sm active:scale-95 transition-all flex items-center gap-1 cursor-pointer"
+                                                                            title="Batalkan konfirmasi barang ini (Khusus Dev/Admin)"
+                                                                        >
+                                                                            <XCircle className="w-3.5 h-3.5 text-rose-600" />
+                                                                            <span>Batal</span>
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+                                </CardContent>
+                            </Card>
                         </div>
                     )}
                 </div>

@@ -255,6 +255,8 @@ export function InputBarangKeluar() {
     const [validRacks, setValidRacks] = useState<string[]>([]);
     const [dropdownLoading, setDropdownLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [isMovingMinus, setIsMovingMinus] = useState(false);
+    const isMovingMinusRef = React.useRef(false);
     const [stockItems, setStockItems] = useState<StockItem[]>([]);
     const [rackLocations, setRackLocations] = useState<RackLocation[]>([]);
     const [devMode, setDevMode] = useState(() => {
@@ -1838,6 +1840,11 @@ export function InputBarangKeluar() {
         }
     };
     const handleMoveMinusStock = async () => {
+        if (isMovingMinusRef.current || isMovingMinus) {
+            console.warn('handleMoveMinusStock: process already in progress');
+            return;
+        }
+
         const minusRows = rows.filter(row =>
             row.total_stok < 0 &&
             row.nama_produk &&
@@ -1854,6 +1861,9 @@ export function InputBarangKeluar() {
             showToast(`Gagal! Ada ${emptyGudangRows.length} data stok minus yang kolom GUDANG-nya belum diisi. Mohon pilih gudang terlebih dahulu.`, 'error');
             return;
         }
+
+        isMovingMinusRef.current = true;
+        setIsMovingMinus(true);
 
         try {
             const minusStockEntries = minusRows.map(row => {
@@ -1888,9 +1898,12 @@ export function InputBarangKeluar() {
             setRows(remainingRows);
             saveToStorage(remainingRows);
             showToast(`Berhasil memindahkan ${minusRows.length} data dengan stok minus!`, 'success');
-        } catch (error) {
+        } catch (error: any) {
             console.error('Error moving minus stock:', error);
-            showToast('Terjadi kesalahan saat memindahkan data!', 'error');
+            showToast('Terjadi kesalahan saat memindahkan data: ' + (error?.message || ''), 'error');
+        } finally {
+            isMovingMinusRef.current = false;
+            setIsMovingMinus(false);
         }
     };
 
@@ -2805,11 +2818,17 @@ export function InputBarangKeluar() {
 
                             <Button
                                 onClick={handleMoveMinusStock}
-                                className="h-11 px-4 bg-orange-500 hover:bg-orange-600 text-white rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-bold shadow-sm border border-orange-600/50"
-                                disabled={isSubmitting}
+                                className="h-11 px-4 bg-orange-500 hover:bg-orange-600 text-white rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-bold shadow-sm border border-orange-600/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={isSubmitting || isMovingMinus}
                             >
-                                <MoveRight className="h-4 w-4" />
-                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">MOVE</span>
+                                {isMovingMinus ? (
+                                    <RefreshCw className="h-4 w-4 animate-spin" />
+                                ) : (
+                                    <MoveRight className="h-4 w-4" />
+                                )}
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">
+                                    {isMovingMinus ? 'MEMINDAHKAN...' : 'MOVE'}
+                                </span>
                             </Button>
 
                             <Button
@@ -4031,10 +4050,17 @@ export function InputBarangKeluar() {
 
                             <button
                                 onClick={handleMoveMinusStock}
-                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-blue-500 active:bg-blue-600 text-white active:scale-95 transition-all focus:outline-none cursor-pointer shadow-md"
+                                disabled={isSubmitting || isMovingMinus}
+                                className="flex items-center justify-center gap-1.5 w-[calc(33.333vw-16px)] h-[58px] px-1 flex-shrink-0 rounded-xl bg-blue-500 active:bg-blue-600 text-white active:scale-95 transition-all focus:outline-none cursor-pointer shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                <MoveRight className="h-5 w-5" />
-                                <span className="text-[12px] font-bold uppercase tracking-wider">Move</span>
+                                {isMovingMinus ? (
+                                    <RefreshCw className="h-5 w-5 animate-spin" />
+                                ) : (
+                                    <MoveRight className="h-5 w-5" />
+                                )}
+                                <span className="text-[12px] font-bold uppercase tracking-wider">
+                                    {isMovingMinus ? '...' : 'Move'}
+                                </span>
                             </button>
 
                             <button
