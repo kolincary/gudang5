@@ -18,7 +18,7 @@ import { cn } from '../lib/utils';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
-import { getOriginalReceiptDate } from '../lib/transferDateHelper';
+import { getOriginalReceiptDate, getTransitOrOriginalReceiptDate, getRealtimeDateTime } from '../lib/transferDateHelper';
 import { KarantinaRevisiOutModal } from './KarantinaRevisiOutModal';
 import { 
     initOpnameZoneBridgeService, 
@@ -2354,8 +2354,8 @@ export function CekRak2() {
                 return;
             }
 
-            // Fetch original supplier receipt date and time (pure without adding minutes)
-            const originalInfo = await getOriginalReceiptDate(pullItem.nama_produk, pullItem.rak);
+            // Fetch receipt date (preserves latest transit date if pulled from TEMP rack)
+            const originalInfo = await getTransitOrOriginalReceiptDate(pullItem.nama_produk, pullItem.rak);
             const tglAsli = originalInfo.tgl;
             const tglScanAsli = originalInfo.tgl_scan;
             const waktuAsli = originalInfo.waktu;
@@ -2437,10 +2437,11 @@ export function CekRak2() {
 
             // Insert log entries
             const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
-            if (insertedData) {
-                const inLog = insertedData.find((l: any) => l.type === 'IN');
-                if (inLog && inLog.id) {
-                    await DatabaseService.updateLog(inLog.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
+            if (insertedData && insertedData.length > 0) {
+                for (const l of insertedData) {
+                    if (l.id && (l.tgl_scan !== tglScanAsli || l.tgl !== tglAsli)) {
+                        await DatabaseService.updateLog(l.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
+                    }
                 }
             }
             if (logError) throw logError;
@@ -2839,8 +2840,16 @@ export function CekRak2() {
 _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut di Accurate._`;
     };
 
-    // Direct confirmation trigger (opens PIN 1234 Modal with PIN prefilled)
+    // Direct confirmation trigger (opens PIN 1234 Modal with PIN prefilled - Developer Only)
     const handleMarkAsVerified = (item: any) => {
+        if (!isDeveloper) {
+            setToast({
+                isOpen: true,
+                message: '❌ Hanya role Developer yang dapat melakukan konfirmasi barang.',
+                type: 'error'
+            });
+            return;
+        }
         setPendingConfirmAction({ type: 'single', item });
         setPinInput('1234');
         setShowPinModal(true);
@@ -2905,10 +2914,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
     };
 
     const handleMarkAsUnverified = (item: any) => {
-        if (!isAdminOrDev) {
+        if (!isDeveloper) {
             setToast({
                 isOpen: true,
-                message: '❌ Hanya Developer & Admin yang dapat membatalkan konfirmasi. Hubungi admin.',
+                message: '❌ Hanya role Developer yang dapat membatalkan konfirmasi.',
                 type: 'error'
             });
             return;
@@ -3439,8 +3448,8 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
             const tglHariIni = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             const waktu = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 
-            // Fetch original supplier receipt date and time (pure without adding minutes)
-            const originalInfo = await getOriginalReceiptDate(selectedMoveItem.nama_produk, selectedMoveItem.rak);
+            // Fetch receipt date (preserves latest transit date if moved from TEMP rack)
+            const originalInfo = await getTransitOrOriginalReceiptDate(selectedMoveItem.nama_produk, selectedMoveItem.rak);
             const tglAsli = originalInfo.tgl;
             const tglScanAsli = originalInfo.tgl_scan;
             const waktuAsli = originalInfo.waktu;
@@ -3479,10 +3488,11 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
             ];
 
             const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
-            if (insertedData) {
-                const inLog = insertedData.find((l: any) => l.type === 'IN');
-                if (inLog && inLog.id) {
-                    await DatabaseService.updateLog(inLog.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
+            if (insertedData && insertedData.length > 0) {
+                for (const l of insertedData) {
+                    if (l.id && (l.tgl_scan !== tglScanAsli || l.tgl !== tglAsli)) {
+                        await DatabaseService.updateLog(l.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
+                    }
                 }
             }
             if (logError) throw logError;
@@ -4473,46 +4483,6 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         )}
                                     </Button>
 
-                                    {isDeveloper && (
-                                        isAuditMode ? (
-                                            <>
-                                                <Button
-                                                    onClick={handleClearRack}
-                                                    disabled={isCompletingAudit}
-                                                    className="h-11 px-3.5 sm:px-4 rounded-xl font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-md flex items-center justify-center text-xs uppercase tracking-wider cursor-pointer"
-                                                >
-                                                    {isCompletingAudit ? <Loader className="animate-spin h-4 w-4 mr-1.5" /> : <Archive size={16} className="mr-1.5" />}
-                                                    <span>Bersihkan</span>
-                                                </Button>
-                                                <Button
-                                                    variant="outline"
-                                                    onClick={() => setIsAuditMode(false)}
-                                                    className="h-11 px-3.5 sm:px-4 rounded-xl font-bold border-rose-200 text-rose-600 hover:bg-rose-50 flex items-center justify-center text-xs uppercase tracking-wider cursor-pointer"
-                                                >
-                                                    <CheckCircle size={16} className="mr-1.5" />
-                                                    <span>Selesai Audit</span>
-                                                </Button>
-                                            </>
-                                        ) : (
-                                            <Button
-                                                variant="outline"
-                                                onClick={() => setIsAuditMode(true)}
-                                                className="h-11 px-3.5 sm:px-4 rounded-xl font-bold bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100 shadow-sm flex items-center justify-center text-xs uppercase tracking-wider cursor-pointer"
-                                            >
-                                                <AlertTriangle size={16} className="mr-1.5 text-amber-600" />
-                                                <span>Mode Audit</span>
-                                            </Button>
-                                        )
-                                    )}
-
-                                    <Button
-                                        onClick={handleConfirmAll}
-                                        className="h-11 px-3.5 sm:px-4 rounded-xl font-black bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-500/20 active:scale-95 transition-all flex items-center justify-center text-xs uppercase tracking-wider"
-                                        title="Konfirmasi seluruh barang di rak ini sekaligus (Memerlukan PIN 1234)"
-                                    >
-                                        <CheckCheck className="h-4 w-4 mr-1.5" />
-                                        <span>Konfirmasi Semua</span>
-                                    </Button>
                                     <Button
                                         onClick={() => fetchItems(lastScanned, true)}
                                         className="h-11 px-3.5 sm:px-4 rounded-xl font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 active:scale-95 transition-all flex items-center justify-center text-xs uppercase tracking-wider"
@@ -4531,37 +4501,6 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     </Button>
                                 </div>
                             </div>
-
-                            {/* AUDIT MODE ACTIVE ALERT BANNER */}
-                            {isAuditMode && (
-                                <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white p-4 rounded-3xl shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
-                                    <div className="flex items-center gap-3">
-                                        <div className="p-2 bg-white/20 rounded-xl">
-                                            <AlertTriangle className="w-5 h-5" />
-                                        </div>
-                                        <div>
-                                            <h4 className="font-black text-sm uppercase">Mode Audit Aktif untuk Rak {lastScanned}</h4>
-                                            <p className="text-xs text-amber-100 font-medium">
-                                                Gunakan tombol "Tarik Fisik" untuk mengambil stok dari rak lain ke rak ini.
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={openPullModal}
-                                            className="px-4 py-2 bg-white text-amber-900 font-black rounded-xl text-xs uppercase tracking-wider shadow-sm hover:bg-amber-50 transition-colors cursor-pointer"
-                                        >
-                                            + Tarik Barang
-                                        </button>
-                                        <button
-                                            onClick={() => setIsAuditMode(false)}
-                                            className="px-4 py-2 bg-amber-700/60 hover:bg-amber-700 text-white font-black rounded-xl text-xs uppercase tracking-wider transition-colors cursor-pointer"
-                                        >
-                                            Selesai
-                                        </button>
-                                    </div>
-                                </div>
-                            )}
 
                             {/* ITEM FILTER, SEARCH BAR & VIEW SWITCHER INSIDE RAK */}
                             {items.length > 0 && (
@@ -4805,16 +4744,16 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                 </div>
                                                             )
                                                         ) : (
-                                                            <>
-                                                                <button
-                                                                    onClick={() => handleMarkAsVerified(item)}
-                                                                    className="flex-1 h-10 px-3 rounded-xl text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 flex items-center justify-center font-black text-xs uppercase tracking-wider shadow-sm hover:shadow active:scale-95 transition-all gap-1.5 cursor-pointer"
-                                                                    title="Konfirmasi langsung barang di rak ini (Memerlukan PIN 1234)"
-                                                                >
-                                                                    <CheckCircle2 className="h-4 w-4" />
-                                                                    <span>Konfirmasi</span>
-                                                                </button>
-                                                                {isDeveloper && (
+                                                            isDeveloper ? (
+                                                                <div className="flex items-center gap-2 w-full">
+                                                                    <button
+                                                                        onClick={() => handleMarkAsVerified(item)}
+                                                                        className="flex-1 h-10 px-3 rounded-xl text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 flex items-center justify-center font-black text-xs uppercase tracking-wider shadow-sm hover:shadow active:scale-95 transition-all gap-1.5 cursor-pointer"
+                                                                        title="Konfirmasi langsung barang di rak ini (Khusus Developer)"
+                                                                    >
+                                                                        <CheckCircle2 className="h-4 w-4" />
+                                                                        <span>Konfirmasi</span>
+                                                                    </button>
                                                                     <button
                                                                         onClick={() => {
                                                                             setSelectedMoveItem(item);
@@ -4827,8 +4766,13 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                         <ArrowRightLeft className="h-4 w-4" />
                                                                         <span>Pindah</span>
                                                                     </button>
-                                                                )}
-                                                            </>
+                                                                </div>
+                                                            ) : (
+                                                                <div className="w-full h-10 px-3 rounded-xl bg-slate-50 text-slate-500 flex items-center justify-center font-bold text-xs uppercase tracking-wider border border-slate-200 gap-1.5 shadow-sm">
+                                                                    <AlertTriangle className="h-4 w-4 text-amber-500" />
+                                                                    <span>Belum Dikonfirmasi</span>
+                                                                </div>
+                                                            )
                                                         )}
                                                     </div>
                                                 </CardContent>
@@ -4916,16 +4860,16 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                             </span>
                                                                         )
                                                                     ) : (
-                                                                        <>
-                                                                            <button
-                                                                                onClick={() => handleMarkAsVerified(item)}
-                                                                                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[11px] uppercase tracking-wider shadow-sm transition-all flex items-center gap-1 cursor-pointer"
-                                                                                title="Konfirmasi Barang"
-                                                                            >
-                                                                                <Check className="w-3.5 h-3.5" />
-                                                                                <span>Konfirmasi</span>
-                                                                            </button>
-                                                                            {isDeveloper && (
+                                                                        isDeveloper ? (
+                                                                            <div className="flex items-center gap-1.5 justify-center">
+                                                                                <button
+                                                                                    onClick={() => handleMarkAsVerified(item)}
+                                                                                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[11px] uppercase tracking-wider shadow-sm transition-all flex items-center gap-1 cursor-pointer"
+                                                                                    title="Konfirmasi Barang (Khusus Developer)"
+                                                                                >
+                                                                                    <Check className="w-3.5 h-3.5" />
+                                                                                    <span>Konfirmasi</span>
+                                                                                </button>
                                                                                 <button
                                                                                     onClick={() => {
                                                                                         setSelectedMoveItem(item);
@@ -4938,8 +4882,13 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                                     <ArrowRightLeft className="w-3.5 h-3.5" />
                                                                                     <span>Pindah</span>
                                                                                 </button>
-                                                                            )}
-                                                                        </>
+                                                                            </div>
+                                                                        ) : (
+                                                                            <span className="px-2.5 py-1.5 rounded-lg bg-slate-50 text-slate-500 border border-slate-200 font-bold text-[11px] uppercase tracking-wider flex items-center gap-1">
+                                                                                <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                                                                                <span>Belum Cek</span>
+                                                                            </span>
+                                                                        )
                                                                     )}
                                                                 </div>
                                                             </td>

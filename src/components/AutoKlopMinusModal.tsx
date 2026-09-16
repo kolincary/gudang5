@@ -17,6 +17,7 @@ import {
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
+import { getRealtimeDateTime } from '../lib/transferDateHelper';
 
 export interface MinusLocation {
     rak: string;
@@ -355,13 +356,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
     const executeReconcileForSku = async (item: SkuReconcileItem): Promise<boolean> => {
         if (!item.pairPlans || item.pairPlans.length === 0) return false;
 
-        const now = new Date();
-        const todayTgl = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-        const nowWaktu = now.toLocaleTimeString('id-ID', {
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-        }).replace(/:/g, '.');
+        const { todayTgl, nowWaktu } = getRealtimeDateTime();
 
         const userName = user?.user_metadata?.full_name || user?.email || userRole || 'Auto-Klop Admin';
         let baseTime = now.getTime();
@@ -381,6 +376,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                 rak: plan.sourceRak,
                 sub_rak: plan.sourceSubRak,
                 tgl_scan: todayTgl,
+                tgl_normalized: todayTgl,
                 user_name: userName,
                 created_at: new Date(baseTime).toISOString()
             });
@@ -397,6 +393,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                 rak: plan.targetRak,
                 sub_rak: plan.targetSubRak,
                 tgl_scan: todayTgl,
+                tgl_normalized: todayTgl,
                 user_name: userName,
                 created_at: new Date(baseTime).toISOString()
             });
@@ -409,12 +406,10 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
             return false;
         }
 
-        // Trigger date update workaround for IN logs
-        if (insertedData) {
-            const inLogs = insertedData.filter((l: any) => l.type === 'IN');
-            for (const inLog of inLogs) {
-                if (inLog.id) {
-                    await DatabaseService.updateLog(inLog.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
+        if (insertedData && insertedData.length > 0) {
+            for (const l of insertedData) {
+                if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
+                    await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
                 }
             }
         }

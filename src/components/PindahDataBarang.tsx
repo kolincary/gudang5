@@ -7,7 +7,7 @@ import { supabase, fetchAllStockItems } from '../lib/supabase';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
-import { getOriginalReceiptDate } from '../lib/transferDateHelper';
+import { getOriginalReceiptDate, getRealtimeDateTime } from '../lib/transferDateHelper';
 import { AutoKlopMinusModal, getRackBatchKey, getRackBatchLabel } from './AutoKlopMinusModal';
 import { toggleOpnameZoneSession } from '../services/opnameZoneBridgeService';
 
@@ -538,6 +538,11 @@ export function PindahDataBarang() {
       return;
     }
 
+    if (rakTujuanUpper.startsWith('TEMP')) {
+      showToast('Rak TEMP adalah lokasi transit khusus fitur Real-Time. Gunakan tombol "Pindah Real-Time" di atas untuk memindahkan ke rak TEMP.', 'warning');
+      return;
+    }
+
     if (!isRakTujuanValidated) {
       showToast('Mohon pilih rak tujuan dari dropdown yang tersedia', 'warning');
       return;
@@ -551,7 +556,7 @@ export function PindahDataBarang() {
     try {
       setSubmitting(true);
       const operationSteps = [
-        'Menyiapkan data transfer',
+        'Menyiapkan data transfer (Logika Standar: Tanggal Nota Asli)',
         'Membuat log entry untuk output dari rak asal',
         'Membuat log entry untuk input ke rak tujuan',
         'Memeriksa stock item tujuan',
@@ -568,12 +573,6 @@ export function PindahDataBarang() {
 
       const rakTujuanFinal = moveData.rak_tujuan.toUpperCase().trim();
       const now = new Date();
-      const tgl = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-
-      const waktu = now.toLocaleTimeString('id-ID', {
-        hour: '2-digit',
-        minute: '2-digit'
-      });
 
       updateProgress(operationSteps[1], 1);
 
@@ -597,7 +596,7 @@ export function PindahDataBarang() {
           gudang: 'TRANSFER',
           rak: selectedItem.rak,
           tgl_scan: tglScanAsli,
-          user_name: 'System',
+          user_name: user?.user_metadata?.full_name || user?.email || userRole || 'System (Pindah Standar)',
           sub_rak: selectedItem.sub_rak || selectedItem.rak,
           created_at: createdAtOut
         },
@@ -610,7 +609,7 @@ export function PindahDataBarang() {
           gudang: 'TRANSFER',
           rak: rakTujuanFinal,
           tgl_scan: tglScanAsli,
-          user_name: 'System',
+          user_name: user?.user_metadata?.full_name || user?.email || userRole || 'System (Pindah Standar)',
           sub_rak: rakTujuanFinal,
           created_at: createdAtIn
         }
@@ -618,11 +617,11 @@ export function PindahDataBarang() {
 
       const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
 
-      if (insertedData) {
-        // Workaround for Supabase Trigger bug overwriting IN tgl_scan to today's date
-        const inLog = insertedData.find((l: any) => l.type === 'IN');
-        if (inLog && inLog.id) {
-           await DatabaseService.updateLog(inLog.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
+      if (insertedData && insertedData.length > 0) {
+        for (const l of insertedData) {
+          if (l.id && (l.tgl_scan !== tglScanAsli || l.tgl !== tglAsli)) {
+            await DatabaseService.updateLog(l.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
+          }
         }
       }
 
@@ -741,13 +740,7 @@ export function PindahDataBarang() {
         completedSteps: 0
       });
 
-      const now = new Date();
-      const todayTgl = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-      const nowWaktu = now.toLocaleTimeString('id-ID', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      }).replace(/:/g, '.');
+      const { todayTgl, nowWaktu } = getRealtimeDateTime();
 
       updateProgress(operationSteps[1], 1);
 
@@ -771,6 +764,7 @@ export function PindahDataBarang() {
             rak: plan.sourceRak,
             sub_rak: plan.sourceSubRak,
             tgl_scan: todayTgl,
+            tgl_normalized: todayTgl,
             user_name: userName,
             created_at: new Date(baseTime).toISOString()
           });
@@ -787,6 +781,7 @@ export function PindahDataBarang() {
             rak: plan.targetRak,
             sub_rak: plan.targetSubRak,
             tgl_scan: todayTgl,
+            tgl_normalized: todayTgl,
             user_name: userName,
             created_at: new Date(baseTime).toISOString()
           });
@@ -820,6 +815,7 @@ export function PindahDataBarang() {
             rak: loc.rak,
             sub_rak: loc.sub_rak || loc.rak,
             tgl_scan: todayTgl,
+            tgl_normalized: todayTgl,
             user_name: userName,
             created_at: new Date(baseTime).toISOString()
           });
@@ -840,6 +836,7 @@ export function PindahDataBarang() {
         gudang: 'TRANSFER',
         rak: rakTujuanUpper,
         tgl_scan: todayTgl,
+        tgl_normalized: todayTgl,
         user_name: userName,
         sub_rak: rakTujuanUpper,
         created_at: new Date(baseTime).toISOString()
@@ -849,10 +846,11 @@ export function PindahDataBarang() {
 
       const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
 
-      if (insertedData) {
-        const inLog = insertedData.find((l: any) => l.type === 'IN');
-        if (inLog && inLog.id) {
-          await DatabaseService.updateLog(inLog.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
+      if (insertedData && insertedData.length > 0) {
+        for (const l of insertedData) {
+          if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
+            await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
+          }
         }
       }
 
@@ -948,13 +946,7 @@ export function PindahDataBarang() {
 
     try {
       setSubmitting(true);
-      const now = new Date();
-      const todayTgl = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-      const nowWaktu = now.toLocaleTimeString('id-ID', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      }).replace(/:/g, '.');
+      const { todayTgl, nowWaktu } = getRealtimeDateTime();
 
       const userName = user?.user_metadata?.full_name || user?.email || userRole || 'Auto-Klop Admin';
       let baseTime = now.getTime();
@@ -972,6 +964,7 @@ export function PindahDataBarang() {
           rak: plan.sourceRak,
           sub_rak: plan.sourceSubRak,
           tgl_scan: todayTgl,
+          tgl_normalized: todayTgl,
           user_name: userName,
           created_at: new Date(baseTime).toISOString()
         });
@@ -987,6 +980,7 @@ export function PindahDataBarang() {
           rak: plan.targetRak,
           sub_rak: plan.targetSubRak,
           tgl_scan: todayTgl,
+          tgl_normalized: todayTgl,
           user_name: userName,
           created_at: new Date(baseTime).toISOString()
         });
@@ -1000,11 +994,10 @@ export function PindahDataBarang() {
         return;
       }
 
-      if (insertedData) {
-        const inLogs = insertedData.filter((l: any) => l.type === 'IN');
-        for (const inLog of inLogs) {
-          if (inLog.id) {
-            await DatabaseService.updateLog(inLog.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
+      if (insertedData && insertedData.length > 0) {
+        for (const l of insertedData) {
+          if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
+            await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
           }
         }
       }
@@ -1111,13 +1104,7 @@ export function PindahDataBarang() {
 
     try {
       setSubmitting(true);
-      const now = new Date();
-      const todayTgl = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-      const nowWaktu = now.toLocaleTimeString('id-ID', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      }).replace(/:/g, '.');
+      const { todayTgl, nowWaktu } = getRealtimeDateTime();
 
       const userName = user?.user_metadata?.full_name || user?.email || userRole || 'Dev/Admin Batch Realtime';
       let baseTime = now.getTime();
@@ -1135,6 +1122,7 @@ export function PindahDataBarang() {
           rak: item.rak,
           sub_rak: item.sub_rak || item.rak,
           tgl_scan: todayTgl,
+          tgl_normalized: todayTgl,
           user_name: userName,
           created_at: new Date(baseTime).toISOString()
         });
@@ -1150,6 +1138,7 @@ export function PindahDataBarang() {
           rak: destRak,
           sub_rak: destRak,
           tgl_scan: todayTgl,
+          tgl_normalized: todayTgl,
           user_name: userName,
           created_at: new Date(baseTime).toISOString()
         });
@@ -1157,11 +1146,10 @@ export function PindahDataBarang() {
 
       const { data: insertedLogs, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
 
-      if (insertedLogs) {
-        const inLogs = insertedLogs.filter((l: any) => l.type === 'IN');
-        for (const inLog of inLogs) {
-          if (inLog.id) {
-            await DatabaseService.updateLog(inLog.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
+      if (insertedLogs && insertedLogs.length > 0) {
+        for (const l of insertedLogs) {
+          if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
+            await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
           }
         }
       }
@@ -2332,12 +2320,18 @@ export function PindahDataBarang() {
             {/* Form Section */}
             <Card>
               <CardContent className="p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-lg font-bold text-gray-800 flex items-center">
                     <ArrowRightLeft className="h-5 w-5 mr-2 text-blue-600" />
                     Form Pindah Barang (Standar)
                   </h3>
+                  <span className="text-[10px] font-bold px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full">
+                    Tgl Nota Asli Supplier
+                  </span>
                 </div>
+                <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                  Memindahkan stok antar-rak reguler dengan mempertahankan <strong>tanggal nota penerimaan awal</strong> supplier.
+                </p>
 
                 <div className="space-y-4">
                   {/* Item Selection */}
@@ -2535,7 +2529,7 @@ export function PindahDataBarang() {
                           <Send className="h-4 w-4" />
                         )}
                         <span className="uppercase text-xs tracking-wider font-bold">
-                          {submitting ? 'Memindahkan...' : 'Pindahkan'}
+                          {submitting ? 'Memindahkan...' : 'Pindahkan (Tgl Nota Asli)'}
                         </span>
                       </Button>
                     </div>
