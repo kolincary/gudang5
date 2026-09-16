@@ -2,13 +2,13 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
-import { ArrowRightLeft, X, Send, RefreshCw, AlertCircle, CheckCircle, Loader, Wrench, Hammer, Zap, Sparkles, Scale, Layers, AlertTriangle } from 'lucide-react';
+import { ArrowRightLeft, X, Send, RefreshCw, AlertCircle, CheckCircle, Loader, Wrench, Hammer, Zap, Sparkles, Scale, Layers, AlertTriangle, CheckSquare, Square, Search } from 'lucide-react';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
 import { getOriginalReceiptDate } from '../lib/transferDateHelper';
-import { AutoKlopMinusModal } from './AutoKlopMinusModal';
+import { AutoKlopMinusModal, getRackBatchKey, getRackBatchLabel } from './AutoKlopMinusModal';
 
 interface StockItem {
   id: string;
@@ -61,8 +61,8 @@ interface RackLocation {
   status: string;
 }
 
-
 const RESTRICTED_RACKS = ['LANTAI 2', 'LANTAI 4', 'ECER-M', 'ECER-N', 'ECER-O', 'BLOK-I'];
+const DEFAULT_TEMP_RACKS = ['TEMP-A', 'TEMP-B', 'TEMP-C', 'TEMP-D', 'TEMP-E', 'TEMP-F'];
 
 export function PindahDataBarang() {
   const { writeMode } = useDatabaseConfig();
@@ -107,6 +107,7 @@ export function PindahDataBarang() {
 
   // Modal State for Real-Time Transfer & Auto-Klop (Developer & Admin)
   const [showRealtimeModal, setShowRealtimeModal] = useState(false);
+  const [realtimeModalMode, setRealtimeModalMode] = useState<'SINGLE' | 'BATCH'>('SINGLE');
   const [showAutoKlopModal, setShowAutoKlopModal] = useState(false);
   const [modalSkuSearch, setModalSkuSearch] = useState('');
   const [selectedSkuAggregate, setSelectedSkuAggregate] = useState<SkuAggregatedItem | null>(null);
@@ -118,10 +119,21 @@ export function PindahDataBarang() {
   const [modalHighlightedSkuIndex, setModalHighlightedSkuIndex] = useState(0);
   const [modalHighlightedRakIndex, setModalHighlightedRakIndex] = useState(0);
 
+  // Real-time Batch Mass Transfer States
+  const [batchSelectedKey, setBatchSelectedKey] = useState<string>('ALL');
+  const [batchSearchQuery, setBatchSearchQuery] = useState<string>('');
+  const [batchSelectedItems, setBatchSelectedItems] = useState<Set<string>>(new Set());
+  const [batchDestRak, setBatchDestRak] = useState<string>('');
+  const [batchShowRakDropdown, setBatchShowRakDropdown] = useState(false);
+  const [isBatchRakValidated, setIsBatchRakValidated] = useState(false);
+  const [batchHighlightedRakIndex, setBatchHighlightedRakIndex] = useState(0);
+
   const modalSkuInputRef = useRef<HTMLInputElement>(null);
   const modalRakInputRef = useRef<HTMLInputElement>(null);
   const modalSkuDropdownRef = useRef<HTMLDivElement>(null);
   const modalRakDropdownRef = useRef<HTMLDivElement>(null);
+  const batchDestRakInputRef = useRef<HTMLInputElement>(null);
+  const batchDestRakDropdownRef = useRef<HTMLDivElement>(null);
 
   // Aggregated SKU list (pure unique SKUs with accurate net physical surplus and auto-klop pair plans)
   const skuAggregatedList = useMemo<SkuAggregatedItem[]>(() => {
@@ -260,12 +272,92 @@ export function PindahDataBarang() {
     );
   }, [skuAggregatedList, modalSkuSearch]);
 
+  // Real-Time modal only allows TEMP racks as destination
   const modalFilteredRacks = useMemo(() => {
-    return rackLocations.filter(rack =>
-      rack.nama.toLowerCase().includes(modalRakTujuan.toLowerCase()) &&
-      !RESTRICTED_RACKS.includes(rack.nama.toUpperCase())
-    );
+    const tempFromDb = rackLocations.filter(rack => rack.nama.toUpperCase().startsWith('TEMP'));
+    const existingNames = new Set(tempFromDb.map(r => r.nama.toUpperCase()));
+    const combined = [...tempFromDb];
+    DEFAULT_TEMP_RACKS.forEach(def => {
+      if (!existingNames.has(def)) {
+        combined.push({ id: `temp-${def.toLowerCase()}`, nama: def, status: 'Aktif' });
+      }
+    });
+
+    const term = modalRakTujuan.toLowerCase().trim();
+    return combined.filter(rack =>
+      rack.nama.toLowerCase().includes(term)
+    ).sort((a, b) => a.nama.localeCompare(b.nama));
   }, [rackLocations, modalRakTujuan]);
+
+  const batchFilteredDestRacks = useMemo(() => {
+    const tempFromDb = rackLocations.filter(rack => rack.nama.toUpperCase().startsWith('TEMP'));
+    const existingNames = new Set(tempFromDb.map(r => r.nama.toUpperCase()));
+    const combined = [...tempFromDb];
+    DEFAULT_TEMP_RACKS.forEach(def => {
+      if (!existingNames.has(def)) {
+        combined.push({ id: `temp-${def.toLowerCase()}`, nama: def, status: 'Aktif' });
+      }
+    });
+
+    const term = batchDestRak.toLowerCase().trim();
+    return combined.filter(rack =>
+      rack.nama.toLowerCase().includes(term)
+    ).sort((a, b) => a.nama.localeCompare(b.nama));
+  }, [rackLocations, batchDestRak]);
+
+  // Batch summaries and filtered items for Batch Mass Transfer Mode
+  const batchSummaries = useMemo(() => {
+    const itemsWithStock = stockItems.filter(i => i.tersedia > 0);
+    const map = new Map<string, { key: string; label: string; count: number; totalQty: number; items: StockItem[] }>();
+
+    itemsWithStock.forEach(item => {
+      const key = getRackBatchKey(item.rak);
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          label: getRackBatchLabel(key),
+          count: 0,
+          totalQty: 0,
+          items: []
+        });
+      }
+      const entry = map.get(key)!;
+      entry.count += 1;
+      entry.totalQty += item.tersedia;
+      entry.items.push(item);
+    });
+
+    const list = Array.from(map.values()).sort((a, b) => {
+      if (a.key.length === 1 && b.key.length === 1) return a.key.localeCompare(b.key);
+      if (a.key.length === 1) return -1;
+      if (b.key.length === 1) return 1;
+      return a.label.localeCompare(b.label);
+    });
+
+    const totalCount = itemsWithStock.length;
+    const totalQty = itemsWithStock.reduce((s, i) => s + i.tersedia, 0);
+
+    return {
+      all: { count: totalCount, totalQty, items: itemsWithStock },
+      batches: list
+    };
+  }, [stockItems]);
+
+  const batchDisplayedItems = useMemo(() => {
+    let items = batchSelectedKey === 'ALL'
+      ? batchSummaries.all.items
+      : (batchSummaries.batches.find(b => b.key === batchSelectedKey)?.items || []);
+
+    if (batchSearchQuery.trim()) {
+      const q = batchSearchQuery.toLowerCase().trim();
+      items = items.filter(i =>
+        i.nama_produk.toLowerCase().includes(q) ||
+        i.rak.toLowerCase().includes(q) ||
+        (i.sub_rak && i.sub_rak.toLowerCase().includes(q))
+      );
+    }
+    return items;
+  }, [batchSummaries, batchSelectedKey, batchSearchQuery]);
 
   const [operationProgress, setOperationProgress] = useState<{
     isVisible: boolean;
@@ -812,7 +904,7 @@ export function PindahDataBarang() {
       updateProgress(operationSteps[5], 6);
 
       showToast(
-        `⚡ [Real-Time Berhasil] Memindahkan ${transferQty} ${selectedSkuAggregate.satuan} ${selectedSkuAggregate.nama_produk} ke ${rakTujuanUpper}${selectedSkuAggregate.pairPlans.length > 0 ? ` sekaligus menolkan ${selectedSkuAggregate.pairPlans.length} rak minus (Auto-Klop)!` : '!'}${stockItemCreated ? ' (item baru dibuat)' : ''}`,
+        `[Real-Time Berhasil] Memindahkan ${transferQty} ${selectedSkuAggregate.satuan} ${selectedSkuAggregate.nama_produk} ke ${rakTujuanUpper}${selectedSkuAggregate.pairPlans.length > 0 ? ` sekaligus menolkan ${selectedSkuAggregate.pairPlans.length} rak minus (Auto-Klop)!` : '!'}${stockItemCreated ? ' (item baru dibuat)' : ''}`,
         'success'
       );
 
@@ -909,7 +1001,7 @@ export function PindahDataBarang() {
       }
 
       const totalKlopped = target.pairPlans.reduce((s, p) => s + p.qty, 0);
-      showToast(`⚡ [Auto-Klop Berhasil] Berhasil menyeimbangkan ${totalKlopped} ${target.satuan} untuk ${target.nama_produk}! Rak minus kini bersih.`, 'success');
+      showToast(`[Auto-Klop Berhasil] Berhasil menyeimbangkan ${totalKlopped} ${target.satuan} untuk ${target.nama_produk}! Rak minus kini bersih.`, 'success');
 
       setSelectedSkuAggregate(null);
       setModalSkuSearch('');
@@ -938,13 +1030,181 @@ export function PindahDataBarang() {
 
   const handleModalRakSelect = (rakNama: string) => {
     const upperValue = rakNama.toUpperCase().trim();
-    if (RESTRICTED_RACKS.includes(upperValue)) {
-      showToast(`Rak ${upperValue} tidak diizinkan sebagai tujuan pemindahan`, 'error');
+    if (!upperValue.startsWith('TEMP')) {
+      showToast(`Rak tujuan Real-Time hanya boleh rak TEMP (contoh: TEMP-A, TEMP-B, dst)`, 'error');
       return;
     }
     setModalRakTujuan(upperValue);
     setModalShowRakDropdown(false);
     setIsModalRakValidated(true);
+  };
+
+  const handleBatchRakSelect = (rakNama: string) => {
+    const upperValue = rakNama.toUpperCase().trim();
+    if (!upperValue.startsWith('TEMP')) {
+      showToast(`Rak tujuan Real-Time hanya boleh rak TEMP (contoh: TEMP-A, TEMP-B, dst)`, 'error');
+      return;
+    }
+    setBatchDestRak(upperValue);
+    setBatchShowRakDropdown(false);
+    setIsBatchRakValidated(true);
+  };
+
+  const handleBatchToggleItem = (itemId: string) => {
+    setBatchSelectedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      return next;
+    });
+  };
+
+  const handleBatchSelectAllDisplayed = () => {
+    const displayedIds = batchDisplayedItems.map(i => i.id);
+    const allSelected = displayedIds.length > 0 && displayedIds.every(id => batchSelectedItems.has(id));
+
+    setBatchSelectedItems(prev => {
+      const next = new Set(prev);
+      if (allSelected) {
+        displayedIds.forEach(id => next.delete(id));
+      } else {
+        displayedIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const handleExecuteMassBatchRealtimeTransfer = async () => {
+    if (!isDevOrAdmin) {
+      showToast('Hanya role Developer dan Admin yang dapat menggunakan fitur ini', 'error');
+      return;
+    }
+
+    const destRak = batchDestRak.toUpperCase().trim();
+    if (!destRak || !destRak.startsWith('TEMP')) {
+      showToast('Pilih rak tujuan TEMP yang valid (contoh: TEMP-A, TEMP-B, dst)', 'warning');
+      return;
+    }
+
+    if (batchSelectedItems.size === 0) {
+      showToast('Pilih setidaknya satu item untuk dipindahkan', 'warning');
+      return;
+    }
+
+    const itemsToMove = stockItems.filter(i => batchSelectedItems.has(i.id) && i.tersedia > 0);
+    if (itemsToMove.length === 0) {
+      showToast('Tidak ada item valid dengan stok tersedia untuk dipindahkan', 'warning');
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      const now = new Date();
+      const todayTgl = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const nowWaktu = now.toLocaleTimeString('id-ID', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      }).replace(/:/g, '.');
+
+      const userName = user?.user_metadata?.full_name || user?.email || userRole || 'Dev/Admin Batch Realtime';
+      let baseTime = now.getTime();
+      const logEntries: any[] = [];
+
+      itemsToMove.forEach(item => {
+        baseTime += 100;
+        logEntries.push({
+          tgl: todayTgl,
+          waktu: nowWaktu,
+          sku: item.nama_produk,
+          jumlah: item.tersedia,
+          type: 'OUT',
+          gudang: 'TRANSFER',
+          rak: item.rak,
+          sub_rak: item.sub_rak || item.rak,
+          tgl_scan: todayTgl,
+          user_name: userName,
+          created_at: new Date(baseTime).toISOString()
+        });
+
+        baseTime += 100;
+        logEntries.push({
+          tgl: todayTgl,
+          waktu: nowWaktu,
+          sku: item.nama_produk,
+          jumlah: item.tersedia,
+          type: 'IN',
+          gudang: 'TRANSFER',
+          rak: destRak,
+          sub_rak: destRak,
+          tgl_scan: todayTgl,
+          user_name: userName,
+          created_at: new Date(baseTime).toISOString()
+        });
+      });
+
+      const { data: insertedLogs, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
+
+      if (insertedLogs) {
+        const inLogs = insertedLogs.filter((l: any) => l.type === 'IN');
+        for (const inLog of inLogs) {
+          if (inLog.id) {
+            await DatabaseService.updateLog(inLog.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
+          }
+        }
+      }
+
+      if (logError) {
+        console.error('Error in mass batch realtime transfer:', logError);
+        showToast(`Gagal transfer massal: ${logError.message}`, 'error');
+        return;
+      }
+
+      // Ensure destination stock items exist
+      const uniqueSkus = Array.from(new Set(itemsToMove.map(i => i.nama_produk)));
+      const { data: existingDestStocks } = await supabase
+        .from('stock_items')
+        .select('nama_produk')
+        .eq('rak', destRak)
+        .in('nama_produk', uniqueSkus);
+
+      const existingSkuSet = new Set((existingDestStocks || []).map(s => s.nama_produk));
+      const missingItems = itemsToMove.filter(i => !existingSkuSet.has(i.nama_produk));
+
+      if (missingItems.length > 0) {
+        const toInsertMap = new Map<string, any>();
+        missingItems.forEach(i => {
+          if (!toInsertMap.has(i.nama_produk)) {
+            toInsertMap.set(i.nama_produk, {
+              nama_produk: i.nama_produk,
+              packing: i.packing,
+              rak: destRak,
+              sub_rak: destRak,
+              satuan: i.satuan,
+              stok_awal: 0,
+              status: 'Aktif'
+            });
+          }
+        });
+        await DatabaseService.insertStockItems(Array.from(toInsertMap.values()), writeMode);
+      }
+
+      const totalQty = itemsToMove.reduce((s, i) => s + i.tersedia, 0);
+      showToast(`[Real-Time Massal Berhasil] Berhasil memindahkan ${itemsToMove.length} item (${totalQty} pcs) ke ${destRak}!`, 'success');
+
+      setBatchSelectedItems(new Set());
+      setShowRealtimeModal(false);
+      loadInitialData();
+
+    } catch (err: any) {
+      console.error('Mass batch transfer error:', err);
+      showToast(`Terjadi kesalahan: ${err.message || 'Error'}`, 'error');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   // Handle outside clicks for dropdowns
@@ -966,6 +1226,10 @@ export function PindahDataBarang() {
 
       if (modalRakInputRef.current && !modalRakInputRef.current.contains(target) && !target.closest('.modal-rak-dropdown-container')) {
         setModalShowRakDropdown(false);
+      }
+
+      if (batchDestRakInputRef.current && !batchDestRakInputRef.current.contains(target) && !target.closest('.batch-rak-dropdown-container')) {
+        setBatchShowRakDropdown(false);
       }
     };
 
@@ -989,6 +1253,10 @@ export function PindahDataBarang() {
   useEffect(() => {
     setModalHighlightedRakIndex(0);
   }, [modalRakTujuan]);
+
+  useEffect(() => {
+    setBatchHighlightedRakIndex(0);
+  }, [batchDestRak]);
 
   // Auto-scroll for item dropdown
   useEffect(() => {
@@ -1041,6 +1309,19 @@ export function PindahDataBarang() {
       }
     }
   }, [modalHighlightedRakIndex, modalShowRakDropdown]);
+
+  // Auto-scroll for batch Rak dropdown
+  useEffect(() => {
+    if (batchShowRakDropdown && batchDestRakDropdownRef.current) {
+      const highlightedElement = batchDestRakDropdownRef.current.children[batchHighlightedRakIndex] as HTMLElement;
+      if (highlightedElement) {
+        highlightedElement.scrollIntoView({
+          block: 'nearest',
+          inline: 'start'
+        });
+      }
+    }
+  }, [batchHighlightedRakIndex, batchShowRakDropdown]);
 
   // Keyboard navigation for item dropdown
   const handleItemKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1109,6 +1390,24 @@ export function PindahDataBarang() {
         if (modalFilteredRacks.length > 0) {
           e.preventDefault();
           handleModalRakSelect(modalFilteredRacks[modalHighlightedRakIndex].nama);
+        }
+      }
+    }
+  };
+
+  // Keyboard navigation for batch Rak dropdown
+  const handleBatchRakKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (batchShowRakDropdown) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setBatchHighlightedRakIndex(prev => (prev + 1) % (batchFilteredDestRacks.length || 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setBatchHighlightedRakIndex(prev => (prev - 1 + batchFilteredDestRacks.length) % (batchFilteredDestRacks.length || 1));
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        if (batchFilteredDestRacks.length > 0) {
+          e.preventDefault();
+          handleBatchRakSelect(batchFilteredDestRacks[batchHighlightedRakIndex].nama);
         }
       }
     }
@@ -1206,7 +1505,7 @@ export function PindahDataBarang() {
       {/* Real-Time Transfer Modal for Developer & Admin */}
       {showRealtimeModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-purple-100 overflow-hidden flex flex-col max-h-[92vh]">
+          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-purple-100 overflow-hidden flex flex-col max-h-[92vh]">
             {/* Modal Header */}
             <div className="bg-gradient-to-r from-purple-700 via-indigo-800 to-slate-900 text-white p-6 relative overflow-hidden shrink-0">
               <div className="absolute -right-8 -top-8 text-white/5 pointer-events-none">
@@ -1218,10 +1517,10 @@ export function PindahDataBarang() {
                     <Zap className="w-3.5 h-3.5 fill-amber-300" /> Khusus Developer & Admin
                   </div>
                   <h3 className="text-2xl font-black tracking-tight text-white flex items-center gap-2">
-                    Pindah Stok Real-Time <span className="text-purple-300 text-base font-bold">(Akumulasi SKU)</span>
+                    Pindah Stok Real-Time <span className="text-purple-300 text-base font-bold">(Tgl Hari Ini & Rak Tujuan TEMP)</span>
                   </h3>
-                  <p className="text-purple-200/80 text-xs mt-1 max-w-lg leading-relaxed">
-                    Menghitung total sisa stok murni <strong className="text-white">IN - OUT</strong> dari seluruh rak, dan memindahkannya seketika dengan <span className="underline font-bold text-amber-200">tanggal & jam hari ini</span>.
+                  <p className="text-purple-200/80 text-xs mt-1 max-w-xl leading-relaxed">
+                    Memindahkan stok murni seketika dengan <span className="underline font-bold text-amber-200">tanggal & jam hari ini</span> ke lokasi rak penampung sementara (<strong className="text-white">TEMP-A s/d TEMP-F</strong>).
                   </p>
                 </div>
                 <button
@@ -1239,319 +1538,550 @@ export function PindahDataBarang() {
                   <X className="w-5 h-5" />
                 </button>
               </div>
+
+              {/* Mode Switcher Tabs */}
+              <div className="relative z-10 flex items-center gap-2 mt-4 pt-3 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={() => setRealtimeModalMode('SINGLE')}
+                  className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 cursor-pointer ${
+                    realtimeModalMode === 'SINGLE'
+                      ? 'bg-white text-purple-900 shadow-md'
+                      : 'bg-white/10 text-purple-200 hover:bg-white/20'
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>Per SKU (Satuan)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRealtimeModalMode('BATCH')}
+                  className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 cursor-pointer ${
+                    realtimeModalMode === 'BATCH'
+                      ? 'bg-white text-purple-900 shadow-md'
+                      : 'bg-white/10 text-purple-200 hover:bg-white/20'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Auto Massal per Batch Rak ({batchSummaries.all.count} Item Tersedia)</span>
+                </button>
+              </div>
             </div>
 
             {/* Modal Body */}
             <div className="p-6 space-y-5 overflow-y-auto flex-1">
-              {/* 1. Pure SKU Search (Unique SKUs only without sub-rack repetition) */}
-              <div className="modal-sku-dropdown-container">
-                <label className="block text-xs font-black text-slate-700 tracking-wider uppercase mb-2">
-                  1. Pilih SKU Barang ({skuAggregatedList.length} SKU Tersedia)
-                </label>
-                <div className="relative">
-                  <input
-                    ref={modalSkuInputRef}
-                    type="text"
-                    value={modalSkuSearch}
-                    onChange={(e) => {
-                      setModalSkuSearch(e.target.value);
-                      setModalShowSkuDropdown(true);
-                      if (!e.target.value) {
-                        setSelectedSkuAggregate(null);
-                      }
-                    }}
-                    onFocus={() => {
-                      setModalShowSkuDropdown(true);
-                      setModalHighlightedSkuIndex(0);
-                    }}
-                    onKeyDown={handleModalSkuKeyDown}
-                    className="w-full h-12 px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
-                    placeholder="Ketik nama SKU barang... contoh: BOOK-1PACK/CLBK-3501"
-                  />
-                  {modalSkuSearch && (
-                    <button
-                      onClick={() => {
-                        setModalSkuSearch('');
-                        setSelectedSkuAggregate(null);
-                        setModalShowSkuDropdown(false);
-                      }}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
+              {realtimeModalMode === 'SINGLE' ? (
+                /* Mode 1: Single SKU Transfer */
+                <>
+                  {/* 1. Pure SKU Search */}
+                  <div className="modal-sku-dropdown-container">
+                    <label className="block text-xs font-black text-slate-700 tracking-wider uppercase mb-2">
+                      1. Pilih SKU Barang ({skuAggregatedList.length} SKU Tersedia)
+                    </label>
+                    <div className="relative">
+                      <input
+                        ref={modalSkuInputRef}
+                        type="text"
+                        value={modalSkuSearch}
+                        onChange={(e) => {
+                          setModalSkuSearch(e.target.value);
+                          setModalShowSkuDropdown(true);
+                          if (!e.target.value) {
+                            setSelectedSkuAggregate(null);
+                          }
+                        }}
+                        onFocus={() => {
+                          setModalShowSkuDropdown(true);
+                          setModalHighlightedSkuIndex(0);
+                        }}
+                        onKeyDown={handleModalSkuKeyDown}
+                        className="w-full h-12 px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
+                        placeholder="Ketik nama SKU barang... contoh: BOOK-1PACK/CLBK-3501"
+                      />
+                      {modalSkuSearch && (
+                        <button
+                          onClick={() => {
+                            setModalSkuSearch('');
+                            setSelectedSkuAggregate(null);
+                            setModalShowSkuDropdown(false);
+                          }}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
 
-                  {/* SKU Dropdown List */}
-                  {modalShowSkuDropdown && (
-                    <div
-                      ref={modalSkuDropdownRef}
-                      className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 max-h-60 overflow-y-auto p-1.5 divide-y divide-slate-100"
-                    >
-                      {modalFilteredSkus.length > 0 ? (
-                        modalFilteredSkus.slice(0, 50).map((skuItem, index) => (
-                          <div
-                            key={skuItem.nama_produk}
-                            onClick={() => handleModalSkuSelect(skuItem)}
-                            className={`p-3 rounded-xl cursor-pointer transition-all ${
-                              index === modalHighlightedSkuIndex
-                                ? 'bg-purple-100 text-purple-950 font-bold'
-                                : 'hover:bg-purple-50 text-slate-800'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="font-bold text-sm tracking-tight text-slate-900">
-                                {skuItem.nama_produk}
-                              </span>
-                              <div className="flex items-center gap-1.5">
-                                {skuItem.minusLocations.length > 0 && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-200">
-                                    Rak Minus: -{skuItem.totalMinus}
+                      {/* SKU Dropdown List */}
+                      {modalShowSkuDropdown && (
+                        <div
+                          ref={modalSkuDropdownRef}
+                          className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 max-h-60 overflow-y-auto p-1.5 divide-y divide-slate-100"
+                        >
+                          {modalFilteredSkus.length > 0 ? (
+                            modalFilteredSkus.slice(0, 50).map((skuItem, index) => (
+                              <div
+                                key={skuItem.nama_produk}
+                                onClick={() => handleModalSkuSelect(skuItem)}
+                                className={`p-3 rounded-xl cursor-pointer transition-all ${
+                                  index === modalHighlightedSkuIndex
+                                    ? 'bg-purple-100 text-purple-950 font-bold'
+                                    : 'hover:bg-purple-50 text-slate-800'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-bold text-sm tracking-tight text-slate-900">
+                                    {skuItem.nama_produk}
                                   </span>
-                                )}
-                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-black border ${
-                                  skuItem.totalTersedia > 0 
-                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-200' 
-                                    : 'bg-slate-100 text-slate-600 border-slate-200'
-                                }`}>
-                                  Net: {skuItem.totalTersedia} {skuItem.satuan}
-                                </span>
+                                  <div className="flex items-center gap-1.5">
+                                    {skuItem.minusLocations.length > 0 && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-200">
+                                        Rak Minus: -{skuItem.totalMinus}
+                                      </span>
+                                    )}
+                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-black border ${
+                                      skuItem.totalTersedia > 0 
+                                        ? 'bg-emerald-100 text-emerald-800 border-emerald-200' 
+                                        : 'bg-slate-100 text-slate-600 border-slate-200'
+                                    }`}>
+                                      Net: {skuItem.totalTersedia} {skuItem.satuan}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1.5">
+                                  <span>Tersebar di {skuItem.locations.length} lokasi rak:</span>
+                                  <span className="font-medium text-purple-700">
+                                    {skuItem.locations.map(l => `${l.rak} (${l.tersedia})`).join(', ')}
+                                  </span>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="p-4 text-center text-xs text-slate-400 font-medium">
+                              {modalSkuSearch ? 'Tidak ada SKU yang cocok dengan pencarian' : 'Ketik untuk mencari SKU...'}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Selected SKU Highlight Box */}
+                  {selectedSkuAggregate && (
+                    <div className="p-4 bg-gradient-to-br from-purple-50 via-indigo-50/50 to-slate-50 border border-purple-200 rounded-2xl space-y-3">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <span className="text-[10px] font-black text-purple-700 uppercase tracking-wider">SKU Terpilih</span>
+                          <h4 className="font-black text-slate-900 text-base">{selectedSkuAggregate.nama_produk}</h4>
+                          <p className="text-xs text-slate-500">Packing: {selectedSkuAggregate.packing || '-'}</p>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[10px] font-black text-emerald-700 uppercase tracking-wider">Total Sisa Bersih</span>
+                          <div className="text-xl font-black text-emerald-700">
+                            {selectedSkuAggregate.totalTersedia} <span className="text-xs font-bold">{selectedSkuAggregate.satuan}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider block mb-1.5">
+                          Rincian Stok Tiap Rak ({selectedSkuAggregate.locations.length} Lokasi):
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {selectedSkuAggregate.locations.map((loc, idx) => (
+                            <span
+                              key={idx}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold shadow-2xs border ${
+                                loc.tersedia < 0
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : loc.tersedia > 0
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                  : 'bg-white text-slate-500 border-slate-200'
+                              }`}
+                            >
+                              <span className="opacity-70 font-normal">Rak</span> {loc.rak}:{' '}
+                              <span className="font-black">{loc.tersedia} {selectedSkuAggregate.satuan}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Auto-Klop Alert if Minus Racks Detected */}
+                      {selectedSkuAggregate.minusLocations.length > 0 && (
+                        <div className="p-3.5 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl flex flex-col gap-2.5 shadow-xs animate-fade-in">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-2">
+                              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                              <span className="text-xs font-black text-amber-950">
+                                Terdeteksi {selectedSkuAggregate.minusLocations.length} Rak Minus ({selectedSkuAggregate.totalMinus} {selectedSkuAggregate.satuan})
+                              </span>
+                            </div>
+                            {selectedSkuAggregate.pairPlans.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => handleExecuteSingleKlop(selectedSkuAggregate)}
+                                disabled={submitting}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white rounded-xl text-[11px] font-black shadow-sm transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                                title="Klopkan sekarang untuk menolkan rak minus pada SKU ini saja"
+                              >
+                                <Scale className="w-3.5 h-3.5" />
+                                <span>Auto-Klop SKU Ini Saja</span>
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                            <div className="bg-white/80 p-2 rounded-xl border border-amber-100">
+                              <span className="text-rose-600 font-extrabold uppercase text-[10px] block mb-1">Rak Minus:</span>
+                              <div className="flex flex-wrap gap-1">
+                                {selectedSkuAggregate.minusLocations.map((m, idx) => (
+                                  <span key={idx} className="bg-rose-50 text-rose-700 font-bold px-1.5 py-0.5 rounded border border-rose-200">
+                                    {m.rak}: {m.tersedia} {selectedSkuAggregate.satuan}
+                                  </span>
+                                ))}
                               </div>
                             </div>
-                            <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1.5">
-                              <span>Tersebar di {skuItem.locations.length} lokasi rak:</span>
-                              <span className="font-medium text-purple-700">
-                                {skuItem.locations.map(l => `${l.rak} (${l.tersedia})`).join(', ')}
-                              </span>
+
+                            <div className="bg-white/80 p-2 rounded-xl border border-amber-100">
+                              <span className="text-emerald-600 font-extrabold uppercase text-[10px] block mb-1">Rak Donor Penyeimbang:</span>
+                              <div className="flex flex-wrap gap-1">
+                                {selectedSkuAggregate.plusLocations.map((p, idx) => (
+                                  <span key={idx} className="bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded border border-emerald-200">
+                                    {p.rak}: +{p.tersedia} {selectedSkuAggregate.satuan}
+                                  </span>
+                                ))}
+                              </div>
                             </div>
                           </div>
-                        ))
-                      ) : (
-                        <div className="p-4 text-center text-xs text-slate-400 font-medium">
-                          {modalSkuSearch ? 'Tidak ada SKU yang cocok dengan pencarian' : 'Ketik untuk mencari SKU...'}
                         </div>
                       )}
                     </div>
                   )}
-                </div>
-              </div>
 
-              {/* Selected SKU Highlight Box */}
-              {selectedSkuAggregate && (
-                <div className="p-4 bg-gradient-to-br from-purple-50 via-indigo-50/50 to-slate-50 border border-purple-200 rounded-2xl space-y-3">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <span className="text-[10px] font-black text-purple-700 uppercase tracking-wider">SKU Terpilih</span>
-                      <h4 className="font-black text-slate-900 text-base">{selectedSkuAggregate.nama_produk}</h4>
-                      <p className="text-xs text-slate-500">Packing: {selectedSkuAggregate.packing || '-'}</p>
+                  {/* 2. Destination Rack Selection (ONLY TEMP Racks) */}
+                  {selectedSkuAggregate && (
+                    <div className="modal-rak-dropdown-container">
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-xs font-black text-slate-700 tracking-wider uppercase">
+                          2. Pilih Rak Tujuan (Khusus Rak TEMP)
+                        </label>
+                        <span className="text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-lg border border-purple-200">
+                          Hanya Rak TEMP-A s/d TEMP-F
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <input
+                          ref={modalRakInputRef}
+                          type="text"
+                          value={modalRakTujuan}
+                          onChange={(e) => {
+                            const upperVal = e.target.value.toUpperCase().trimEnd();
+                            setModalRakTujuan(upperVal);
+                            setModalShowRakDropdown(true);
+                            setIsModalRakValidated(false);
+                          }}
+                          onFocus={() => {
+                            setModalShowRakDropdown(true);
+                            setModalHighlightedRakIndex(0);
+                          }}
+                          onKeyDown={handleModalRakKeyDown}
+                          className="w-full h-12 px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
+                          placeholder="Pilih rak penampung... contoh: TEMP-A, TEMP-B, TEMP-C"
+                        />
+                        {modalRakTujuan && (
+                          <button
+                            onClick={() => {
+                              setModalRakTujuan('');
+                              setModalShowRakDropdown(false);
+                              setIsModalRakValidated(false);
+                            }}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+
+                        {/* Rak Dropdown List */}
+                        {modalShowRakDropdown && (
+                          <div
+                            ref={modalRakDropdownRef}
+                            className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 max-h-48 overflow-y-auto p-1.5 divide-y divide-slate-100"
+                          >
+                            {modalFilteredRacks.length > 0 ? (
+                              modalFilteredRacks.map((rack, index) => (
+                                <div
+                                  key={rack.id}
+                                  onClick={() => handleModalRakSelect(rack.nama)}
+                                  className={`px-3 py-2.5 rounded-xl cursor-pointer text-sm transition-all flex items-center justify-between ${
+                                    index === modalHighlightedRakIndex
+                                      ? 'bg-purple-100 text-purple-950 font-bold'
+                                      : 'hover:bg-purple-50 text-slate-800'
+                                  }`}
+                                >
+                                  <span>Rak <strong className="text-slate-900">{rack.nama}</strong></span>
+                                  <span className="text-[10px] font-bold px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full border border-purple-200">
+                                    Lokasi TEMP
+                                  </span>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="p-3 text-center text-xs text-slate-400">
+                                {modalRakTujuan ? 'Tidak ada rak TEMP yang cocok' : 'Ketik untuk mencari rak TEMP...'}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {isModalRakValidated && (
+                        <p className="text-[11px] font-bold text-emerald-600 mt-1 flex items-center gap-1">
+                          <CheckCircle className="w-3.5 h-3.5" /> Rak Tujuan valid: {modalRakTujuan}
+                        </p>
+                      )}
                     </div>
-                    <div className="text-right">
-                      <span className="text-[10px] font-black text-emerald-700 uppercase tracking-wider">Total Sisa Bersih</span>
-                      <div className="text-xl font-black text-emerald-700">
-                        {selectedSkuAggregate.totalTersedia} <span className="text-xs font-bold">{selectedSkuAggregate.satuan}</span>
+                  )}
+
+                  {/* 3. Transfer Quantity */}
+                  {selectedSkuAggregate && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-xs font-black text-slate-700 tracking-wider uppercase">
+                          3. Jumlah Pindah
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setModalJumlahPindah(selectedSkuAggregate.totalTersedia)}
+                          className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-lg text-xs font-bold transition-all cursor-pointer active:scale-95 flex items-center gap-1"
+                        >
+                          <Zap className="w-3 h-3 text-purple-700" />
+                          <span>Pindah Semua ({selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan})</span>
+                        </button>
+                      </div>
+                      <input
+                        type="number"
+                        min="1"
+                        max={selectedSkuAggregate.totalTersedia}
+                        value={modalJumlahPindah}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '') {
+                            setModalJumlahPindah('');
+                          } else {
+                            const num = parseInt(val);
+                            setModalJumlahPindah(isNaN(num) ? '' : num);
+                          }
+                        }}
+                        className="w-full h-12 px-4 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
+                        placeholder={`Masukkan jumlah pindah (1 - ${selectedSkuAggregate.totalTersedia})...`}
+                      />
+                      <div className="flex justify-between items-center text-xs text-slate-500 mt-1">
+                        <span>Maksimal tersedia: <strong className="text-slate-800">{selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan}</strong></span>
+                        {typeof modalJumlahPindah === 'number' && modalJumlahPindah > 0 && (
+                          <span className="font-bold text-purple-700">
+                            Sisa setelah transfer: {Math.max(0, selectedSkuAggregate.totalTersedia - modalJumlahPindah)} {selectedSkuAggregate.satuan}
+                          </span>
+                        )}
                       </div>
                     </div>
-                  </div>
-
+                  )}
+                </>
+              ) : (
+                /* Mode 2: Mass Batch Real-Time Transfer */
+                <div className="space-y-4">
+                  {/* Batch Selection Pills Bar */}
                   <div>
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider block mb-1.5">
-                      Rincian Stok Tiap Rak ({selectedSkuAggregate.locations.length} Lokasi):
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedSkuAggregate.locations.map((loc, idx) => (
-                        <span
-                          key={idx}
-                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold shadow-2xs border ${
-                            loc.tersedia < 0
-                              ? 'bg-rose-50 text-rose-700 border-rose-200'
-                              : loc.tersedia > 0
-                              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                              : 'bg-white text-slate-500 border-slate-200'
+                    <label className="block text-xs font-black text-slate-700 tracking-wider uppercase mb-2">
+                      1. Pilih Batch Rak Asal
+                    </label>
+                    <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                      <button
+                        type="button"
+                        onClick={() => setBatchSelectedKey('ALL')}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                          batchSelectedKey === 'ALL'
+                            ? 'bg-purple-700 text-white shadow-md shadow-purple-600/20'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
+                        }`}
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>Semua Batch ({batchSummaries.all.count} Item)</span>
+                      </button>
+                      {batchSummaries.batches.map(batch => (
+                        <button
+                          key={batch.key}
+                          type="button"
+                          onClick={() => setBatchSelectedKey(batch.key)}
+                          className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                            batchSelectedKey === batch.key
+                              ? 'bg-purple-700 text-white shadow-md shadow-purple-600/20'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
                           }`}
                         >
-                          <span className="opacity-70 font-normal">Rak</span> {loc.rak}:{' '}
-                          <span className="font-black">{loc.tersedia} {selectedSkuAggregate.satuan}</span>
-                        </span>
+                          <span>{batch.label}</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+                            batchSelectedKey === batch.key ? 'bg-purple-900/60 text-purple-100' : 'bg-slate-200 text-slate-700'
+                          }`}>
+                            {batch.count}
+                          </span>
+                        </button>
                       ))}
                     </div>
                   </div>
 
-                  {/* Smart Auto-Klop Alert if Minus Racks Detected */}
-                  {selectedSkuAggregate.minusLocations.length > 0 && (
-                    <div className="p-3.5 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl flex flex-col gap-2.5 shadow-xs animate-fade-in">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <div className="flex items-center gap-2">
-                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                          <span className="text-xs font-black text-amber-950">
-                            Terdeteksi {selectedSkuAggregate.minusLocations.length} Rak Minus ({selectedSkuAggregate.totalMinus} {selectedSkuAggregate.satuan})
-                          </span>
-                        </div>
-                        {selectedSkuAggregate.pairPlans.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => handleExecuteSingleKlop(selectedSkuAggregate)}
-                            disabled={submitting}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white rounded-xl text-[11px] font-black shadow-sm transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-                            title="Klopkan sekarang untuk menolkan rak minus pada SKU ini saja"
-                          >
-                            <Zap className="w-3.5 h-3.5" />
-                            <span>⚡ Auto-Klop SKU Ini Saja</span>
-                          </button>
-                        )}
+                  {/* Batch Items Controls & List */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      {/* Search Bar inside Batch */}
+                      <div className="relative flex-1 min-w-[240px]">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={batchSearchQuery}
+                          onChange={(e) => setBatchSearchQuery(e.target.value)}
+                          placeholder="Cari SKU atau Rak di batch terpilih..."
+                          className="w-full h-10 pl-9 pr-3 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/10"
+                        />
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
-                        <div className="bg-white/80 p-2 rounded-xl border border-amber-100">
-                          <span className="text-rose-600 font-extrabold uppercase text-[10px] block mb-1">Rak Minus:</span>
-                          <div className="flex flex-wrap gap-1">
-                            {selectedSkuAggregate.minusLocations.map((m, idx) => (
-                              <span key={idx} className="bg-rose-50 text-rose-700 font-bold px-1.5 py-0.5 rounded border border-rose-200">
-                                {m.rak}: {m.tersedia} {selectedSkuAggregate.satuan}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="bg-white/80 p-2 rounded-xl border border-amber-100">
-                          <span className="text-emerald-600 font-extrabold uppercase text-[10px] block mb-1">Rak Donor Penyeimbang:</span>
-                          <div className="flex flex-wrap gap-1">
-                            {selectedSkuAggregate.plusLocations.map((p, idx) => (
-                              <span key={idx} className="bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded border border-emerald-200">
-                                {p.rak}: +{p.tersedia} {selectedSkuAggregate.satuan}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="text-[11px] text-amber-900 bg-amber-100/60 p-2 rounded-xl">
-                        💡 <strong>Stok Fisik Murni:</strong> {selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan}.
-                        {selectedSkuAggregate.totalTersedia === 0 ? (
-                          <span className="ml-1 text-amber-800">
-                            (Fisik di gudang sebenarnya <strong>0</strong>. Cukup klik tombol <strong>"⚡ Auto-Klop SKU Ini Saja"</strong> di atas agar kedua rak langsung 0 dan bersih di Dashboard!)
-                          </span>
-                        ) : (
-                          <span className="ml-1 text-emerald-800 font-medium">
-                            (Jika dipindah ke rak tujuan di bawah, sistem otomatis menutup rak minus terlebih dahulu, lalu memindahkan sisa bersih {selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan} ke rak tujuan).
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* 2. Destination Rack Selection */}
-              {selectedSkuAggregate && (
-                <div className="modal-rak-dropdown-container">
-                  <label className="block text-xs font-black text-slate-700 tracking-wider uppercase mb-2">
-                    2. Pilih Rak Tujuan
-                  </label>
-                  <div className="relative">
-                    <input
-                      ref={modalRakInputRef}
-                      type="text"
-                      value={modalRakTujuan}
-                      onChange={(e) => {
-                        const upperVal = e.target.value.toUpperCase().trimEnd();
-                        setModalRakTujuan(upperVal);
-                        setModalShowRakDropdown(true);
-                        setIsModalRakValidated(false);
-                      }}
-                      onFocus={() => {
-                        setModalShowRakDropdown(true);
-                        setModalHighlightedRakIndex(0);
-                      }}
-                      onKeyDown={handleModalRakKeyDown}
-                      className="w-full h-12 px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
-                      placeholder="Pilih atau ketik nama rak tujuan... contoh: A1, B3, UTAMA"
-                    />
-                    {modalRakTujuan && (
+                      {/* Select All Toggle */}
                       <button
-                        onClick={() => {
-                          setModalRakTujuan('');
-                          setModalShowRakDropdown(false);
-                          setIsModalRakValidated(false);
-                        }}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
+                        type="button"
+                        onClick={handleBatchSelectAllDisplayed}
+                        className="px-3 py-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-black text-slate-700 transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
                       >
-                        <X className="w-4 h-4" />
+                        {batchDisplayedItems.length > 0 && batchDisplayedItems.every(i => batchSelectedItems.has(i.id)) ? (
+                          <>
+                            <CheckSquare className="w-4 h-4 text-purple-600" />
+                            <span>Batal Pilih Semua ({batchDisplayedItems.length})</span>
+                          </>
+                        ) : (
+                          <>
+                            <Square className="w-4 h-4 text-slate-400" />
+                            <span>Pilih Semua ({batchDisplayedItems.length})</span>
+                          </>
+                        )}
                       </button>
-                    )}
+                    </div>
 
-                    {/* Rak Dropdown List */}
-                    {modalShowRakDropdown && (
-                      <div
-                        ref={modalRakDropdownRef}
-                        className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 max-h-48 overflow-y-auto p-1.5 divide-y divide-slate-100"
-                      >
-                        {modalFilteredRacks.length > 0 ? (
-                          modalFilteredRacks.map((rack, index) => (
+                    {/* Items Scrollable List */}
+                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl bg-white shadow-xs">
+                      {batchDisplayedItems.length > 0 ? (
+                        batchDisplayedItems.map((item) => {
+                          const isSelected = batchSelectedItems.has(item.id);
+                          return (
                             <div
-                              key={rack.id}
-                              onClick={() => handleModalRakSelect(rack.nama)}
-                              className={`px-3 py-2.5 rounded-xl cursor-pointer text-sm transition-all ${
-                                index === modalHighlightedRakIndex
-                                  ? 'bg-purple-100 text-purple-950 font-bold'
-                                  : 'hover:bg-purple-50 text-slate-800'
+                              key={item.id}
+                              onClick={() => handleBatchToggleItem(item.id)}
+                              className={`p-3 flex items-center justify-between gap-3 cursor-pointer transition-colors ${
+                                isSelected ? 'bg-purple-50/70 hover:bg-purple-50' : 'hover:bg-slate-50'
                               }`}
                             >
-                              Rak <span className="font-black text-slate-900">{rack.nama}</span>
+                              <div className="flex items-center gap-3">
+                                <div className="text-purple-600 shrink-0">
+                                  {isSelected ? (
+                                    <CheckSquare className="w-5 h-5 text-purple-600" />
+                                  ) : (
+                                    <Square className="w-5 h-5 text-slate-300" />
+                                  )}
+                                </div>
+                                <div>
+                                  <div className="font-black text-xs text-slate-900">{item.nama_produk}</div>
+                                  <div className="text-[11px] text-slate-500 mt-0.5">
+                                    Rak: <strong className="text-purple-700">{item.rak}</strong> (Sub: {item.sub_rak || item.rak}) {item.packing ? `| ${item.packing}` : ''}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                  +{item.tersedia} {item.satuan}
+                                </span>
+                              </div>
                             </div>
-                          ))
-                        ) : (
-                          <div className="p-3 text-center text-xs text-slate-400">
-                            {modalRakTujuan ? 'Tidak ada rak yang cocok' : 'Ketik untuk mencari rak...'}
-                          </div>
-                        )}
-                      </div>
-                    )}
+                          );
+                        })
+                      ) : (
+                        <div className="p-8 text-center text-xs text-slate-400 font-medium">
+                          Tidak ada item dengan stok tersedia di batch ini
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  {isModalRakValidated && (
-                    <p className="text-[11px] font-bold text-emerald-600 mt-1 flex items-center gap-1">
-                      <CheckCircle className="w-3.5 h-3.5" /> Rak Tujuan valid: {modalRakTujuan}
-                    </p>
-                  )}
-                </div>
-              )}
 
-              {/* 3. Transfer Quantity */}
-              {selectedSkuAggregate && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-xs font-black text-slate-700 tracking-wider uppercase">
-                      3. Jumlah Pindah
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setModalJumlahPindah(selectedSkuAggregate.totalTersedia)}
-                      className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-lg text-xs font-bold transition-all cursor-pointer active:scale-95"
-                    >
-                      ⚡ Pindah Semua ({selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan})
-                    </button>
-                  </div>
-                  <input
-                    type="number"
-                    min="1"
-                    max={selectedSkuAggregate.totalTersedia}
-                    value={modalJumlahPindah}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (val === '') {
-                        setModalJumlahPindah('');
-                      } else {
-                        const num = parseInt(val);
-                        setModalJumlahPindah(isNaN(num) ? '' : num);
-                      }
-                    }}
-                    className="w-full h-12 px-4 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
-                    placeholder={`Masukkan jumlah pindah (1 - ${selectedSkuAggregate.totalTersedia})...`}
-                  />
-                  <div className="flex justify-between items-center text-xs text-slate-500 mt-1">
-                    <span>Maksimal tersedia: <strong className="text-slate-800">{selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan}</strong></span>
-                    {typeof modalJumlahPindah === 'number' && modalJumlahPindah > 0 && (
-                      <span className="font-bold text-purple-700">
-                        Sisa setelah transfer: {Math.max(0, selectedSkuAggregate.totalTersedia - modalJumlahPindah)} {selectedSkuAggregate.satuan}
+                  {/* 2. Destination TEMP Rack Selection */}
+                  <div className="batch-rak-dropdown-container">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs font-black text-slate-700 tracking-wider uppercase">
+                        2. Pilih Rak Tujuan TEMP untuk Transfer Massal
+                      </label>
+                      <span className="text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-lg border border-purple-200">
+                        Khusus Rak TEMP
                       </span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        ref={batchDestRakInputRef}
+                        type="text"
+                        value={batchDestRak}
+                        onChange={(e) => {
+                          const upperVal = e.target.value.toUpperCase().trimEnd();
+                          setBatchDestRak(upperVal);
+                          setBatchShowRakDropdown(true);
+                          setIsBatchRakValidated(false);
+                        }}
+                        onFocus={() => {
+                          setBatchShowRakDropdown(true);
+                          setBatchHighlightedRakIndex(0);
+                        }}
+                        onKeyDown={handleBatchRakKeyDown}
+                        className="w-full h-12 px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
+                        placeholder="Pilih rak penampung... contoh: TEMP-A, TEMP-B, TEMP-C"
+                      />
+                      {batchDestRak && (
+                        <button
+                          onClick={() => {
+                            setBatchDestRak('');
+                            setBatchShowRakDropdown(false);
+                            setIsBatchRakValidated(false);
+                          }}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+
+                      {/* Dropdown List */}
+                      {batchShowRakDropdown && (
+                        <div
+                          ref={batchDestRakDropdownRef}
+                          className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 max-h-48 overflow-y-auto p-1.5 divide-y divide-slate-100"
+                        >
+                          {batchFilteredDestRacks.length > 0 ? (
+                            batchFilteredDestRacks.map((rack, index) => (
+                              <div
+                                key={rack.id}
+                                onClick={() => handleBatchRakSelect(rack.nama)}
+                                className={`px-3 py-2.5 rounded-xl cursor-pointer text-sm transition-all flex items-center justify-between ${
+                                  index === batchHighlightedRakIndex
+                                    ? 'bg-purple-100 text-purple-950 font-bold'
+                                    : 'hover:bg-purple-50 text-slate-800'
+                                }`}
+                              >
+                                <span>Rak <strong className="text-slate-900">{rack.nama}</strong></span>
+                                <span className="text-[10px] font-bold px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full border border-purple-200">
+                                  Lokasi TEMP
+                                </span>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="p-3 text-center text-xs text-slate-400">
+                              {batchDestRak ? 'Tidak ada rak TEMP yang cocok' : 'Ketik untuk mencari rak TEMP...'}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {isBatchRakValidated && (
+                      <p className="text-[11px] font-bold text-emerald-600 mt-1 flex items-center gap-1">
+                        <CheckCircle className="w-3.5 h-3.5" /> Rak Tujuan valid: {batchDestRak}
+                      </p>
                     )}
                   </div>
                 </div>
@@ -1563,55 +2093,96 @@ export function PindahDataBarang() {
                 <div>
                   <p className="font-bold text-amber-900">Catatan Pemindahan Real-Time:</p>
                   <p className="text-amber-800 leading-relaxed mt-0.5">
-                    Proses ini akan memotong stok riil yang ada dan memasukkannya ke rak tujuan dengan <strong>tanggal hari ini</strong> dan <strong>waktu saat ini</strong>.
+                    Proses ini akan memotong stok riil yang ada di rak asal dan memasukkannya ke rak tujuan TEMP dengan <strong>tanggal hari ini</strong> dan <strong>waktu saat ini</strong>.
                   </p>
                 </div>
               </div>
             </div>
 
             {/* Modal Footer */}
-            <div className="p-6 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3 shrink-0">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowRealtimeModal(false);
-                  setSelectedSkuAggregate(null);
-                  setModalSkuSearch('');
-                  setModalRakTujuan('');
-                  setModalJumlahPindah('');
-                  setIsModalRakValidated(false);
-                }}
-                disabled={submitting}
-                className="px-5 h-11 bg-white hover:bg-slate-100 text-slate-700 font-bold rounded-xl border border-slate-200 transition-all cursor-pointer active:scale-95 disabled:opacity-50 text-xs uppercase tracking-wider"
-              >
-                Batal
-              </button>
-              <button
-                type="button"
-                onClick={handleExecuteRealtimeTransfer}
-                disabled={
-                  submitting ||
-                  !selectedSkuAggregate ||
-                  !modalRakTujuan ||
-                  !isModalRakValidated ||
-                  modalJumlahPindah === '' ||
-                  Number(modalJumlahPindah) <= 0 ||
-                  Number(modalJumlahPindah) > (selectedSkuAggregate?.totalTersedia || 0)
-                }
-                className="px-6 h-11 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-700 text-white font-black rounded-xl shadow-lg shadow-purple-500/25 transition-all active:scale-95 flex items-center gap-2 cursor-pointer disabled:opacity-50 text-xs uppercase tracking-wider"
-              >
-                {submitting ? (
-                  <>
-                    <Loader className="w-4 h-4 animate-spin" />
-                    <span>Memproses...</span>
-                  </>
-                ) : (
-                  <>
-                    <Zap className="w-4 h-4 fill-amber-300 text-amber-300" />
-                    <span>⚡ Eksekusi Pindah Real-Time</span>
-                  </>
+            <div className="p-6 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-3 shrink-0">
+              <div className="text-xs text-slate-500 font-medium">
+                {realtimeModalMode === 'BATCH' && (
+                  <span>
+                    Terpilih: <strong className="text-purple-700 font-black">{batchSelectedItems.size} Item</strong> (
+                    {stockItems
+                      .filter(i => batchSelectedItems.has(i.id))
+                      .reduce((s, i) => s + i.tersedia, 0)}{' '}
+                    pcs)
+                  </span>
                 )}
-              </button>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowRealtimeModal(false);
+                    setSelectedSkuAggregate(null);
+                    setModalSkuSearch('');
+                    setModalRakTujuan('');
+                    setModalJumlahPindah('');
+                    setIsModalRakValidated(false);
+                  }}
+                  disabled={submitting}
+                  className="px-5 h-11 bg-white hover:bg-slate-100 text-slate-700 font-bold rounded-xl border border-slate-200 transition-all cursor-pointer active:scale-95 disabled:opacity-50 text-xs uppercase tracking-wider"
+                >
+                  Batal
+                </button>
+
+                {realtimeModalMode === 'SINGLE' ? (
+                  <button
+                    type="button"
+                    onClick={handleExecuteRealtimeTransfer}
+                    disabled={
+                      submitting ||
+                      !selectedSkuAggregate ||
+                      !modalRakTujuan ||
+                      !isModalRakValidated ||
+                      modalJumlahPindah === '' ||
+                      Number(modalJumlahPindah) <= 0 ||
+                      Number(modalJumlahPindah) > (selectedSkuAggregate?.totalTersedia || 0)
+                    }
+                    className="px-6 h-11 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-700 text-white font-black rounded-xl shadow-lg shadow-purple-500/25 transition-all active:scale-95 flex items-center gap-2 cursor-pointer disabled:opacity-50 text-xs uppercase tracking-wider"
+                  >
+                    {submitting ? (
+                      <>
+                        <Loader className="w-4 h-4 animate-spin" />
+                        <span>Memproses...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-4 h-4 fill-amber-300 text-amber-300" />
+                        <span>Eksekusi Pindah Real-Time</span>
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleExecuteMassBatchRealtimeTransfer}
+                    disabled={
+                      submitting ||
+                      batchSelectedItems.size === 0 ||
+                      !batchDestRak ||
+                      !isBatchRakValidated
+                    }
+                    className="px-6 h-11 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-700 text-white font-black rounded-xl shadow-lg shadow-purple-500/25 transition-all active:scale-95 flex items-center gap-2 cursor-pointer disabled:opacity-50 text-xs uppercase tracking-wider"
+                  >
+                    {submitting ? (
+                      <>
+                        <Loader className="w-4 h-4 animate-spin" />
+                        <span>Memproses Transfer Massal...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Layers className="w-4 h-4 text-purple-200" />
+                        <span>Eksekusi Pindah Massal ({batchSelectedItems.size} Item)</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -1668,10 +2239,10 @@ export function PindahDataBarang() {
                   <button
                     onClick={() => setShowRealtimeModal(true)}
                     className="h-12 px-5 bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-600 hover:from-purple-600 hover:to-indigo-600 text-white font-black rounded-2xl shadow-lg shadow-purple-900/30 transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-purple-300/30 cursor-pointer"
-                    title="Buka Modal Pindah Real-Time: Hitung sisa riil IN-OUT per SKU dan pindahkan dengan tanggal hari ini"
+                    title="Buka Modal Pindah Real-Time: Hitung sisa riil IN-OUT per SKU dan pindahkan dengan tanggal hari ini ke rak TEMP"
                   >
                     <Zap className="h-4 w-4 text-amber-300 fill-amber-300" />
-                    <span className="uppercase text-xs font-black tracking-wide">⚡ Pindah Real-Time</span>
+                    <span className="uppercase text-xs font-black tracking-wide">Pindah Real-Time</span>
                   </button>
                 )}
 
@@ -1680,10 +2251,10 @@ export function PindahDataBarang() {
                   <button
                     onClick={() => setShowAutoKlopModal(true)}
                     className="h-12 px-5 bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white font-black rounded-2xl shadow-lg shadow-amber-900/30 transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-amber-300/30 cursor-pointer"
-                    title="Buka Modal Rekonsiliasi & Auto-Klop Rak Minus (Seluruh Gudang & Per-SKU)"
+                    title="Buka Modal Rekonsiliasi & Auto-Klop Rak Minus (Seluruh Gudang & Per-Batch)"
                   >
                     <Scale className="h-4 w-4 text-amber-100" />
-                    <span className="uppercase text-xs font-black tracking-wide">🧹 Auto-Klop Rak Minus</span>
+                    <span className="uppercase text-xs font-black tracking-wide">Auto-Klop Rak Minus</span>
                   </button>
                 )}
 
@@ -1748,16 +2319,6 @@ export function PindahDataBarang() {
                     <ArrowRightLeft className="h-5 w-5 mr-2 text-blue-600" />
                     Form Pindah Barang (Standar)
                   </h3>
-
-                  {isDevOrAdmin && (
-                    <button
-                      onClick={() => setShowRealtimeModal(true)}
-                      className="px-3 py-1.5 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-2xs"
-                    >
-                      <Zap className="w-3.5 h-3.5 fill-purple-700 text-purple-700" />
-                      <span>⚡ Modal Real-Time</span>
-                    </button>
-                  )}
                 </div>
 
                 <div className="space-y-4">
@@ -1960,27 +2521,6 @@ export function PindahDataBarang() {
                         </span>
                       </Button>
                     </div>
-
-                    {isDevOrAdmin && (
-                      <div className="p-3 bg-purple-50/80 border border-purple-200/80 rounded-2xl text-[11px] text-purple-900 flex items-start justify-between gap-3 shadow-2xs">
-                        <div className="flex items-start gap-2.5">
-                          <Sparkles className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
-                          <div>
-                            <p className="font-black text-purple-800 uppercase tracking-wider text-[10px]">Fitur Khusus Developer & Admin</p>
-                            <p className="text-purple-700 text-[11px] leading-tight mt-0.5">
-                              Gunakan <strong className="text-purple-900">⚡ Modal Pindah Real-Time</strong> untuk memilih SKU murni tanpa sub-rak & memindahkan sisa stok bersih dengan tanggal hari ini.
-                            </p>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setShowRealtimeModal(true)}
-                          className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-xs shadow-sm transition-all shrink-0 cursor-pointer active:scale-95"
-                        >
-                          ⚡ Buka Modal
-                        </button>
-                      </div>
-                    )}
                   </div>
                 </div>
               </CardContent>

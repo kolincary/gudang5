@@ -1,25 +1,22 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
     X,
     Search,
     RefreshCw,
     CheckCircle2,
-    Clock,
     AlertTriangle,
-    Zap,
     Scale,
     Layers,
     ArrowRight,
     Loader2,
     CheckSquare,
     Square,
-    Sparkles,
+    ArrowRightLeft,
     Check
 } from 'lucide-react';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
-import { supabase } from '../lib/supabase';
 
 export interface MinusLocation {
     rak: string;
@@ -54,6 +51,7 @@ export interface SkuReconcileItem {
     reconcilableQty: number; // min(totalMinus, totalPlus)
     netSurplus: number; // totalPlus - totalMinus
     pairPlans: ReconcilePairPlan[];
+    batches: string[];
     status: 'READY' | 'PROCESSING' | 'DONE' | 'ERROR';
     errorMessage?: string;
 }
@@ -65,6 +63,35 @@ interface AutoKlopMinusModalProps {
     stockItems: any[];
 }
 
+export const getRackBatchKey = (rakName: string): string => {
+    if (!rakName) return 'LAINNYA';
+    const clean = rakName.trim().toUpperCase();
+    if (clean.startsWith('TEMP')) return 'TEMP';
+    if (clean.startsWith('LANTAI 4') || clean.startsWith('LT4') || clean.startsWith('LANTAI4')) return 'LANTAI 4';
+    if (clean.startsWith('LANTAI 2') || clean.startsWith('LT2') || clean.startsWith('LANTAI2')) return 'LANTAI 2';
+    if (clean.startsWith('ECER')) return 'ECER';
+    if (clean.startsWith('BLOK-I') || clean.startsWith('BLOK I')) return 'BLOK-I';
+    
+    // Check for single letter prefixes (e.g. A1, A2, B1, C12, D05, etc.)
+    const match = clean.match(/^([A-Z])/);
+    if (match) {
+        return match[1]; // e.g. 'A', 'B', 'C', 'D', etc.
+    }
+    return 'LAINNYA';
+};
+
+export const getRackBatchLabel = (batchKey: string): string => {
+    if (batchKey.length === 1 && batchKey >= 'A' && batchKey <= 'Z') {
+        return `Batch Rak ${batchKey} (${batchKey}1 - ${batchKey}999)`;
+    }
+    if (batchKey === 'TEMP') return 'Batch Rak TEMP';
+    if (batchKey === 'LANTAI 4') return 'Batch Rak Lantai 4';
+    if (batchKey === 'LANTAI 2') return 'Batch Rak Lantai 2';
+    if (batchKey === 'ECER') return 'Batch Rak Eceran (ECER)';
+    if (batchKey === 'BLOK-I') return 'Batch Rak Blok-I';
+    return `Batch Rak ${batchKey}`;
+};
+
 export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
     isOpen,
     onClose,
@@ -72,10 +99,11 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
     stockItems
 }) => {
     const { writeMode } = useDatabaseConfig();
-    const { user, userRole, userEmail } = useAuth();
+    const { user, userRole } = useAuth();
 
     const [searchTerm, setSearchTerm] = useState('');
     const [filterCategory, setFilterCategory] = useState<'ALL' | 'NET_ZERO' | 'NET_SURPLUS'>('ALL');
+    const [selectedBatch, setSelectedBatch] = useState<string>('ALL');
     const [selectedSkuSet, setSelectedSkuSet] = useState<Set<string>>(new Set());
 
     // Single item execution state
@@ -202,6 +230,11 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                     }
                 }
 
+                // Extract all associated batches for this SKU
+                const batchSet = new Set<string>();
+                record.minusLocations.forEach(m => batchSet.add(getRackBatchKey(m.rak)));
+                record.plusLocations.forEach(p => batchSet.add(getRackBatchKey(p.rak)));
+
                 list.push({
                     sku: record.sku,
                     packing: record.packing,
@@ -213,6 +246,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                     reconcilableQty,
                     netSurplus,
                     pairPlans,
+                    batches: Array.from(batchSet),
                     status: 'READY'
                 });
             }
@@ -221,7 +255,40 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
         return list.sort((a, b) => b.reconcilableQty - a.reconcilableQty);
     }, [stockItems]);
 
-    // Filter items based on search and category
+    // Extract all distinct batches present in the reconcilable data
+    const detectedBatches = useMemo(() => {
+        const batchMap = new Map<string, { count: number; totalMinusUnits: number }>();
+
+        reconcilableItems.forEach(item => {
+            item.batches.forEach(b => {
+                if (!batchMap.has(b)) {
+                    batchMap.set(b, { count: 0, totalMinusUnits: 0 });
+                }
+                const bStat = batchMap.get(b)!;
+                bStat.count += 1;
+                bStat.totalMinusUnits += item.totalMinus;
+            });
+        });
+
+        const list = Array.from(batchMap.entries()).map(([key, stat]) => ({
+            key,
+            label: getRackBatchLabel(key),
+            count: stat.count,
+            totalMinusUnits: stat.totalMinusUnits
+        }));
+
+        // Sort: single letters A-Z first, then others
+        return list.sort((a, b) => {
+            const isSingleA = a.key.length === 1 && a.key >= 'A' && a.key <= 'Z';
+            const isSingleB = b.key.length === 1 && b.key >= 'A' && b.key <= 'Z';
+            if (isSingleA && isSingleB) return a.key.localeCompare(b.key);
+            if (isSingleA) return -1;
+            if (isSingleB) return 1;
+            return a.key.localeCompare(b.key);
+        });
+    }, [reconcilableItems]);
+
+    // Filter items based on search, category, and selected batch
     const filteredItems = useMemo(() => {
         return reconcilableItems.filter(item => {
             const matchesSearch = item.sku.toLowerCase().includes(searchTerm.toLowerCase().trim()) ||
@@ -230,11 +297,15 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
 
             if (!matchesSearch) return false;
 
+            if (selectedBatch !== 'ALL' && !item.batches.includes(selectedBatch)) {
+                return false;
+            }
+
             if (filterCategory === 'NET_ZERO') return item.netSurplus === 0;
             if (filterCategory === 'NET_SURPLUS') return item.netSurplus > 0;
             return true;
         });
-    }, [reconcilableItems, searchTerm, filterCategory]);
+    }, [reconcilableItems, searchTerm, filterCategory, selectedBatch]);
 
     // Aggregate statistics
     const stats = useMemo(() => {
@@ -251,16 +322,22 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
         };
     }, [reconcilableItems]);
 
-    // Select all toggle
+    // Select all toggle for current filtered view
     const isAllSelected = filteredItems.length > 0 && filteredItems.every(i => selectedSkuSet.has(i.sku));
 
     const toggleSelectAll = () => {
         if (isAllSelected) {
-            setSelectedSkuSet(new Set());
+            setSelectedSkuSet(prev => {
+                const next = new Set(prev);
+                filteredItems.forEach(i => next.delete(i.sku));
+                return next;
+            });
         } else {
-            const newSet = new Set(selectedSkuSet);
-            filteredItems.forEach(i => newSet.add(i.sku));
-            setSelectedSkuSet(newSet);
+            setSelectedSkuSet(prev => {
+                const next = new Set(prev);
+                filteredItems.forEach(i => next.add(i.sku));
+                return next;
+            });
         }
     };
 
@@ -353,7 +430,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
         try {
             const success = await executeReconcileForSku(item);
             if (success) {
-                showToast(`⚡ Berhasil meng-klop ${item.reconcilableQty} ${item.satuan} untuk SKU: ${item.sku}!`, 'success');
+                showToast(`Berhasil meng-klop ${item.reconcilableQty} ${item.satuan} untuk SKU: ${item.sku}`, 'success');
                 // Remove from selected set
                 setSelectedSkuSet(prev => {
                     const next = new Set(prev);
@@ -372,7 +449,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
         }
     };
 
-    // Execute batch (selected or all)
+    // Execute batch (selected items)
     const handleReconcileBatch = async () => {
         const targetSkus = reconcilableItems.filter(i => selectedSkuSet.has(i.sku));
         if (targetSkus.length === 0) {
@@ -380,7 +457,8 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
             return;
         }
 
-        if (!confirm(`Apakah Anda yakin ingin mengeksekusi Auto-Klop untuk ${targetSkus.length} SKU terpilih?\n\nSistem akan membuat log TRANSFER penyeimbang untuk menetralkan rak-rak minus secara otomatis.`)) {
+        const batchDesc = selectedBatch === 'ALL' ? 'Semua Batch' : getRackBatchLabel(selectedBatch);
+        if (!confirm(`Apakah Anda yakin ingin mengeksekusi Auto-Klop untuk ${targetSkus.length} SKU terpilih (${batchDesc})?\n\nSistem akan membuat log transfer penyeimbang untuk menetralkan rak-rak minus secara otomatis.`)) {
             return;
         }
 
@@ -427,7 +505,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
         }
 
         setBatchRunning(false);
-        showToast(`🎉 Selesai! Berhasil meng-klop ${success} SKU (${fail} gagal). Data gudang telah diperbarui!`, 'success');
+        showToast(`Selesai! Berhasil meng-klop ${success} SKU (${fail} gagal). Data gudang telah diperbarui.`, 'success');
         setSelectedSkuSet(new Set());
         onSuccess();
     };
@@ -437,7 +515,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
     return (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-fade-in overflow-y-auto">
             {/* Modal Container */}
-            <div className="bg-white rounded-3xl shadow-2xl border border-slate-200/80 w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden transform transition-all animate-scale-up">
+            <div className="bg-white rounded-3xl shadow-2xl border border-slate-200/80 w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden transform transition-all animate-scale-up">
 
                 {/* Header */}
                 <div className="px-6 py-5 bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-900 text-white flex items-center justify-between relative overflow-hidden flex-shrink-0">
@@ -449,14 +527,14 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                         <div>
                             <div className="flex items-center gap-2">
                                 <h3 className="font-extrabold text-lg tracking-tight text-white">
-                                    Rekonsiliasi & Auto-Klop Rak Minus
+                                    Rekonsiliasi &amp; Auto-Klop Rak Minus
                                 </h3>
                                 <span className="bg-amber-500/20 border border-amber-400/40 text-amber-300 text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full">
-                                    Dev & Admin
+                                    Dev &amp; Admin
                                 </span>
                             </div>
                             <p className="text-xs text-slate-300 mt-0.5">
-                                Menyeimbangkan stok rak minus dengan rak donor pada SKU yang sama (Self-Balancing Transfer)
+                                Menyeimbangkan stok rak minus dengan rak donor pada SKU yang sama per batch rak (Self-Balancing Transfer)
                             </p>
                         </div>
                     </div>
@@ -464,7 +542,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                     <button
                         onClick={onClose}
                         disabled={batchRunning}
-                        className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-white/10 transition-colors disabled:opacity-50"
+                        className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-white/10 transition-colors disabled:opacity-50 cursor-pointer"
                         title="Tutup Modal"
                     >
                         <X className="w-5 h-5" />
@@ -482,7 +560,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                     }`}>
                         {toastMessage.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />}
                         {toastMessage.type === 'error' && <AlertTriangle className="w-4 h-4 text-rose-600 flex-shrink-0" />}
-                        {toastMessage.type === 'info' && <Sparkles className="w-4 h-4 text-blue-600 flex-shrink-0" />}
+                        {toastMessage.type === 'info' && <ArrowRightLeft className="w-4 h-4 text-blue-600 flex-shrink-0" />}
                         <span>{toastMessage.text}</span>
                     </div>
                 )}
@@ -511,7 +589,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
 
                     <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 flex items-center gap-3">
                         <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl">
-                            <Zap className="w-4 h-4" />
+                            <ArrowRightLeft className="w-4 h-4" />
                         </div>
                         <div>
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Unit Di-Klop</p>
@@ -530,6 +608,44 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                     </div>
                 </div>
 
+                {/* Batch Rak Selector Bar (Per Batch Rak & Sub Rak A1-A999, B1-B999, dll) */}
+                <div className="px-6 py-2 bg-indigo-50/50 border-y border-indigo-100/80 flex items-center gap-2 overflow-x-auto no-scrollbar flex-shrink-0">
+                    <span className="text-[11px] font-black text-indigo-900 uppercase tracking-wider shrink-0 mr-1 flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                        Pilih Batch Rak:
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => setSelectedBatch('ALL')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
+                            selectedBatch === 'ALL'
+                                ? 'bg-indigo-600 text-white shadow-sm'
+                                : 'bg-white hover:bg-indigo-100/70 text-slate-700 border border-indigo-200/60'
+                        }`}
+                    >
+                        Semua Batch ({reconcilableItems.length} SKU)
+                    </button>
+                    {detectedBatches.map(b => (
+                        <button
+                            key={b.key}
+                            type="button"
+                            onClick={() => setSelectedBatch(b.key)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                                selectedBatch === b.key
+                                    ? 'bg-indigo-600 text-white shadow-sm'
+                                    : 'bg-white hover:bg-indigo-100/70 text-slate-700 border border-indigo-200/60'
+                            }`}
+                        >
+                            <span>{b.label}</span>
+                            <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-extrabold ${
+                                selectedBatch === b.key ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
+                            }`}>
+                                {b.count} SKU
+                            </span>
+                        </button>
+                    ))}
+                </div>
+
                 {/* Filter and Controls Bar */}
                 <div className="px-6 py-3 border-b border-slate-100 flex flex-col md:flex-row items-center justify-between gap-3 flex-shrink-0 bg-slate-50/50">
                     <div className="flex items-center gap-2 w-full md:w-auto flex-1">
@@ -545,7 +661,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                             {searchTerm && (
                                 <button
                                     onClick={() => setSearchTerm('')}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                                 >
                                     <X className="w-3.5 h-3.5" />
                                 </button>
@@ -556,31 +672,31 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                         <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 text-[11px] font-bold">
                             <button
                                 onClick={() => setFilterCategory('ALL')}
-                                className={`px-2.5 py-1 rounded-lg transition-all ${filterCategory === 'ALL' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
+                                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${filterCategory === 'ALL' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
                             >
-                                Semua ({reconcilableItems.length})
+                                Semua ({filteredItems.length})
                             </button>
                             <button
                                 onClick={() => setFilterCategory('NET_ZERO')}
-                                className={`px-2.5 py-1 rounded-lg transition-all ${filterCategory === 'NET_ZERO' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
+                                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${filterCategory === 'NET_ZERO' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
                             >
-                                Net 0 ({stats.netZeroSkus})
+                                Net 0 ({filteredItems.filter(i => i.netSurplus === 0).length})
                             </button>
                             <button
                                 onClick={() => setFilterCategory('NET_SURPLUS')}
-                                className={`px-2.5 py-1 rounded-lg transition-all ${filterCategory === 'NET_SURPLUS' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
+                                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${filterCategory === 'NET_SURPLUS' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
                             >
-                                Sisa Fisik ({reconcilableItems.length - stats.netZeroSkus})
+                                Sisa Fisik ({filteredItems.filter(i => i.netSurplus > 0).length})
                             </button>
                         </div>
                     </div>
 
                     {/* Batch Actions */}
-                    <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+                    <div className="flex items-center gap-2 w-full md:w-auto justify-end flex-wrap">
                         <button
                             onClick={toggleSelectAll}
                             disabled={filteredItems.length === 0 || batchRunning}
-                            className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold transition-all disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
                         >
                             {isAllSelected ? <CheckSquare className="w-4 h-4 text-blue-600" /> : <Square className="w-4 h-4 text-slate-400" />}
                             <span>{isAllSelected ? 'Batal Pilih' : 'Pilih Semua'} ({filteredItems.length})</span>
@@ -589,7 +705,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                         <button
                             onClick={handleReconcileBatch}
                             disabled={selectedSkuSet.size === 0 || batchRunning}
-                            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black shadow-md transition-all ${
+                            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black shadow-md transition-all cursor-pointer ${
                                 selectedSkuSet.size > 0 && !batchRunning
                                     ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white hover:shadow-lg active:scale-95'
                                     : 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
@@ -598,12 +714,14 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                             {batchRunning ? (
                                 <>
                                     <Loader2 className="w-4 h-4 animate-spin" />
-                                    <span>Memproses Batch ({batchProgress.current}/{batchProgress.total})...</span>
+                                    <span>Memproses ({batchProgress.current}/{batchProgress.total})...</span>
                                 </>
                             ) : (
                                 <>
-                                    <Zap className="w-4 h-4" />
-                                    <span>Eksekusi Klop Terpilih ({selectedSkuSet.size} SKU)</span>
+                                    <Check className="w-4 h-4" />
+                                    <span>
+                                        Eksekusi Klop {selectedBatch !== 'ALL' ? `Batch ${selectedBatch}` : 'Terpilih'} ({selectedSkuSet.size} SKU)
+                                    </span>
                                 </>
                             )}
                         </button>
@@ -637,12 +755,12 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                 <CheckCircle2 className="w-8 h-8" />
                             </div>
                             <h4 className="text-base font-extrabold text-slate-800">
-                                {searchTerm ? 'Tidak Ada Hasil yang Cocok' : 'Semua Rak Bersih & Sudah Seimbang!'}
+                                {searchTerm ? 'Tidak Ada Hasil yang Cocok' : 'Semua Rak Bersih &amp; Sudah Seimbang!'}
                             </h4>
                             <p className="text-xs text-slate-500 max-w-sm mt-1">
                                 {searchTerm
                                     ? `Tidak ditemukan SKU dengan kata kunci "${searchTerm}". Silakan periksa ejaan SKU atau rak.`
-                                    : 'Luar biasa! Tidak ditemukan SKU yang memiliki selisih rak minus dan plus yang belum di-reconcile.'}
+                                    : 'Luar biasa! Tidak ditemukan SKU yang memiliki selisih rak minus dan plus yang belum di-reconcile pada batch ini.'}
                             </p>
                         </div>
                     ) : (
@@ -653,7 +771,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                         <th className="p-3 w-10 text-center">
                                             <button
                                                 onClick={toggleSelectAll}
-                                                className="hover:text-blue-600 transition-colors"
+                                                className="hover:text-blue-600 transition-colors cursor-pointer"
                                             >
                                                 {isAllSelected ? <CheckSquare className="w-4 h-4 text-blue-600" /> : <Square className="w-4 h-4" />}
                                             </button>
@@ -681,10 +799,10 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                                     <button
                                                         onClick={() => toggleSelectSku(item.sku)}
                                                         disabled={batchRunning || isProcessingThis}
-                                                        className="text-slate-400 hover:text-blue-600 transition-colors disabled:opacity-40"
+                                                        className="text-slate-400 hover:text-blue-600 transition-colors disabled:opacity-40 cursor-pointer"
                                                     >
                                                         {isSelected ? (
-                                                            <CheckSquare className="w-4 h-4 text-blue-600" />
+                                                             <CheckSquare className="w-4 h-4 text-blue-600" />
                                                         ) : (
                                                             <Square className="w-4 h-4" />
                                                         )}
@@ -696,11 +814,18 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                                     <div className="font-black text-slate-800 tracking-tight leading-tight">
                                                         {item.sku}
                                                     </div>
-                                                    {item.packing && (
-                                                        <span className="inline-block mt-0.5 text-[10px] font-bold text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.2 rounded">
-                                                            {item.packing}
-                                                        </span>
-                                                    )}
+                                                    <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                                                        {item.packing && (
+                                                            <span className="text-[10px] font-bold text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.2 rounded">
+                                                                {item.packing}
+                                                            </span>
+                                                        )}
+                                                        {item.batches.map(b => (
+                                                            <span key={b} className="text-[9px] font-extrabold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.2 rounded uppercase">
+                                                                Rak {b}
+                                                            </span>
+                                                        ))}
+                                                    </div>
                                                 </td>
 
                                                 {/* Rak Minus */}
@@ -738,7 +863,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                                 {/* Qty Klop */}
                                                 <td className="p-3 text-center">
                                                     <span className="inline-flex items-center gap-1 bg-blue-50 border border-blue-200 text-blue-700 px-2.5 py-1 rounded-xl font-black text-xs">
-                                                        <Zap className="w-3 h-3 text-blue-500" />
+                                                        <ArrowRightLeft className="w-3 h-3 text-blue-500" />
                                                         {item.reconcilableQty.toLocaleString()} {item.satuan}
                                                     </span>
                                                 </td>
@@ -761,7 +886,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                                     <button
                                                         onClick={() => handleReconcileSingle(item)}
                                                         disabled={isProcessingThis || batchRunning}
-                                                        className="inline-flex items-center gap-1 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white rounded-xl text-[11px] font-black shadow-sm hover:shadow transition-all active:scale-95 disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
+                                                        className="inline-flex items-center gap-1 px-3 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-[11px] font-black shadow-sm hover:shadow transition-all active:scale-95 disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
                                                         title="Klopkan SKU ini saja satu per satu"
                                                     >
                                                         {isProcessingThis ? (
@@ -771,7 +896,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                                             </>
                                                         ) : (
                                                             <>
-                                                                <Zap className="w-3 h-3" />
+                                                                <Check className="w-3 h-3" />
                                                                 <span>Klopkan SKU Ini</span>
                                                             </>
                                                         )}

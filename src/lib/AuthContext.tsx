@@ -189,8 +189,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
 
         window.addEventListener('role-permissions-updated', handlePermUpdate);
+
+        // Supabase Realtime subscription on role_permissions and app_users tables
+        const channel = supabase.channel('realtime_role_permissions_sync')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'role_permissions' }, () => {
+                fetchRoleAndPermissions();
+            })
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'app_users' }, () => {
+                fetchRoleAndPermissions();
+            })
+            .subscribe();
+
         return () => {
             window.removeEventListener('role-permissions-updated', handlePermUpdate);
+            supabase.removeChannel(channel);
         };
     }, [user, mockUser]);
 

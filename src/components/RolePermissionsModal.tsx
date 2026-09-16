@@ -67,7 +67,8 @@ export function RolePermissionsModal({ isOpen, onClose }: RolePermissionsModalPr
         setSaving(true);
         try {
             // Delete all existing for this role
-            await supabase.from('role_permissions').delete().eq('role', activeTab);
+            const { error: delError } = await supabase.from('role_permissions').delete().eq('role', activeTab);
+            if (delError && delError.code !== '42P01') throw delError;
             
             // Insert new ones
             if (permissions.length > 0) {
@@ -75,7 +76,8 @@ export function RolePermissionsModal({ isOpen, onClose }: RolePermissionsModalPr
                     role: activeTab,
                     menu_path: p
                 }));
-                if (error) throw error;
+                const { error: insError } = await supabase.from('role_permissions').insert(inserts);
+                if (insError) throw insError;
             }
             
             // Dispatch event for real-time permission sync across components
