@@ -30,6 +30,8 @@ export interface KarantinaRevisiItem {
     rak_asal: string | null;
     sub_rak_tujuan: string | null;
     tgl_out_asli: string | null;
+    tgl_out?: string | null;
+    gudang?: string | null;
     user_pemotong_out: string | null;
     user_penarik: string | null;
     keterangan_out_asli: string | null;
@@ -151,6 +153,9 @@ export const KarantinaRevisiOutModal: React.FC<KarantinaRevisiOutModalProps> = (
 
     const generateWaReport = (item: KarantinaRevisiItem): string => {
         const cleanRakTujuan = formatSubRakTujuan(item.sub_rak_tujuan);
+        const tglOutVal = item.tgl_out || item.tgl_out_asli || '-';
+        const gudangVal = item.gudang || '-';
+
         let sisaText = '';
         if (item.sisa_fisik_belum_cocok > 0) {
             sisaText = `\nSisa Fisik Belum Ada Data: ${item.sisa_fisik_belum_cocok} pcs (Perlu Pengecekan Admin/Accurate)`;
@@ -160,13 +165,9 @@ export const KarantinaRevisiOutModal: React.FC<KarantinaRevisiOutModalProps> = (
 ━━━━━━━━━━━━━━━━━━
 *SKU:* ${item.sku}
 *Sub-Rak Tujuan:* ${cleanRakTujuan}
-*Qty Dipulihkan:* ${item.jumlah} pcs${sisaText}
-━━━━━━━━━━━━━━━━━━
-*Data OUT yang Dipindahkan:*
-- ID Log Asli: #${item.original_log_id || '-'}
-- Tgl OUT: ${item.tgl_out_asli || '-'}
-- Pemotong OUT: ${item.user_pemotong_out || '-'}
-- Keterangan OUT: ${item.keterangan_out_asli || '-'}
+*QTY:* ${item.jumlah} pcs
+*Tgl OUT:* ${tglOutVal}
+*Gudang:* ${gudangVal}${sisaText}
 ━━━━━━━━━━━━━━━━━━
 _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkait di Accurate._`;
     };

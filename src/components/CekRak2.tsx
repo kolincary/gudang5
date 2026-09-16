@@ -1805,7 +1805,8 @@ export function CekRak2() {
                     jumlah: pulihQty,
                     rak_asal: selectedOutLog.rak || 'TEMP-A',
                     sub_rak_tujuan: targetRak,
-                    tgl_out_asli: selectedOutLog.tgl_scan || selectedOutLog.tgl || '',
+                    tgl_out_asli: selectedOutLog.tgl || selectedOutLog.tgl_scan || '',
+                    gudang: selectedOutLog.gudang || '',
                     user_pemotong_out: selectedOutLog.user_name || 'System',
                     user_penarik: actor,
                     keterangan_out_asli: selectedOutLog.status || '-',
@@ -1951,11 +1952,11 @@ export function CekRak2() {
             const reportPayload = {
                 sku: selectedOutLog.sku,
                 sub_rak_tujuan: targetRak,
-                fisik_ditemukan: physical,
-                pulih_qty: pulihQty,
+                qty: pulihQty,
+                tgl_out: selectedOutLog.tgl || selectedOutLog.tgl_scan || '-',
+                gudang: selectedOutLog.gudang || '-',
                 sisa_belum_ada_data: sisaBelumAdaData,
                 original_log_id: selectedOutLog.id,
-                tgl_out_asli: selectedOutLog.tgl_scan || selectedOutLog.tgl,
                 user_pemotong: selectedOutLog.user_name,
                 keterangan_out: selectedOutLog.keterangan,
                 user_penarik: actor,
@@ -1997,6 +1998,10 @@ export function CekRak2() {
     const generateWaTextFromPayload = (data: any): string => {
         if (!data) return '';
         const cleanRakTujuan = formatSubRakTujuan(data.sub_rak_tujuan);
+        const qtyVal = data.qty ?? data.pulih_qty ?? data.fisik_ditemukan ?? 0;
+        const tglOutVal = data.tgl_out || data.tgl_out_asli || '-';
+        const gudangVal = data.gudang || '-';
+
         let sisaLine = '';
         if (data.sisa_belum_ada_data > 0) {
             sisaLine = `\nSisa Fisik Belum Ada Data: ${data.sisa_belum_ada_data} pcs (Perlu Pengecekan Admin/Accurate)`;
@@ -2006,14 +2011,9 @@ export function CekRak2() {
 ━━━━━━━━━━━━━━━━━━
 *SKU:* ${data.sku}
 *Sub-Rak Tujuan:* ${cleanRakTujuan}
-*Fisik Ditemukan:* ${data.fisik_ditemukan} pcs
-*Dipulihkan dari OUT:* ${data.pulih_qty} pcs${sisaLine}
-━━━━━━━━━━━━━━━━━━
-*Detail Data OUT yang Dipindahkan:*
-- ID Log Asli: #${data.original_log_id || '-'}
-- Tgl OUT: ${data.tgl_out_asli || '-'}
-- Pemotong OUT: ${data.user_pemotong || '-'}
-- Keterangan OUT: ${data.keterangan_out || '-'}
+*QTY:* ${qtyVal} pcs
+*Tgl OUT:* ${tglOutVal}
+*Gudang:* ${gudangVal}${sisaLine}
 ━━━━━━━━━━━━━━━━━━
 _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut di Accurate._`;
     };
