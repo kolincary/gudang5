@@ -261,12 +261,37 @@ export function CekRak2() {
             const { data, error } = await supabase
                 .from('database_log')
                 .select('*')
-                .or('gudang.eq.VERIFY,status.eq.VERIFIED')
+                .in('gudang', ['VERIFY', 'UNVERIFY'])
                 .order('created_at', { ascending: false })
-                .limit(300);
+                .order('id', { ascending: false })
+                .limit(1000);
 
             if (error) throw error;
-            setFinishedLogs(data || []);
+
+            const seenMap = new Map<string, any>();
+            const excludedKeys = new Set<string>();
+
+            (data || []).forEach((log: any) => {
+                const sku = (log.sku || log.nama_barang || log.nama_produk || '').trim().toLowerCase();
+                const rak = (log.sub_rak || log.rak || '').trim().toUpperCase();
+                if (!sku || !rak) return;
+
+                const pairKey = `${sku}:::${rak}`;
+
+                // If this item in this rack was already resolved by a newer log
+                if (seenMap.has(pairKey) || excludedKeys.has(pairKey)) {
+                    return;
+                }
+
+                if (log.gudang === 'UNVERIFY') {
+                    // Newest record for this item in this rack is UNVERIFY, exclude older VERIFY records
+                    excludedKeys.add(pairKey);
+                } else if (log.gudang === 'VERIFY' || log.status === 'VERIFIED') {
+                    seenMap.set(pairKey, log);
+                }
+            });
+
+            setFinishedLogs(Array.from(seenMap.values()));
         } catch (err: any) {
             console.error('Error fetching finished stock opname items:', err);
         } finally {
@@ -285,7 +310,7 @@ export function CekRak2() {
                 table: 'database_log'
             }, (payload) => {
                 const row = (payload.new || payload.old) as any;
-                if (row && (row.gudang === 'VERIFY' || row.status === 'VERIFIED')) {
+                if (row && (row.gudang === 'VERIFY' || row.gudang === 'UNVERIFY' || row.status === 'VERIFIED')) {
                     fetchAllFinishedItems();
                 }
             })
@@ -1603,21 +1628,32 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
     const executeMarkAsVerified = async (item: any) => {
         try {
             setVerifiedIds(prev => new Set(prev).add(item.id));
-            const cleanRak = (lastScanned || item.rak || '').trim();
+            const cleanRak = (lastScanned || item.rak || item.sub_rak || '').trim();
+            const prodName = (item.nama_produk || item.sku || item.nama_barang || '').trim();
 
-            if (cleanRak) {
+            if (cleanRak && prodName) {
                 const storageKey = `verified_rak_${cleanRak.toUpperCase()}`;
                 const unverifiedKey = `unverified_rak_${cleanRak.toUpperCase()}`;
-                const prodName = item.nama_produk?.trim().toLowerCase();
-                if (prodName) {
-                    const existing: string[] = JSON.parse(localStorage.getItem(storageKey) || '[]');
-                    if (!existing.includes(prodName)) {
-                        existing.push(prodName);
-                        localStorage.setItem(storageKey, JSON.stringify(existing));
-                    }
-                    const existingUnverified: string[] = JSON.parse(localStorage.getItem(unverifiedKey) || '[]');
-                    const filteredUnverified = existingUnverified.filter(name => name.trim().toLowerCase() !== prodName);
-                    localStorage.setItem(unverifiedKey, JSON.stringify(filteredUnverified));
+                
+                const existing: string[] = JSON.parse(localStorage.getItem(storageKey) || '[]');
+                if (!existing.some(n => n.trim().toLowerCase() === prodName.toLowerCase())) {
+                    existing.push(prodName);
+                    localStorage.setItem(storageKey, JSON.stringify(existing));
+                }
+                const existingUnverified: string[] = JSON.parse(localStorage.getItem(unverifiedKey) || '[]');
+                const filteredUnverified = existingUnverified.filter(name => name.trim().toLowerCase() !== prodName.toLowerCase());
+                localStorage.setItem(unverifiedKey, JSON.stringify(filteredUnverified));
+
+                // Clean up any old UNVERIFY records for this item in this rack so VERIFY is cleanly recorded
+                try {
+                    await supabase
+                        .from('database_log')
+                        .delete()
+                        .eq('gudang', 'UNVERIFY')
+                        .ilike('sku', prodName)
+                        .or(`rak.eq.${cleanRak.toUpperCase()},sub_rak.eq.${cleanRak.toUpperCase()}`);
+                } catch (delErr) {
+                    console.warn('Could not cleanup UNVERIFY logs:', delErr);
                 }
 
                 // Insert Universal VERIFY log into Supabase database_log
@@ -1628,16 +1664,18 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 await DatabaseService.insertLogs([{
                     tgl: tglHariIni,
                     waktu: waktuSekarang,
-                    sku: item.nama_produk,
-                    jumlah: item.tersedia || 0,
+                    sku: prodName,
+                    jumlah: item.tersedia || item.jumlah || 0,
                     type: 'MOVE',
                     gudang: 'VERIFY',
-                    rak: cleanRak,
+                    rak: cleanRak.toUpperCase(),
                     tgl_scan: item.tgl_scan || tglHariIni,
-                    user_name: user?.email || 'User',
-                    sub_rak: item.sub_rak || cleanRak
+                    user_name: user?.email || userName || 'User',
+                    sub_rak: item.sub_rak || cleanRak.toUpperCase()
                 }], writeMode);
             }
+
+            await fetchAllFinishedItems();
             setToast({ isOpen: true, message: 'Barang ditandai AKURAT (Terkonfirmasi Universal)!', type: 'success' });
         } catch (error: any) {
             console.error('Error marking as verified:', error);
@@ -1660,7 +1698,8 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
     };
 
     const executeUnverifyItem = async (item: any) => {
-        const cleanRak = (lastScanned || item.rak || '').trim();
+        const cleanRak = (item.sub_rak || item.rak || lastScanned || '').trim();
+        const prodName = (item.nama_produk || item.sku || item.nama_barang || '').trim();
 
         try {
             setVerifiedIds(prev => {
@@ -1669,23 +1708,40 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 return next;
             });
 
-            if (cleanRak) {
+            if (cleanRak && prodName) {
                 const storageKey = `verified_rak_${cleanRak.toUpperCase()}`;
                 const unverifiedKey = `unverified_rak_${cleanRak.toUpperCase()}`;
-                const prodName = item.nama_produk?.trim().toLowerCase();
-                if (prodName) {
-                    const existingVerified: string[] = JSON.parse(localStorage.getItem(storageKey) || '[]');
-                    const filtered = existingVerified.filter(name => name.trim().toLowerCase() !== prodName);
-                    localStorage.setItem(storageKey, JSON.stringify(filtered));
+                
+                const existingVerified: string[] = JSON.parse(localStorage.getItem(storageKey) || '[]');
+                const filtered = existingVerified.filter(name => name.trim().toLowerCase() !== prodName.toLowerCase());
+                localStorage.setItem(storageKey, JSON.stringify(filtered));
 
-                    const existingUnverified: string[] = JSON.parse(localStorage.getItem(unverifiedKey) || '[]');
-                    if (!existingUnverified.includes(prodName)) {
-                        existingUnverified.push(prodName);
-                        localStorage.setItem(unverifiedKey, JSON.stringify(existingUnverified));
-                    }
+                const existingUnverified: string[] = JSON.parse(localStorage.getItem(unverifiedKey) || '[]');
+                if (!existingUnverified.some(n => n.trim().toLowerCase() === prodName.toLowerCase())) {
+                    existingUnverified.push(prodName.toLowerCase());
+                    localStorage.setItem(unverifiedKey, JSON.stringify(existingUnverified));
                 }
 
-                // Insert Universal UNVERIFY log into Supabase database_log
+                // 1. Direct delete matching VERIFY logs from Supabase database_log so it will never reappear on fetch
+                try {
+                    await supabase
+                        .from('database_log')
+                        .delete()
+                        .eq('gudang', 'VERIFY')
+                        .ilike('sku', prodName)
+                        .or(`rak.eq.${cleanRak.toUpperCase()},sub_rak.eq.${cleanRak.toUpperCase()}`);
+
+                    if (item.id || item.logId) {
+                        await supabase
+                            .from('database_log')
+                            .delete()
+                            .eq('id', item.id || item.logId);
+                    }
+                } catch (delErr) {
+                    console.warn('Could not delete old VERIFY log:', delErr);
+                }
+
+                // 2. Insert Universal UNVERIFY log into Supabase database_log for universal sync
                 const now = new Date();
                 const tglHariIni = now.toISOString().split('T')[0];
                 const waktuSekarang = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1693,18 +1749,31 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 await DatabaseService.insertLogs([{
                     tgl: tglHariIni,
                     waktu: waktuSekarang,
-                    sku: item.nama_produk,
-                    jumlah: item.tersedia || 0,
+                    sku: prodName,
+                    jumlah: item.tersedia || item.jumlah || 0,
                     type: 'MOVE',
                     gudang: 'UNVERIFY',
-                    rak: cleanRak,
+                    rak: cleanRak.toUpperCase(),
                     tgl_scan: item.tgl_scan || tglHariIni,
-                    user_name: user?.email || 'User (Batal Konfirmasi)',
-                    sub_rak: item.sub_rak || cleanRak
+                    user_name: user?.email || userName || 'User (Batal Konfirmasi)',
+                    sub_rak: item.sub_rak || cleanRak.toUpperCase()
                 }], writeMode);
             }
 
-            setToast({ isOpen: true, message: `Status terkonfirmasi "${item.nama_produk}" berhasil dibatalkan secara Universal!`, type: 'info' });
+            // Immediately filter out from finishedLogs state so it disappears from the table with 0 latency
+            setFinishedLogs(prev => prev.filter(l => {
+                const lSku = (l.sku || l.nama_barang || l.nama_produk || '').trim().toLowerCase();
+                const lRak = (l.sub_rak || l.rak || '').trim().toUpperCase();
+                return !(lSku === prodName.toLowerCase() && lRak === cleanRak.toUpperCase());
+            }));
+
+            await fetchAllFinishedItems();
+
+            if (lastScanned) {
+                fetchItems(lastScanned, true);
+            }
+
+            setToast({ isOpen: true, message: `Status terkonfirmasi "${prodName}" berhasil dibatalkan secara Universal!`, type: 'info' });
         } catch (error: any) {
             console.error('Error unverifying item:', error);
             setToast({ isOpen: true, message: 'Gagal membatalkan status terkonfirmasi', type: 'error' });
@@ -1738,6 +1807,17 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 const tglHariIni = now.toISOString().split('T')[0];
                 const waktuSekarang = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+                // Clean up any old UNVERIFY records for this rack
+                try {
+                    await supabase
+                        .from('database_log')
+                        .delete()
+                        .eq('gudang', 'UNVERIFY')
+                        .or(`rak.eq.${cleanRak.toUpperCase()},sub_rak.eq.${cleanRak.toUpperCase()}`);
+                } catch (delErr) {
+                    console.warn('Could not cleanup UNVERIFY logs:', delErr);
+                }
+
                 const logsToInsert = items.map(i => ({
                     tgl: tglHariIni,
                     waktu: waktuSekarang,
@@ -1745,13 +1825,14 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                     jumlah: i.tersedia || 0,
                     type: 'MOVE',
                     gudang: 'VERIFY',
-                    rak: cleanRak,
+                    rak: cleanRak.toUpperCase(),
                     tgl_scan: i.tgl_scan || tglHariIni,
-                    user_name: user?.email || 'User',
-                    sub_rak: i.sub_rak || cleanRak
+                    user_name: user?.email || userName || 'User',
+                    sub_rak: i.sub_rak || cleanRak.toUpperCase()
                 }));
 
                 await DatabaseService.insertLogs(logsToInsert, writeMode);
+                await fetchAllFinishedItems();
             } catch (err) {
                 console.error('Error inserting bulk verify logs:', err);
             }
@@ -1801,7 +1882,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 gudang: 'UNVERIFY',
                 rak: log.rak || log.sub_rak,
                 tgl_scan: tglHariIni,
-                user_name: user?.email || 'Dev (Clear All Selesai)',
+                user_name: user?.email || userName || 'Dev (Clear All Selesai)',
                 sub_rak: log.sub_rak || log.rak
             }));
 
@@ -1809,14 +1890,22 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 await DatabaseService.insertLogs(unverifyLogs, writeMode);
             }
 
+            // Direct purge all VERIFY logs from Supabase
+            try {
+                await supabase.from('database_log').delete().eq('gudang', 'VERIFY');
+            } catch (delErr) {
+                console.warn('Could not batch delete VERIFY logs:', delErr);
+            }
+
             // Clear local storage verification keys
             Object.keys(localStorage).forEach(key => {
-                if (key.startsWith('verified_rak_')) {
+                if (key.startsWith('verified_rak_') || key.startsWith('unverified_rak_')) {
                     localStorage.removeItem(key);
                 }
             });
 
             setVerifiedIds(new Set());
+            setFinishedLogs([]);
             await fetchAllFinishedItems();
             if (lastScanned) {
                 fetchItems(lastScanned, true);
@@ -1866,8 +1955,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
         }
         const itemToUnverify = {
             id: log.id,
+            logId: log.id,
             nama_produk: log.sku || log.nama_barang || log.nama_produk,
-            rak: log.rak || log.sub_rak,
+            sku: log.sku || log.nama_barang || log.nama_produk,
+            rak: log.sub_rak || log.rak,
             sub_rak: log.sub_rak || log.rak,
             tersedia: log.jumlah
         };
@@ -1988,6 +2079,22 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 return;
             }
 
+            // Direct purge VERIFY logs for selected racks from Supabase
+            try {
+                await supabase
+                    .from('database_log')
+                    .delete()
+                    .eq('gudang', 'VERIFY')
+                    .in('rak', racksListClean);
+                await supabase
+                    .from('database_log')
+                    .delete()
+                    .eq('gudang', 'VERIFY')
+                    .in('sub_rak', racksListClean);
+            } catch (delErr) {
+                console.warn('Could not batch delete VERIFY logs for racks:', delErr);
+            }
+
             const now = new Date();
             const tglHariIni = now.toISOString().split('T')[0];
             const waktuSekarang = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2001,7 +2108,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 gudang: 'UNVERIFY',
                 rak: item.rak,
                 tgl_scan: item.tgl_scan || tglHariIni,
-                user_name: user?.email || 'Dev (Batal Konfirmasi Massal)',
+                user_name: user?.email || userName || 'Dev (Batal Konfirmasi Massal)',
                 sub_rak: item.sub_rak || item.rak
             }));
 
@@ -2045,6 +2152,8 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 setVerifiedIds(new Set());
                 fetchItems(lastScanned, true);
             }
+
+            await fetchAllFinishedItems();
 
             setToast({ isOpen: true, message: `Berhasil membatalkan konfirmasi secara Universal untuk ${racksList.length} rak (${logsToInsert.length} barang)!`, type: 'success' });
             setShowBulkUnverifyModal(false);
