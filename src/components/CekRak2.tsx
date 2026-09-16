@@ -20,6 +20,14 @@ import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
 import { getOriginalReceiptDate } from '../lib/transferDateHelper';
 import { KarantinaRevisiOutModal } from './KarantinaRevisiOutModal';
+import { 
+    initOpnameZoneBridgeService, 
+    subscribeToOpnameZones, 
+    toggleOpnameZoneSession, 
+    isOpnameZoneActive, 
+    getTempRackForPrefix,
+    ActiveOpnameZonesState 
+} from '../services/opnameZoneBridgeService';
 
 interface StockItem {
     id: string;
@@ -181,6 +189,66 @@ export function CekRak2() {
         window.addEventListener('message', handleMessage);
         return () => window.removeEventListener('message', handleMessage);
     }, [activeUserEmail]);
+
+    // Universal Active Opname Zone Sessions state (Real-Time Synchronized)
+    const [activeOpnameZones, setActiveOpnameZones] = useState<ActiveOpnameZonesState>({});
+    const [isTogglingZone, setIsTogglingZone] = useState<string | null>(null);
+
+    useEffect(() => {
+        initOpnameZoneBridgeService().then(zones => {
+            setActiveOpnameZones(zones || {});
+        });
+
+        const unsubscribe = subscribeToOpnameZones((zones) => {
+            setActiveOpnameZones(zones || {});
+        });
+
+        return () => unsubscribe();
+    }, []);
+
+    const handleToggleZoneSession = async (prefix: string, targetActive: boolean) => {
+        if (!isAdminOrDev) {
+            setToast({
+                isOpen: true,
+                message: '❌ Hanya Developer & Admin yang dapat mengaktifkan/menonaktifkan Sesi Opname Zona.',
+                type: 'error'
+            });
+            return;
+        }
+
+        const cleanPrefix = prefix.trim().toUpperCase();
+        if (!cleanPrefix) return;
+
+        const actionName = targetActive ? 'MEMULAI' : 'MENYELESAIKAN';
+        const msg = `${actionName} Sesi Stock Opname untuk Zona ${cleanPrefix}?\n\n` +
+            (targetActive 
+                ? `⚡ Selama sesi aktif, pemotongan stok keluar untuk rak ${cleanPrefix}1-${cleanPrefix}999 akan otomatis dialihkan ke TEMP-${cleanPrefix}.`
+                : `✅ Sesi Zona ${cleanPrefix} akan ditutup dan validasi pemotongan stok kembali Normal.`);
+
+        if (!window.confirm(msg)) return;
+
+        try {
+            setIsTogglingZone(cleanPrefix);
+            const res = await toggleOpnameZoneSession(cleanPrefix, targetActive, activeUserEmail);
+            if (res.success) {
+                setActiveOpnameZones(res.zones);
+                setToast({
+                    isOpen: true,
+                    message: targetActive
+                        ? `⚡ Sesi Opname Zona ${cleanPrefix} AKTIF (Auto-Bridge ke TEMP-${cleanPrefix})`
+                        : `✅ Sesi Opname Zona ${cleanPrefix} SELESAI (Validasi Kembali Normal)`,
+                    type: targetActive ? 'success' : 'info'
+                });
+            } else {
+                setToast({ isOpen: true, message: 'Gagal memperbarui status sesi opname di database.', type: 'error' });
+            }
+        } catch (err: any) {
+            console.error('Error toggling zone session:', err);
+            setToast({ isOpen: true, message: `Error: ${err.message || 'Unknown error'}`, type: 'error' });
+        } finally {
+            setIsTogglingZone(null);
+        }
+    };
 
     const [rackOptions, setRackOptions] = useState<string[]>([]);
     const [showScanner, setShowScanner] = useState(false);
@@ -3659,6 +3727,65 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 {/* MAIN CONTENT CONTAINER */}
                 <div className="max-w-7xl mx-auto w-full px-3.5 sm:px-6 lg:px-8 mt-4 sm:mt-6 lg:mt-8 relative z-20 space-y-5 sm:space-y-6">
 
+                    {/* UNIVERSAL ACTIVE OPNAME ZONES REAL-TIME BANNER */}
+                    {Object.entries(activeOpnameZones).filter(([_, s]) => s && s.active).length > 0 && (
+                        <div className="bg-gradient-to-r from-amber-950/90 via-slate-900 to-indigo-950 border-2 border-amber-500/40 rounded-3xl p-4 sm:p-5 text-white shadow-2xl shadow-amber-950/30 relative overflow-hidden animate-in fade-in slide-in-from-top-3 duration-300">
+                            <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                            <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                                <div className="space-y-1.5 max-w-3xl">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/40 text-[11px] font-black tracking-widest text-amber-300 uppercase flex items-center gap-1.5 shadow-sm">
+                                            <span className="relative flex h-2 w-2">
+                                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                                            </span>
+                                            ⚡ Sesi Opname Zona Aktif (Auto-Bridge Real-Time)
+                                        </span>
+                                        <span className="text-[11px] font-bold text-amber-200/80">
+                                            {Object.entries(activeOpnameZones).filter(([_, s]) => s && s.active).length} Zona Sedang Berjalan
+                                        </span>
+                                    </div>
+                                    <p className="text-xs sm:text-sm text-slate-200 font-medium leading-relaxed">
+                                        Operasional pemotongan stok keluar tetap berjalan lancar. Barcode lama pada box fisik rak yang sedang di-opname <strong className="text-amber-300">otomatis dialihkan ke rak transit TEMP</strong> tanpa error stok / minus.
+                                    </p>
+                                </div>
+
+                                {/* Active Zone Badges & Quick End Buttons */}
+                                <div className="flex flex-wrap items-center gap-2">
+                                    {Object.entries(activeOpnameZones)
+                                        .filter(([_, s]) => s && s.active)
+                                        .map(([prefix, session]) => (
+                                            <div 
+                                                key={prefix} 
+                                                className="px-3.5 py-2 rounded-2xl bg-white/10 backdrop-blur-md border border-amber-400/30 flex items-center gap-2.5 shadow-inner"
+                                            >
+                                                <div className="text-left">
+                                                    <p className="text-xs font-black uppercase text-amber-300">
+                                                        Zona {prefix} ({session.racks_range || `${prefix}1-${prefix}999`}) ➔ {session.temp_rack || `TEMP-${prefix}`}
+                                                    </p>
+                                                    <p className="text-[10px] text-slate-300 font-medium">
+                                                        Mulai: {session.started_at ? new Date(session.started_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '-'} • Oleh: {session.started_by?.split('@')[0] || 'admin'}
+                                                    </p>
+                                                </div>
+                                                {isAdminOrDev && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleToggleZoneSession(prefix, false)}
+                                                        disabled={isTogglingZone === prefix}
+                                                        className="px-2.5 py-1 bg-rose-600/90 hover:bg-rose-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all active:scale-95 cursor-pointer flex items-center gap-1 shadow-sm"
+                                                        title={`Selesaikan sesi opname Zona ${prefix} dan kembalikan validasi normal`}
+                                                    >
+                                                        <XCircle className="w-3 h-3" />
+                                                        <span>Selesai</span>
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* MAIN NAVIGATION TABS (OPNAME RAK vs DATA SELESAI PROSES) */}
                     <div className="flex items-center justify-between flex-wrap gap-2.5 bg-white p-2 sm:p-2.5 rounded-2xl sm:rounded-3xl border border-slate-200/90 shadow-xl shadow-slate-900/5">
                         <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -4085,18 +4212,22 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         {availablePrefixes.map(prefix => {
                                             const count = rackOptions.filter(r => r.toUpperCase().startsWith(prefix)).length;
                                             const isActive = selectedPrefixTab === prefix;
+                                            const isZoneRunning = !!activeOpnameZones[prefix]?.active;
                                             return (
                                                 <button
                                                     key={prefix}
                                                     type="button"
                                                     onClick={() => setSelectedPrefixTab(prefix)}
                                                     className={cn(
-                                                        "px-3.5 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all shrink-0 cursor-pointer flex items-center gap-1.5",
+                                                        "px-3.5 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all shrink-0 cursor-pointer flex items-center gap-1.5 relative",
                                                         isActive
-                                                            ? "bg-blue-600 text-white shadow-md shadow-blue-500/20"
-                                                            : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                                            ? (isZoneRunning ? "bg-amber-600 text-white shadow-md shadow-amber-500/30 ring-2 ring-amber-300" : "bg-blue-600 text-white shadow-md shadow-blue-500/20")
+                                                            : (isZoneRunning ? "bg-amber-50 text-amber-900 border border-amber-300 hover:bg-amber-100" : "bg-slate-100 hover:bg-slate-200 text-slate-600")
                                                     )}
                                                 >
+                                                    {isZoneRunning && (
+                                                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                                                    )}
                                                     <span>Blok {prefix}</span>
                                                     <span className={cn(
                                                         "px-1.5 py-0.2 rounded-md text-[10px]",
@@ -4108,6 +4239,68 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                             );
                                         })}
                                     </div>
+
+                                    {/* DEDICATED ZONE OPNAME SESSION ACTION PANEL (WHEN A SPECIFIC BLOCK IS SELECTED) */}
+                                    {selectedPrefixTab !== 'ALL' && (
+                                        <div className={cn(
+                                            "p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all",
+                                            activeOpnameZones[selectedPrefixTab]?.active
+                                                ? "bg-gradient-to-r from-amber-50 via-orange-50 to-amber-100/60 border-amber-300 shadow-sm"
+                                                : "bg-slate-50 border-slate-200/80"
+                                        )}>
+                                            <div className="flex items-center gap-3">
+                                                <div className={cn(
+                                                    "p-2.5 rounded-xl flex items-center justify-center text-xs font-black shrink-0",
+                                                    activeOpnameZones[selectedPrefixTab]?.active
+                                                        ? "bg-amber-500 text-white shadow-sm shadow-amber-500/30 animate-pulse"
+                                                        : "bg-blue-100 text-blue-700"
+                                                )}>
+                                                    {activeOpnameZones[selectedPrefixTab]?.active ? '⚡ AKTIF' : `ZONA ${selectedPrefixTab}`}
+                                                </div>
+                                                <div>
+                                                    <h4 className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-tight flex items-center gap-2">
+                                                        <span>Status Sesi Stock Opname: Zona {selectedPrefixTab}</span>
+                                                        {activeOpnameZones[selectedPrefixTab]?.active && (
+                                                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-800 text-[10px] font-black border border-amber-300">
+                                                                AUTO-BRIDGE AKTIF
+                                                            </span>
+                                                        )}
+                                                    </h4>
+                                                    <p className="text-[11px] text-slate-600 font-medium mt-0.5">
+                                                        {activeOpnameZones[selectedPrefixTab]?.active
+                                                            ? `Pemotongan barang keluar dari rak ${selectedPrefixTab}1-${selectedPrefixTab}999 otomatis diarahkan ke ${activeOpnameZones[selectedPrefixTab]?.temp_rack || `TEMP-${selectedPrefixTab}`}.`
+                                                            : `Sesi belum dimulai. Pemotongan barang keluar memvalidasi stok di sub-rak ${selectedPrefixTab}1-${selectedPrefixTab}999 secara normal.`}
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            {isAdminOrDev && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleToggleZoneSession(selectedPrefixTab, !activeOpnameZones[selectedPrefixTab]?.active)}
+                                                    disabled={isTogglingZone === selectedPrefixTab}
+                                                    className={cn(
+                                                        "px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm active:scale-95 cursor-pointer shrink-0",
+                                                        activeOpnameZones[selectedPrefixTab]?.active
+                                                            ? "bg-rose-600 hover:bg-rose-700 text-white shadow-rose-500/20"
+                                                            : "bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white shadow-amber-500/20"
+                                                    )}
+                                                >
+                                                    {activeOpnameZones[selectedPrefixTab]?.active ? (
+                                                        <>
+                                                            <XCircle className="w-4 h-4" />
+                                                            <span>Selesaikan Sesi Zona {selectedPrefixTab}</span>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Sparkles className="w-4 h-4" />
+                                                            <span>Mulai Sesi Opname Zona {selectedPrefixTab}</span>
+                                                        </>
+                                                    )}
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
 
                                     {/* INTERACTIVE RACK CHIPS GRID */}
                                     <div className="max-h-96 overflow-y-auto pr-1">
@@ -4230,6 +4423,12 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                             <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-blue-50 text-blue-700 border border-blue-200 uppercase">
                                                 {items.length} Item
                                             </span>
+                                            {isOpnameZoneActive(lastScanned) && (
+                                                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-amber-500/15 text-amber-800 border border-amber-300 uppercase flex items-center gap-1 shadow-xs">
+                                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                                    Sesi Opname Aktif (Bridge: {getTempRackForPrefix(lastScanned)})
+                                                </span>
+                                            )}
                                         </div>
                                         {/* Status Progress Bar */}
                                         <div className="flex items-center gap-3">

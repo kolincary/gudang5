@@ -9,6 +9,7 @@ import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
 import { getOriginalReceiptDate } from '../lib/transferDateHelper';
 import { AutoKlopMinusModal, getRackBatchKey, getRackBatchLabel } from './AutoKlopMinusModal';
+import { toggleOpnameZoneSession } from '../services/opnameZoneBridgeService';
 
 interface StockItem {
   id: string;
@@ -903,6 +904,14 @@ export function PindahDataBarang() {
 
       updateProgress(operationSteps[5], 6);
 
+      // Auto-activate Opname Zone Session if moved to TEMP-* rack
+      if (rakTujuanUpper.startsWith('TEMP')) {
+        const zonePrefix = rakTujuanUpper.replace('TEMP-', '').replace('TEMP', '').trim();
+        if (zonePrefix) {
+          toggleOpnameZoneSession(zonePrefix, true, user?.email || 'admin').catch(e => console.warn('Auto zone activate error:', e));
+        }
+      }
+
       showToast(
         `[Real-Time Berhasil] Memindahkan ${transferQty} ${selectedSkuAggregate.satuan} ${selectedSkuAggregate.nama_produk} ke ${rakTujuanUpper}${selectedSkuAggregate.pairPlans.length > 0 ? ` sekaligus menolkan ${selectedSkuAggregate.pairPlans.length} rak minus (Auto-Klop)!` : '!'}${stockItemCreated ? ' (item baru dibuat)' : ''}`,
         'success'
@@ -1193,6 +1202,15 @@ export function PindahDataBarang() {
       }
 
       const totalQty = itemsToMove.reduce((s, i) => s + i.tersedia, 0);
+
+      // Auto-activate Opname Zone Session if moved to TEMP-* rack
+      if (destRak.startsWith('TEMP')) {
+        const zonePrefix = destRak.replace('TEMP-', '').replace('TEMP', '').trim();
+        if (zonePrefix) {
+          toggleOpnameZoneSession(zonePrefix, true, user?.email || 'admin').catch(e => console.warn('Auto zone activate error:', e));
+        }
+      }
+
       showToast(`[Real-Time Massal Berhasil] Berhasil memindahkan ${itemsToMove.length} item (${totalQty} pcs) ke ${destRak}!`, 'success');
 
       setBatchSelectedItems(new Set());

@@ -17,6 +17,14 @@ import { collection, writeBatch, doc } from 'firebase/firestore';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { DatabaseService } from '../lib/DatabaseService';
 import { skuConversionService } from '../services/skuConversionService';
+import { 
+    initOpnameZoneBridgeService, 
+    subscribeToOpnameZones, 
+    resolveOutDeductionRack, 
+    isOpnameZoneActive, 
+    getTempRackForPrefix,
+    ActiveOpnameZonesState 
+} from '../services/opnameZoneBridgeService';
 // Local storage keys
 const STORAGE_KEY = 'input_barang_keluar_data';
 const PRODUCTS_CACHE_KEY = 'input_barang_keluar_products_cache';
@@ -331,6 +339,20 @@ export function InputBarangKeluar() {
     const [scanModalLoading, setScanModalLoading] = useState(false);
     const [scanModalTglScan, setScanModalTglScan] = useState(''); // date extracted from barcode
     const [scanModalStatus, setScanModalStatus] = useState<'idle' | 'found' | 'not_found'>('idle');
+    const [scanModalBridgeInfo, setScanModalBridgeInfo] = useState<string | null>(null);
+
+    // Real-time Active Opname Zone Sessions state
+    const [activeOpnameZones, setActiveOpnameZones] = useState<ActiveOpnameZonesState>({});
+
+    useEffect(() => {
+        initOpnameZoneBridgeService().then(zones => {
+            setActiveOpnameZones(zones || {});
+        });
+        const unsubscribe = subscribeToOpnameZones((zones) => {
+            setActiveOpnameZones(zones || {});
+        });
+        return () => unsubscribe();
+    }, []);
 
     // Draggable camera FAB state - persisted in localStorage
     const FAB_STORAGE_KEY = 'camera_fab_position';
@@ -552,30 +574,60 @@ export function InputBarangKeluar() {
                         .sort((a, b) => b[1] - a[1]); // urutkan dari stok terbesar
 
                     if (raksWithStockAndAllowed.length > 0) {
-                        setScanModalRak(raksWithStockAndAllowed[0][0]);
+                        const topRak = raksWithStockAndAllowed[0][0];
+                        setScanModalRak(topRak);
                         setScanModalStatus('found');
+                        if (topRak.startsWith('TEMP')) {
+                            setScanModalBridgeInfo(`⚡ Auto-Bridge: Stok tersedia di rak transit ${topRak}`);
+                        } else {
+                            setScanModalBridgeInfo(null);
+                        }
                     } else if (hasAnyStock) {
                         // Barang ada stok, tapi di rak MANUAL. Kita biarkan kosong agar diisi manual.
                         setScanModalRak('');
                         setScanModalStatus('not_found');
+                        setScanModalBridgeInfo(null);
                     } else {
-                        // Jika tidak ada stok positif, fallback ke rak IN pertama yang ditemukan dan diizinkan
+                        // Check if any inLog rak has active Opname zone
                         const inLogs = allLogs.filter(l => l.type === 'IN');
-                        const allowedInLogs = inLogs.filter(l => allowedRacks.has((l.rak || '').trim()));
-                        
-                        if (allowedInLogs.length > 0) {
-                            setScanModalRak(allowedInLogs[0].rak.trim());
+                        let matchedTempRack: string | null = null;
+                        let matchedOriginRak: string | null = null;
+
+                        for (const inLog of inLogs) {
+                            const origin = (inLog.rak || '').trim().toUpperCase();
+                            if (origin && isOpnameZoneActive(origin)) {
+                                matchedTempRack = getTempRackForPrefix(origin);
+                                matchedOriginRak = origin;
+                                break;
+                            }
+                        }
+
+                        if (matchedTempRack) {
+                            setScanModalRak(matchedTempRack);
                             setScanModalStatus('found');
-                        } else if (inLogs.length > 0) {
-                            // Ada rak IN tapi manual
-                            setScanModalRak('');
-                            setScanModalStatus('not_found');
+                            setScanModalBridgeInfo(`⚡ Auto-Bridge: Dialihkan ke ${matchedTempRack} (Stock Opname Rak ${matchedOriginRak} sedang berjalan)`);
                         } else {
-                            setScanModalStatus('not_found');
+                            // Jika tidak ada stok positif dan tidak ada active zone, fallback ke rak IN pertama yang ditemukan dan diizinkan
+                            const allowedInLogs = inLogs.filter(l => allowedRacks.has((l.rak || '').trim()));
+                            
+                            if (allowedInLogs.length > 0) {
+                                setScanModalRak(allowedInLogs[0].rak.trim());
+                                setScanModalStatus('found');
+                                setScanModalBridgeInfo(null);
+                            } else if (inLogs.length > 0) {
+                                // Ada rak IN tapi manual
+                                setScanModalRak('');
+                                setScanModalStatus('not_found');
+                                setScanModalBridgeInfo(null);
+                            } else {
+                                setScanModalStatus('not_found');
+                                setScanModalBridgeInfo(null);
+                            }
                         }
                     }
                 } else {
                     setScanModalStatus('not_found');
+                    setScanModalBridgeInfo(null);
                 }
             } catch (err) {
                 console.error('Error looking up rak from database_log:', err);
@@ -1276,6 +1328,19 @@ export function InputBarangKeluar() {
         const result = await calculateAccurateStock(finalNama.trim(), finalRak.trim());
         console.log(`✅ Result for [${finalNama}] @ [${finalRak}]: ${result}`);
         
+        // Auto-Bridge SO Check: If stock in origin rack <= 0 and zone is actively in Opname, check transit TEMP rack
+        if (result <= 0 && !finalRak.toUpperCase().startsWith('TEMP') && isOpnameZoneActive(finalRak)) {
+            const tempRak = getTempRackForPrefix(finalRak);
+            if (tempRak) {
+                console.log(`⚡ Auto-Bridge SO check: ${finalNama} on ${finalRak} is ${result}, checking transit ${tempRak}...`);
+                const tempResult = await calculateAccurateStock(finalNama.trim(), tempRak);
+                if (tempResult > 0) {
+                    console.log(`⚡ Auto-Bridge SO stock found in ${tempRak}: ${tempResult}`);
+                    return tempResult;
+                }
+            }
+        }
+
         return result;
     };
 
@@ -1326,20 +1391,44 @@ export function InputBarangKeluar() {
                 return { sisa: 0, hasIn: false };
             }
 
+            let totalIn = (logs || [])
+                .filter(l => l.type === 'IN')
+                .reduce((sum, l) => sum + (l.jumlah || 0), 0);
+
+            let totalOut = (logs || [])
+                .filter(l => l.type === 'OUT')
+                .reduce((sum, l) => sum + (l.jumlah || 0), 0);
+
+            let sisa = totalIn - totalOut;
+
+            // Auto-Bridge SO Fallback for Batch Stock: If no valid batch in origin rak, check the TEMP rack
+            if ((!logs || logs.length === 0 || sisa <= 0) && !rak.toUpperCase().startsWith('TEMP') && isOpnameZoneActive(rak)) {
+                const tempRak = getTempRackForPrefix(rak);
+                if (tempRak) {
+                    const { data: tempLogs } = await supabase
+                        .from('database_log')
+                        .select('jumlah, type, tgl_scan')
+                        .ilike('sku', sku.trim())
+                        .ilike('rak', tempRak.trim());
+
+                    if (tempLogs && tempLogs.length > 0) {
+                        const tempTotalIn = tempLogs.filter(l => l.type === 'IN').reduce((sum, l) => sum + (l.jumlah || 0), 0);
+                        const tempTotalOut = tempLogs.filter(l => l.type === 'OUT').reduce((sum, l) => sum + (l.jumlah || 0), 0);
+                        const tempSisa = tempTotalIn - tempTotalOut;
+                        if (tempSisa > 0) {
+                            console.log(`⚡ Auto-Bridge batch stock confirmed in ${tempRak}: ${tempSisa}`);
+                            return { sisa: tempSisa, hasIn: true };
+                        }
+                    }
+                }
+            }
+
             if (!logs || logs.length === 0) {
                 return { sisa: 0, hasIn: false };
             }
 
-            const totalIn = logs
-                .filter(l => l.type === 'IN')
-                .reduce((sum, l) => sum + (l.jumlah || 0), 0);
-
-            const totalOut = logs
-                .filter(l => l.type === 'OUT')
-                .reduce((sum, l) => sum + (l.jumlah || 0), 0);
-
             return {
-                sisa: totalIn - totalOut,
+                sisa: sisa,
                 hasIn: totalIn > 0
             };
         } catch (err) {
@@ -1710,6 +1799,13 @@ export function InputBarangKeluar() {
                     }
                 }
 
+                const resolution = resolveOutDeductionRack(row.rak, row.stok_tersedia, false);
+                const finalTargetRak = resolution.routedRack || row.rak;
+                let finalUserName = row.user_name || userEmail;
+                if (resolution.isBridge) {
+                    finalUserName = `${finalUserName || 'Staff'} [SO Bridge ${row.rak}->${finalTargetRak}]`;
+                }
+
                 return {
                     tgl: formattedDate,
                     waktu: row.waktu,
@@ -1717,10 +1813,10 @@ export function InputBarangKeluar() {
                     jumlah: finalJumlah,
                     type: row.type,
                     gudang: row.gudang,
-                    rak: row.rak,
-                    sub_rak: row.sub_rak || row.rak,
+                    rak: finalTargetRak,
+                    sub_rak: finalTargetRak,
                     tgl_scan: tglScanAuto,
-                    user_name: row.user_name || userEmail,
+                    user_name: finalUserName,
                     unique_code: row.unique_code || null,
                     log_update_user: '',
                     is_adjustment: isAdjustment
@@ -2879,6 +2975,36 @@ export function InputBarangKeluar() {
             </div>
 
             <div className="space-y-6 lg:space-y-10 lg:px-10 pb-12">
+                {/* ACTIVE OPNAME ZONE REAL-TIME AUTO-BRIDGE ALERT */}
+                {Object.entries(activeOpnameZones).filter(([_, s]) => s && s.active).length > 0 && (
+                    <div className="bg-gradient-to-r from-amber-950 via-slate-900 to-indigo-950 border-2 border-amber-500/40 rounded-2xl p-3.5 sm:p-4 text-white shadow-xl shadow-amber-950/20 relative overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300 -mt-2 lg:-mt-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 relative z-10">
+                            <div className="flex items-center gap-3">
+                                <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center font-black text-base shrink-0 shadow-md shadow-amber-500/30 animate-pulse">
+                                    ⚡
+                                </div>
+                                <div>
+                                    <h4 className="text-xs sm:text-sm font-black text-amber-300 uppercase tracking-tight flex items-center gap-2">
+                                        <span>Sesi Stock Opname Aktif (Auto-Bridge Routing)</span>
+                                    </h4>
+                                    <p className="text-[11px] sm:text-xs text-slate-200 font-medium mt-0.5 leading-relaxed">
+                                        Pemotongan barang keluar dari rak yang sedang di-opname dialihkan otomatis ke rak transit TEMP tanpa error stok / minus.
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                                {Object.entries(activeOpnameZones)
+                                    .filter(([_, s]) => s && s.active)
+                                    .map(([prefix, session]) => (
+                                        <span key={prefix} className="px-2.5 py-1 rounded-xl bg-white/15 border border-amber-400/40 text-[10px] sm:text-xs font-black text-amber-300 uppercase tracking-wider">
+                                            {prefix}1-{prefix}999 ➔ {session.temp_rack || `TEMP-${prefix}`}
+                                        </span>
+                                    ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* Marquee/Running Text */}
                 {showMarquee && (
                     <div className="bg-gradient-to-r from-blue-700 via-blue-800 to-blue-700 text-white py-2.5 px-6 rounded-2xl overflow-hidden shadow-xl border border-blue-900/50 -mt-2 lg:-mt-4 relative z-20">
@@ -4243,6 +4369,12 @@ export function InputBarangKeluar() {
                                             <Camera className="h-5 w-5" />
                                         </button>
                                     </div>
+                                    {scanModalBridgeInfo && (
+                                        <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs font-bold flex items-center gap-2 animate-in fade-in">
+                                            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                                            <span>{scanModalBridgeInfo}</span>
+                                        </div>
+                                    )}
                                 </div>
 
                                 {/* Quantity */}
