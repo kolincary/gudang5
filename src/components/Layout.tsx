@@ -128,9 +128,7 @@ export function Layout({ children }: LayoutProps) {
 
   const hasAccess = (href: string) => {
     if (userRole === 'developer') return true;
-    if (href === '/stock-opname') {
-      return userPermissions.includes('/stock-opname') || userPermissions.includes('/cek-rak-2');
-    }
+    if (userPermissions.includes('*')) return true;
     return userPermissions.includes(href);
   };
 

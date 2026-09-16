@@ -167,11 +167,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     
                     let allPerms: string[] = [];
                     if (permData) {
-                        allPerms = permData.map(p => p.menu_path);
+                        // Normalize any legacy '/cek-rak-2' -> '/stock-opname'
+                        allPerms = permData.map(p => p.menu_path === '/cek-rak-2' ? '/stock-opname' : p.menu_path);
                     }
                     
                     // Merge role permissions with user-specific allowed_menus
-                    allPerms = [...allPerms, ...allowedMenus];
+                    const normalizedAllowed = (allowedMenus || []).map(m => m === '/cek-rak-2' ? '/stock-opname' : m);
+                    allPerms = [...allPerms, ...normalizedAllowed];
                     
                     setUserPermissions([...new Set(allPerms)]);
                 }
@@ -190,12 +192,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         window.addEventListener('role-permissions-updated', handlePermUpdate);
 
-        // Supabase Realtime subscription on role_permissions and app_users tables
+        // Supabase Realtime subscription on role_permissions and app_users tables + broadcast
         const channel = supabase.channel('realtime_role_permissions_sync')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'role_permissions' }, () => {
                 fetchRoleAndPermissions();
             })
             .on('postgres_changes', { event: '*', schema: 'public', table: 'app_users' }, () => {
+                fetchRoleAndPermissions();
+            })
+            .on('broadcast', { event: 'permissions_changed' }, () => {
                 fetchRoleAndPermissions();
             })
             .subscribe();

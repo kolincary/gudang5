@@ -41,7 +41,9 @@ export function RolePermissionsModal({ isOpen, onClose }: RolePermissionsModalPr
                 if (error && error.code !== '42P01') throw error;
                 
                 if (data) {
-                    setPermissions(data.map(p => p.menu_path));
+                    // Normalize any legacy '/cek-rak-2' -> '/stock-opname'
+                    const normalized = data.map(p => p.menu_path === '/cek-rak-2' ? '/stock-opname' : p.menu_path);
+                    setPermissions([...new Set(normalized)]);
                 } else {
                     setPermissions([]);
                 }
@@ -66,13 +68,17 @@ export function RolePermissionsModal({ isOpen, onClose }: RolePermissionsModalPr
     const handleSave = async () => {
         setSaving(true);
         try {
-            // Delete all existing for this role
+            // Delete all existing for this role (including legacy /cek-rak-2)
             const { error: delError } = await supabase.from('role_permissions').delete().eq('role', activeTab);
             if (delError && delError.code !== '42P01') throw delError;
             
+            // Clean permissions: only allow currently valid menu hrefs
+            const allValidHrefs = allMenuGroups.flatMap(g => g.items.map(i => i.href));
+            const validPermissions = permissions.filter(p => allValidHrefs.includes(p));
+
             // Insert new ones
-            if (permissions.length > 0) {
-                const inserts = permissions.map(p => ({
+            if (validPermissions.length > 0) {
+                const inserts = validPermissions.map(p => ({
                     role: activeTab,
                     menu_path: p
                 }));
@@ -82,6 +88,19 @@ export function RolePermissionsModal({ isOpen, onClose }: RolePermissionsModalPr
             
             // Dispatch event for real-time permission sync across components
             window.dispatchEvent(new CustomEvent('role-permissions-updated', { detail: { role: activeTab } }));
+
+            // Broadcast across all connected browser tabs & devices via Supabase Realtime Channel
+            try {
+                const broadcastChannel = supabase.channel('realtime_role_permissions_sync');
+                await broadcastChannel.send({
+                    type: 'broadcast',
+                    event: 'permissions_changed',
+                    payload: { role: activeTab, timestamp: Date.now() }
+                });
+            } catch (broadcastErr) {
+                console.warn('Realtime broadcast warning:', broadcastErr);
+            }
+
             alert('Hak akses berhasil disimpan!');
         } catch (err: any) {
             alert('Gagal menyimpan: ' + err.message);

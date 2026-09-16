@@ -34,9 +34,9 @@ interface StockItem {
 }
 
 export function CekRak2() {
-    const { userRole, user, userName } = useAuth();
+    const { userRole, user, userName, userPermissions } = useAuth();
     const { writeMode, dbMode } = useDatabaseConfig();
-    const isDeveloper = userRole === 'developer' || user?.email === 'devmode' || localStorage.getItem('devmode') === 'true';
+    const isDeveloper = userRole === 'developer' || user?.email === 'devmode';
     const isAdminOrDev = isDeveloper || userRole === 'admin' || userRole?.includes('admin');
 
     const [rackId, setRackId] = useState('');
@@ -2807,6 +2807,30 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
     };
 
     const isDevModeTyped = (rackId || '').trim().toLowerCase() === 'devmode';
+
+    const hasModuleAccess = isDeveloper || userRole === 'developer' || userPermissions.includes('*') || userPermissions.includes('/stock-opname') || userPermissions.includes('/cek-rak-2');
+
+    if (!hasModuleAccess) {
+        return (
+            <div className="flex flex-col min-h-screen items-center justify-center bg-slate-50 p-6 text-center">
+                <div className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl border border-slate-100 flex flex-col items-center">
+                    <div className="w-16 h-16 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mb-4 shadow-inner">
+                        <Lock className="w-8 h-8" />
+                    </div>
+                    <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight mb-2">Akses Dibatasi</h2>
+                    <p className="text-sm text-slate-500 font-medium mb-6 leading-relaxed">
+                        Akun Anda tidak memiliki hak akses untuk membuka menu <strong>Stock Opname</strong>. Silakan hubungi Administrator atau Developer.
+                    </p>
+                    <a
+                        href="/"
+                        className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95"
+                    >
+                        Kembali ke Dashboard
+                    </a>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="flex flex-col min-h-screen relative overflow-hidden bg-slate-50/70 font-sans">
