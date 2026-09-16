@@ -333,140 +333,542 @@ export function CekRak2() {
         });
     }, [finishedLogs, finishedSearchTerm]);
 
+    // Helper to generate or derive standard Serial Number (SN-XXXXXXXX-XXXX)
+    const generateSnCode = (item: any, index = 0): string => {
+        if (item.unique_code && item.unique_code.trim()) return item.unique_code.trim();
+        if (item.kode_unik && item.kode_unik.trim()) return item.kode_unik.trim();
+        if (item.sn && item.sn.trim()) return item.sn.trim();
+        
+        const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        const rawSku = (item.sku || item.nama_barang || item.nama_produk || 'ITEM').replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase();
+        let hash = 0;
+        const seed = `${rawSku}_${index}_${item.id || ''}_${item.created_at || ''}`;
+        for (let i = 0; i < seed.length; i++) {
+            hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+        }
+        const gen = (len: number, offset: number) => {
+            let res = '';
+            for (let i = 0; i < len; i++) {
+                res += chars[(hash + i * 7 + offset) % chars.length];
+            }
+            return res;
+        };
+        return `SN-${gen(8, 3)}-${gen(4, 9)}`;
+    };
+
+    // Helper to format Sub-Rak Tujuan according to user requirements:
+    // Any rack -> 'UTAMA', except 'LANTAI 4', 'LANTAI 2', 'ECER-M', 'ECER-O', 'ECER-N', 'BLOK-I'
+    const formatSubRakTujuan = (rawRak?: string): string => {
+        if (!rawRak) return 'UTAMA';
+        const clean = rawRak.trim().toUpperCase();
+        const preservedRacks = ['LANTAI 4', 'LANTAI 2', 'ECER-M', 'ECER-O', 'ECER-N', 'BLOK-I', 'LANTAI4', 'LANTAI2'];
+        if (preservedRacks.includes(clean)) {
+            return clean;
+        }
+        return 'UTAMA';
+    };
+
+    interface ThermalPrintConfig {
+        title: string;
+        mode: 'single' | 'batch';
+        singleItem?: { sku: string; sn1: string; sn2: string; sn3: string; rak: string };
+        batchItems?: Array<{ sku: string; sn: string; rak: string; slotNum?: number }>;
+    }
+
+    // Open Thermal Label Print in a New Tab
+    const renderThermalPrintWindow = (config: ThermalPrintConfig) => {
+        const win = window.open('', '_blank');
+        if (!win) {
+            setToast({ isOpen: true, message: 'Pop-up browser diblokir! Izinkan pop-up untuk mencetak label.', type: 'warning' });
+            return;
+        }
+
+        const isSingle = config.mode === 'single';
+        let initialPagesHtml = '';
+        let initialSummaryBadge = '';
+
+        if (isSingle && config.singleItem) {
+            const item = config.singleItem;
+            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(item.sku);
+            initialSummaryBadge = '1 Halaman (1 Label)';
+            initialPagesHtml = '<div class="thermal-sheet">' +
+                '<div class="label-cell">' +
+                    '<div class="qr-wrapper">' +
+                        '<img src="' + qrUrl + '" alt="QR" />' +
+                    '</div>' +
+                    '<div class="details-wrapper">' +
+                        '<div class="product-sku">' + item.sku + '</div>' +
+                        '<div class="serial-id">ID: ' + item.sn1 + '</div>' +
+                    '</div>' +
+                    '<div class="slot-indicator">No.1</div>' +
+                '</div>' +
+            '</div>';
+        } else if (config.batchItems && config.batchItems.length > 0) {
+            const batch = config.batchItems;
+            const pages: Array<Array<{ sku: string; sn: string; rak: string; slotNum?: number }>> = [];
+            for (let i = 0; i < batch.length; i += 3) {
+                pages.push(batch.slice(i, i + 3));
+            }
+            initialSummaryBadge = pages.length + ' Halaman (' + batch.length + ' Data)';
+            
+            pages.forEach((pageRows) => {
+                initialPagesHtml += '<div class="thermal-sheet">';
+                pageRows.forEach((row, rIdx) => {
+                    const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(row.sku);
+                    const slotText = 'No.' + (rIdx + 1);
+                    initialPagesHtml += '<div class="label-cell">' +
+                        '<div class="qr-wrapper">' +
+                            '<img src="' + qrUrl + '" alt="QR" />' +
+                        '</div>' +
+                        '<div class="details-wrapper">' +
+                            '<div class="product-sku">' + row.sku + '</div>' +
+                            '<div class="serial-id">ID: ' + row.sn + '</div>' +
+                        '</div>' +
+                        '<div class="slot-indicator">' + slotText + '</div>' +
+                    '</div>';
+                });
+                initialPagesHtml += '</div>';
+            });
+        }
+
+        const singleDataJs = isSingle && config.singleItem ? JSON.stringify(config.singleItem) : 'null';
+
+        const html = `<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${config.title}</title>
+    <style id="dynamic-page-css">
+        @page {
+            size: 80mm 140mm;
+            margin: 0;
+        }
+    </style>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #0f172a;
+            color: #000;
+            margin: 0;
+            padding: 0;
+        }
+
+        /* Toolbar on top of new tab */
+        .toolbar-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: rgba(15, 23, 42, 0.95);
+            backdrop-filter: blur(12px);
+            color: #fff;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 99999;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .toolbar-brand {
+            font-size: 14px;
+            font-weight: 900;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-transform: uppercase;
+        }
+        .badge-pill {
+            background: #2563eb;
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-weight: 800;
+        }
+        .controls-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .control-label {
+            font-size: 11px;
+            font-weight: 800;
+            color: #94a3b8;
+            text-transform: uppercase;
+            margin-right: 2px;
+        }
+        .btn-toggle {
+            background: #1e293b;
+            color: #94a3b8;
+            border: 1px solid #334155;
+            padding: 6px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 800;
+            text-transform: uppercase;
+            transition: all 0.2s;
+        }
+        .btn-toggle:hover {
+            background: #334155;
+            color: #fff;
+        }
+        .btn-toggle.active {
+            background: #2563eb;
+            color: #fff;
+            border-color: #60a5fa;
+            box-shadow: 0 0 10px rgba(37,99,235,0.4);
+        }
+        .btn-copy-opt.active {
+            background: #059669;
+            border-color: #34d399;
+            box-shadow: 0 0 10px rgba(16,185,129,0.4);
+        }
+        .btn-action-print {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: #fff;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 900;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
+            transition: all 0.2s;
+        }
+        .btn-action-print:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(16, 185, 129, 0.5);
+        }
+
+        /* Container of pages */
+        .pages-wrapper {
+            margin-top: 75px;
+            padding: 24px 12px 60px 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 28px;
+        }
+
+        /* Single Thermal Sticker Page */
+        .thermal-sheet {
+            background: #ffffff;
+            width: 78mm;
+            border-radius: 4px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+
+        /* Height presets */
+        body.size-140 .thermal-sheet {
+            height: 138mm;
+            min-height: 138mm;
+            max-height: 138mm;
+        }
+        body.size-150 .thermal-sheet {
+            height: 148mm;
+            min-height: 148mm;
+            max-height: 148mm;
+        }
+        body.size-auto .thermal-sheet {
+            height: auto;
+            min-height: auto;
+            max-height: none;
+        }
+
+        /* Individual Label Slot / Row */
+        .label-cell {
+            width: 100%;
+            height: 46mm;
+            min-height: 46mm;
+            max-height: 46mm;
+            display: flex;
+            align-items: center;
+            padding: 6px 8px;
+            position: relative;
+            border-bottom: 2px dashed #000;
+            box-sizing: border-box;
+            background: #fff;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+        .label-cell:last-child {
+            border-bottom: none;
+        }
+        body.size-150 .label-cell {
+            height: 49.3mm;
+            min-height: 49.3mm;
+            max-height: 49.3mm;
+        }
+
+        /* Left QR Code Container */
+        .qr-wrapper {
+            flex-shrink: 0;
+            width: 32mm;
+            height: 32mm;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 8px;
+        }
+        .qr-wrapper img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: pixelated;
+        }
+
+        /* Right Content Area */
+        .details-wrapper {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding-right: 14px;
+        }
+        .product-sku {
+            font-family: 'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 15px;
+            font-weight: 900;
+            line-height: 1.15;
+            color: #000;
+            text-transform: uppercase;
+            word-break: break-word;
+            letter-spacing: -0.2px;
+        }
+        .serial-id {
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 11px;
+            font-weight: 800;
+            color: #333;
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.2px;
+        }
+
+        /* Corner Number Badge (No.1, No.2, No.3) */
+        .slot-indicator {
+            position: absolute;
+            right: 6px;
+            bottom: 3px;
+            font-size: 9px;
+            font-style: italic;
+            font-weight: 900;
+            color: #94a3b8;
+            font-family: sans-serif;
+        }
+
+        /* PRINT MEDIA QUERIES */
+        @media print {
+            .no-print {
+                display: none !important;
+            }
+            body {
+                background: #ffffff !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+            .pages-wrapper {
+                margin: 0 !important;
+                padding: 0 !important;
+                gap: 0 !important;
+            }
+            .thermal-sheet {
+                box-shadow: none !important;
+                border-radius: 0 !important;
+                width: 100% !important;
+                page-break-after: always !important;
+                page-break-inside: avoid !important;
+            }
+            body.size-140 .thermal-sheet {
+                height: 138mm !important;
+                min-height: 138mm !important;
+                max-height: 138mm !important;
+            }
+            body.size-150 .thermal-sheet {
+                height: 148mm !important;
+                min-height: 148mm !important;
+                max-height: 148mm !important;
+            }
+            body.size-auto .thermal-sheet {
+                height: auto !important;
+                min-height: auto !important;
+                max-height: none !important;
+            }
+            .label-cell {
+                border-bottom: 2px dashed #000 !important;
+                page-break-inside: avoid !important;
+            }
+            .label-cell:last-child {
+                border-bottom: none !important;
+            }
+        }
+    </style>
+</head>
+<body class="size-140">
+    <div class="toolbar-header no-print">
+        <div class="toolbar-brand">
+            <span>🖨️ Cetak QR Thermal</span>
+            <span id="page-summary-badge" class="badge-pill">${initialSummaryBadge}</span>
+        </div>
+        <div class="controls-group">
+            ${isSingle ? `
+            <span class="control-label">Jumlah Label:</span>
+            <button id="btn-copy-1" class="btn-toggle btn-copy-opt active" onclick="setCopies(1)">1 Barcode</button>
+            <button id="btn-copy-2" class="btn-toggle btn-copy-opt" onclick="setCopies(2)">2 Barcode</button>
+            <button id="btn-copy-3" class="btn-toggle btn-copy-opt" onclick="setCopies(3)">3 Barcode (Full)</button>
+            <span style="border-right: 1px solid #334155; height: 18px; margin: 0 4px;"></span>
+            ` : ''}
+            <span class="control-label">Ukuran Kertas:</span>
+            <button id="btn-140" class="btn-toggle active" onclick="switchSize('140')">140 mm</button>
+            <button id="btn-150" class="btn-toggle" onclick="switchSize('150')">150 mm</button>
+            <button id="btn-auto" class="btn-toggle" onclick="switchSize('auto')">Auto / Roll</button>
+            <button class="btn-action-print" onclick="window.print()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+                <span>Cetak / Print</span>
+            </button>
+        </div>
+    </div>
+
+    <div id="pages-container" class="pages-wrapper">
+        ${initialPagesHtml}
+    </div>
+
+    <script>
+        const singleData = ${singleDataJs};
+
+        function setCopies(num) {
+            if (!singleData) return;
+            document.querySelectorAll('.btn-copy-opt').forEach(function(b) { b.classList.remove('active'); });
+            const activeBtn = document.getElementById('btn-copy-' + num);
+            if (activeBtn) activeBtn.classList.add('active');
+
+            const wrapper = document.getElementById('pages-container');
+            if (!wrapper) return;
+
+            const sns = [singleData.sn1, singleData.sn2, singleData.sn3];
+            let html = '<div class="thermal-sheet">';
+            for (let i = 0; i < num; i++) {
+                const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(singleData.sku);
+                const slotText = 'No.' + (i + 1);
+                html += '<div class="label-cell">' +
+                    '<div class="qr-wrapper">' +
+                        '<img src="' + qrUrl + '" alt="QR" />' +
+                    '</div>' +
+                    '<div class="details-wrapper">' +
+                        '<div class="product-sku">' + singleData.sku + '</div>' +
+                        '<div class="serial-id">ID: ' + sns[i] + '</div>' +
+                    '</div>' +
+                    '<div class="slot-indicator">' + slotText + '</div>' +
+                '</div>';
+            }
+            html += '</div>';
+            wrapper.innerHTML = html;
+
+            const badge = document.getElementById('page-summary-badge');
+            if (badge) {
+                badge.innerText = '1 Halaman (' + num + ' Label)';
+            }
+        }
+
+        function switchSize(size) {
+            document.body.classList.remove('size-140', 'size-150', 'size-auto');
+            document.body.classList.add('size-' + size);
+            
+            document.querySelectorAll('#btn-140, #btn-150, #btn-auto').forEach(function(btn) { btn.classList.remove('active'); });
+            const activeBtn = document.getElementById('btn-' + size);
+            if (activeBtn) activeBtn.classList.add('active');
+
+            const styleTag = document.getElementById('dynamic-page-css');
+            if (styleTag) {
+                if (size === '140') {
+                    styleTag.innerHTML = '@page { size: 80mm 140mm; margin: 0; }';
+                } else if (size === '150') {
+                    styleTag.innerHTML = '@page { size: 80mm 150mm; margin: 0; }';
+                } else {
+                    styleTag.innerHTML = '@page { size: 80mm auto; margin: 0; }';
+                }
+            }
+        }
+
+        // Auto trigger print dialog once loaded
+        window.addEventListener('load', function() {
+            setTimeout(function() {
+                window.print();
+            }, 600);
+        });
+    </script>
+</body>
+</html>`;
+
+        win.document.open();
+        win.document.write(html);
+        win.document.close();
+    };
+
+    // Print Single Item (Defaults to 1 label on 1 sheet, with interactive toolbar to choose 1, 2, or 3 labels)
     const handlePrintThermalLabel = (item: any) => {
         const sku = item.sku || item.nama_barang || item.nama_produk || '-';
         const rak = item.sub_rak || item.rak || '-';
-        const qty = item.jumlah || item.tersedia || 0;
-        const packing = item.packing || '';
-        const actor = item.user_name || item.user || 'Staf Gudang';
-        const tgl = item.tgl_scan || item.tgl || new Date().toLocaleDateString('id-ID');
-        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(sku)}`;
+        const sn1 = generateSnCode(item, 1);
+        const sn2 = generateSnCode(item, 2);
+        const sn3 = generateSnCode(item, 3);
 
-        const win = window.open('', '_blank', 'width=450,height=600');
-        if (win) {
-            win.document.write(`
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <meta charset="utf-8" />
-                    <title>Print Label Thermal - ${sku}</title>
-                    <style>
-                        @page {
-                            size: 58mm auto;
-                            margin: 0;
-                        }
-                        @media print {
-                            body { margin: 0; padding: 4px; }
-                            .no-print { display: none !important; }
-                        }
-                        body {
-                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Courier New", monospace;
-                            width: 54mm;
-                            margin: 0 auto;
-                            padding: 8px 4px;
-                            color: #000;
-                            box-sizing: border-box;
-                            text-align: center;
-                        }
-                        .header-title {
-                            font-size: 12px;
-                            font-weight: 900;
-                            text-transform: uppercase;
-                            letter-spacing: 0.5px;
-                            border-bottom: 2px dashed #000;
-                            padding-bottom: 4px;
-                            margin-bottom: 6px;
-                        }
-                        .sku-title {
-                            font-size: 13px;
-                            font-weight: 900;
-                            word-break: break-word;
-                            margin: 4px 0 6px 0;
-                            line-height: 1.2;
-                            text-transform: uppercase;
-                        }
-                        .qr-container {
-                            margin: 6px auto;
-                        }
-                        .qr-container img {
-                            width: 120px;
-                            height: 120px;
-                            display: block;
-                            margin: 0 auto;
-                        }
-                        .info-table {
-                            width: 100%;
-                            font-size: 11px;
-                            font-weight: bold;
-                            border-collapse: collapse;
-                            margin-top: 6px;
-                            border-top: 1px dashed #000;
-                            border-bottom: 1px dashed #000;
-                            padding: 4px 0;
-                        }
-                        .info-table td {
-                            padding: 2px 0;
-                            text-align: left;
-                        }
-                        .info-table td:last-child {
-                            text-align: right;
-                        }
-                        .big-qty {
-                            font-size: 15px;
-                            font-weight: 900;
-                        }
-                        .footer {
-                            font-size: 9px;
-                            margin-top: 8px;
-                            color: #333;
-                        }
-                        .no-print-btn {
-                            margin-top: 12px;
-                            padding: 8px 16px;
-                            background: #2563eb;
-                            color: #fff;
-                            font-weight: bold;
-                            border: none;
-                            border-radius: 8px;
-                            cursor: pointer;
-                            font-size: 12px;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="header-title">GUDANG KALINDO<br/><span style="font-size: 9px; font-weight: normal;">STOCK OPNAME V5</span></div>
-                    <div class="sku-title">${sku}</div>
-                    <div class="qr-container">
-                        <img src="${qrUrl}" onload="window.print();" />
-                    </div>
-                    <table class="info-table">
-                        <tr>
-                            <td>LOKASI RAK:</td>
-                            <td style="font-size: 12px; font-weight: 900;">${rak}</td>
-                        </tr>
-                        <tr>
-                            <td>QTY FISIK:</td>
-                            <td class="big-qty">${qty} PCS</td>
-                        </tr>
-                        ${packing ? `<tr><td>PACKING:</td><td>${packing}</td></tr>` : ''}
-                        <tr>
-                            <td>TANGGAL:</td>
-                            <td>${tgl}</td>
-                        </tr>
-                        <tr>
-                            <td>PETUGAS:</td>
-                            <td>${actor}</td>
-                        </tr>
-                    </table>
-                    <div class="footer">Status: TERVERIFIKASI &bull; GUDANG 5</div>
-                    <div class="no-print">
-                        <button class="no-print-btn" onclick="window.print()">Print Ulang</button>
-                    </div>
-                </body>
-                </html>
-            `);
-            win.document.close();
+        renderThermalPrintWindow({
+            title: `Print Label QR Thermal - ${sku}`,
+            mode: 'single',
+            singleItem: { sku, sn1, sn2, sn3, rak }
+        });
+    };
+
+    // Print All Finished Items in Batch (Grouped up to 3 items per thermal page: 1 item=1 label, 2 items=2 labels, 3 items=3 labels)
+    const handlePrintBatchThermalLabels = () => {
+        const targetList = filteredFinishedLogs.length > 0 ? filteredFinishedLogs : finishedLogs;
+        if (!targetList || targetList.length === 0) {
+            setToast({ isOpen: true, message: 'Tidak ada data selesai yang dapat dicetak.', type: 'info' });
+            return;
         }
+
+        const batchItems: Array<{ sku: string; sn: string; rak: string; slotNum: number }> = [];
+        targetList.forEach((log, idx) => {
+            const sku = log.sku || log.nama_barang || log.nama_produk || '-';
+            const rak = log.sub_rak || log.rak || '-';
+            const sn = generateSnCode(log, idx + 1);
+            const slotNum = (idx % 3) + 1;
+            batchItems.push({ sku, sn, rak, slotNum });
+        });
+
+        renderThermalPrintWindow({
+            title: `Print Batch QR Thermal (${batchItems.length} Data)`,
+            mode: 'batch',
+            batchItems
+        });
     };
 
     const handleSelectRackFromSearch = (targetRak: string) => {
@@ -1594,27 +1996,25 @@ export function CekRak2() {
 
     const generateWaTextFromPayload = (data: any): string => {
         if (!data) return '';
+        const cleanRakTujuan = formatSubRakTujuan(data.sub_rak_tujuan);
         let sisaLine = '';
         if (data.sisa_belum_ada_data > 0) {
-            sisaLine = `\n⚠️ *Sisa Fisik Belum Ada Data:* ${data.sisa_belum_ada_data} pcs (Perlu Pengecekan Admin/Accurate)`;
+            sisaLine = `\nSisa Fisik Belum Ada Data: ${data.sisa_belum_ada_data} pcs (Perlu Pengecekan Admin/Accurate)`;
         }
 
-        return `🚨 *LAPORAN FISIK TIDAK TURUN (STOCK OPNAME)*
+        return `*LAPORAN FISIK TIDAK TURUN (STOCK OPNAME)*
 ━━━━━━━━━━━━━━━━━━
-📦 *SKU:* ${data.sku}
-🎯 *Sub-Rak Tujuan:* ${data.sub_rak_tujuan}
-🔢 *Fisik Ditemukan:* ${data.fisik_ditemukan} pcs
-✅ *Dipulihkan dari OUT:* ${data.pulih_qty} pcs${sisaLine}
+*SKU:* ${data.sku}
+*Sub-Rak Tujuan:* ${cleanRakTujuan}
+*Fisik Ditemukan:* ${data.fisik_ditemukan} pcs
+*Dipulihkan dari OUT:* ${data.pulih_qty} pcs${sisaLine}
 ━━━━━━━━━━━━━━━━━━
-📋 *Detail Data OUT yang Dipindahkan:*
-• ID Log Asli: #${data.original_log_id || '-'}
-• Tgl OUT: ${data.tgl_out_asli || '-'}
-• Pemotong OUT: ${data.user_pemotong || '-'}
-• Keterangan OUT: ${data.keterangan_out || '-'}
+*Detail Data OUT yang Dipindahkan:*
+- ID Log Asli: #${data.original_log_id || '-'}
+- Tgl OUT: ${data.tgl_out_asli || '-'}
+- Pemotong OUT: ${data.user_pemotong || '-'}
+- Keterangan OUT: ${data.keterangan_out || '-'}
 ━━━━━━━━━━━━━━━━━━
-📌 *Status:* ⏳ MENUNGGU REVISI DI ACCURATE
-👤 *Dilaporkan Oleh:* ${data.user_penarik} (${data.tgl_laporan})
-
 _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut di Accurate._`;
     };
 
@@ -2540,6 +2940,16 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     >
                                         <XCircle className="h-3.5 w-3.5 mr-1.5 text-rose-600" />
                                         <span>Batal Semua Selesai</span>
+                                    </Button>
+                                )}
+                                {finishedLogs.length > 0 && (
+                                    <Button
+                                        onClick={handlePrintBatchThermalLabels}
+                                        className="h-10 px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black rounded-xl text-xs uppercase tracking-wider shadow-sm flex items-center gap-1.5 cursor-pointer"
+                                        title="Print QR seluruh data selesai (3 label per halaman thermal)"
+                                    >
+                                        <Printer className="h-3.5 w-3.5" />
+                                        <span>Print Semua QR</span>
                                     </Button>
                                 )}
                                 <Button

@@ -139,31 +139,35 @@ export const KarantinaRevisiOutModal: React.FC<KarantinaRevisiOutModalProps> = (
         };
     }, [items]);
 
-    const generateWaReport = (item: KarantinaRevisiItem): string => {
-        const tglBuat = new Date(item.created_at).toLocaleDateString('id-ID', {
-            day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
-        });
+    const formatSubRakTujuan = (rawRak?: string): string => {
+        if (!rawRak) return 'UTAMA';
+        const clean = rawRak.trim().toUpperCase();
+        const preservedRacks = ['LANTAI 4', 'LANTAI 2', 'ECER-M', 'ECER-O', 'ECER-N', 'BLOK-I', 'LANTAI4', 'LANTAI2'];
+        if (preservedRacks.includes(clean)) {
+            return clean;
+        }
+        return 'UTAMA';
+    };
 
+    const generateWaReport = (item: KarantinaRevisiItem): string => {
+        const cleanRakTujuan = formatSubRakTujuan(item.sub_rak_tujuan);
         let sisaText = '';
         if (item.sisa_fisik_belum_cocok > 0) {
-            sisaText = `\n⚠️ *Sisa Fisik Belum Ada Data:* ${item.sisa_fisik_belum_cocok} pcs (Perlu Pengecekan Admin/Accurate)`;
+            sisaText = `\nSisa Fisik Belum Ada Data: ${item.sisa_fisik_belum_cocok} pcs (Perlu Pengecekan Admin/Accurate)`;
         }
 
-        return `🚨 *LAPORAN FISIK TIDAK TURUN (STOCK OPNAME)*
+        return `*LAPORAN FISIK TIDAK TURUN (STOCK OPNAME)*
 ━━━━━━━━━━━━━━━━━━
-📦 *SKU:* ${item.sku}
-🎯 *Sub-Rak Tujuan:* ${item.sub_rak_tujuan || '-'}
-✅ *Qty Dipulihkan:* ${item.jumlah} pcs${sisaText}
+*SKU:* ${item.sku}
+*Sub-Rak Tujuan:* ${cleanRakTujuan}
+*Qty Dipulihkan:* ${item.jumlah} pcs${sisaText}
 ━━━━━━━━━━━━━━━━━━
-📋 *Data OUT yang Dipindahkan:*
-• ID Log Asli: #${item.original_log_id || '-'}
-• Tgl OUT: ${item.tgl_out_asli || '-'}
-• Pemotong OUT: ${item.user_pemotong_out || '-'}
-• Keterangan OUT: ${item.keterangan_out_asli || '-'}
+*Data OUT yang Dipindahkan:*
+- ID Log Asli: #${item.original_log_id || '-'}
+- Tgl OUT: ${item.tgl_out_asli || '-'}
+- Pemotong OUT: ${item.user_pemotong_out || '-'}
+- Keterangan OUT: ${item.keterangan_out_asli || '-'}
 ━━━━━━━━━━━━━━━━━━
-📌 *Status:* ${item.status === 'SUDAH_REVISI' ? '✅ SUDAH DIREVISI DI ACCURATE' : '⏳ MENUNGGU REVISI DI ACCURATE'}
-👤 *Dilaporkan Oleh:* ${item.user_penarik || 'Staf Gudang'} (${tglBuat})
-
 _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkait di Accurate._`;
     };
 
