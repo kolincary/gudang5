@@ -34,7 +34,7 @@ interface StockItem {
 }
 
 export function CekRak2() {
-    const { userRole, user, userName, userPermissions } = useAuth();
+    const { userRole, user, userName, userPermissions, userEmail } = useAuth();
     const { writeMode, dbMode } = useDatabaseConfig();
     const isDeveloper = userRole === 'developer' || user?.email === 'devmode';
     const isAdminOrDev = isDeveloper || userRole === 'admin' || userRole?.includes('admin');
@@ -110,6 +110,77 @@ export function CekRak2() {
     const [showWaSuccessModal, setShowWaSuccessModal] = useState(false);
     const [waReportData, setWaReportData] = useState<any | null>(null);
     const [isWaCopied, setIsWaCopied] = useState(false);
+
+    // Thermal Print Settings state & real-time sync with Supabase & localStorage
+    const [thermalPrintSettings, setThermalPrintSettings] = useState<any>(null);
+
+    const activeUserEmail = useMemo(() => {
+        return (user?.email || userEmail || 'staf@gudang').trim();
+    }, [user?.email, userEmail]);
+
+    useEffect(() => {
+        if (!activeUserEmail) return;
+        const loadSettings = async () => {
+            const cacheKey = 'thermal_style_pref_' + encodeURIComponent(activeUserEmail);
+            let initialFromCache = null;
+            try {
+                const cached = localStorage.getItem(cacheKey);
+                if (cached) {
+                    initialFromCache = JSON.parse(cached);
+                    setThermalPrintSettings(initialFromCache);
+                }
+            } catch (e) {}
+
+            try {
+                const { data, error } = await supabase
+                    .from('user_print_settings')
+                    .select('settings')
+                    .eq('user_email', activeUserEmail)
+                    .maybeSingle();
+
+                if (!error && data && data.settings) {
+                    setThermalPrintSettings(data.settings);
+                    try {
+                        localStorage.setItem(cacheKey, JSON.stringify(data.settings));
+                    } catch (e) {}
+                }
+            } catch (err) {
+                console.warn('Supabase load user_print_settings error:', err);
+            }
+        };
+
+        loadSettings();
+    }, [activeUserEmail]);
+
+    // Listen for postMessage from about:blank or popup print windows to sync settings to Supabase
+    useEffect(() => {
+        const handleMessage = async (event: MessageEvent) => {
+            if (event.data && event.data.type === 'SAVE_THERMAL_PRINT_SETTINGS') {
+                const { email, settings } = event.data;
+                const targetEmail = email || activeUserEmail;
+                if (!targetEmail || !settings) return;
+
+                const cacheKey = 'thermal_style_pref_' + encodeURIComponent(targetEmail);
+                try {
+                    localStorage.setItem(cacheKey, JSON.stringify(settings));
+                } catch (e) {}
+                setThermalPrintSettings(settings);
+
+                try {
+                    await supabase.from('user_print_settings').upsert({
+                        user_email: targetEmail,
+                        settings: settings,
+                        updated_at: new Date().toISOString()
+                    }, { onConflict: 'user_email' });
+                } catch (err) {
+                    console.warn('Failed to upsert user_print_settings from print window message:', err);
+                }
+            }
+        };
+
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+    }, [activeUserEmail]);
 
     const [rackOptions, setRackOptions] = useState<string[]>([]);
     const [showScanner, setShowScanner] = useState(false);
@@ -375,13 +446,57 @@ export function CekRak2() {
         batchItems?: Array<{ sku: string; sn: string; rak: string; slotNum?: number }>;
     }
 
-    // Open Thermal Label Print in a New Tab
+    // Open Thermal Label Print in a New Tab with Interactive Customizer & Supabase Sync
     const renderThermalPrintWindow = (config: ThermalPrintConfig) => {
         const win = window.open('', '_blank');
         if (!win) {
             setToast({ isOpen: true, message: 'Pop-up browser diblokir! Izinkan pop-up untuk mencetak label.', type: 'warning' });
             return;
         }
+
+        const activeEmail = (user?.email || userEmail || 'staf@gudang').trim();
+        const metaEnv = typeof import.meta !== 'undefined' && (import.meta as any).env ? (import.meta as any).env : {};
+        const activeSupabaseUrl = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_url') : null) || metaEnv.VITE_SUPABASE_URL || 'https://ajeohbobmvxtaicmpfgs.supabase.co';
+        const activeSupabaseKey = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_anon_key') : null) || metaEnv.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFqZW9oYm9ibXZ4dGFpY21wZmdzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4NTI3NzgsImV4cCI6MjEwNDQyODc3OH0.N9vDWiCXoS6TQ5uBZkFPNGDgcC95ZWxq5oZLIxTpor0';
+
+        // Read latest saved style preferences from component state or localStorage
+        const cacheKey = 'thermal_style_pref_' + encodeURIComponent(activeEmail);
+        let savedPref: any = thermalPrintSettings;
+        if (!savedPref && typeof window !== 'undefined') {
+            try {
+                const cached = localStorage.getItem(cacheKey);
+                if (cached) savedPref = JSON.parse(cached);
+            } catch (e) {}
+        }
+
+        const effective = {
+            paperWidth: Number(savedPref?.paperWidth ?? 78),
+            pageHeight: Number(savedPref?.pageHeight ?? 140),
+            rowHeight: Number(savedPref?.rowHeight ?? 46),
+            layoutDirection: (savedPref?.layoutDirection === 'row-reverse' ? 'row-reverse' : 'row'),
+            qrSize: Number(savedPref?.qrSize ?? 32),
+            qrOffsetX: Number(savedPref?.qrOffsetX ?? 0),
+            qrOffsetY: Number(savedPref?.qrOffsetY ?? 0),
+            textOffsetX: Number(savedPref?.textOffsetX ?? 0),
+            textOffsetY: Number(savedPref?.textOffsetY ?? 0),
+            textAlign: savedPref?.textAlign ?? 'left',
+            skuSize: Number(savedPref?.skuSize ?? 15),
+            skuWeight: savedPref?.skuWeight ?? '900',
+            idSize: Number(savedPref?.idSize ?? 11),
+            slotPosition: savedPref?.slotPosition ?? 'bottom-right',
+            slotSize: Number(savedPref?.slotSize ?? 9),
+            slotOffsetX: Number(savedPref?.slotOffsetX ?? 0),
+            cellPadY: Number(savedPref?.cellPadY ?? 6),
+            cellPadX: Number(savedPref?.cellPadX ?? 8),
+            borderStyle: savedPref?.borderStyle ?? 'dashed',
+            borderWidth: savedPref?.borderWidth ?? '2px',
+            borderColor: savedPref?.borderColor ?? '#000',
+            showSlot: savedPref?.showSlot ?? 'block',
+            sizePreset: savedPref?.sizePreset ?? '140'
+        };
+
+        const isLeftSlot = effective.slotPosition.includes('left');
+        const isTopSlot = effective.slotPosition.includes('top');
 
         const isSingle = config.mode === 'single';
         let initialPagesHtml = '';
@@ -441,8 +556,37 @@ export function CekRak2() {
     <title>${config.title}</title>
     <style id="dynamic-page-css">
         @page {
-            size: 80mm 140mm;
+            size: ${effective.paperWidth}mm ${effective.sizePreset === 'auto' ? 'auto' : effective.pageHeight + 'mm'};
             margin: 0;
+        }
+    </style>
+    <style id="dynamic-vars-css">
+        :root {
+            --paper-width: ${effective.paperWidth}mm;
+            --page-height: ${effective.pageHeight}mm;
+            --row-height: ${effective.rowHeight}mm;
+            --layout-direction: ${effective.layoutDirection};
+            --qr-size: ${effective.qrSize}mm;
+            --qr-offset-x: ${effective.qrOffsetX}px;
+            --qr-offset-y: ${effective.qrOffsetY}px;
+            --text-offset-x: ${effective.textOffsetX}px;
+            --text-offset-y: ${effective.textOffsetY}px;
+            --text-align: ${effective.textAlign};
+            --sku-size: ${effective.skuSize}px;
+            --sku-weight: ${effective.skuWeight};
+            --id-size: ${effective.idSize}px;
+            --slot-size: ${effective.slotSize}px;
+            --slot-pos-left: ${isLeftSlot ? '8px' : 'auto'};
+            --slot-pos-right: ${isLeftSlot ? 'auto' : '8px'};
+            --slot-pos-top: ${isTopSlot ? '4px' : 'auto'};
+            --slot-pos-bottom: ${isTopSlot ? 'auto' : '4px'};
+            --slot-offset-x: ${effective.slotOffsetX}px;
+            --cell-pad-y: ${effective.cellPadY}px;
+            --cell-pad-x: ${effective.cellPadX}px;
+            --border-style: ${effective.borderStyle};
+            --border-width: ${effective.borderWidth};
+            --border-color: ${effective.borderColor};
+            --show-slot: ${effective.showSlot};
         }
     </style>
     <style>
@@ -455,56 +599,62 @@ export function CekRak2() {
         }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background-color: #0f172a;
+            background-color: #0b0f19;
             color: #000;
             margin: 0;
             padding: 0;
+            min-height: 100vh;
+            overflow-x: hidden;
         }
 
-        /* Toolbar on top of new tab */
+        /* Fixed Top Header Toolbar - Brand on Left, All Buttons Grouped on Right */
         .toolbar-header {
             position: fixed;
             top: 0;
             left: 0;
             right: 0;
             background: rgba(15, 23, 42, 0.95);
-            backdrop-filter: blur(12px);
+            backdrop-filter: blur(16px);
             color: #fff;
-            padding: 12px 20px;
+            padding: 10px 24px;
             display: flex;
             align-items: center;
             justify-content: space-between;
             z-index: 99999;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 4px 25px rgba(0,0,0,0.5);
+            border-bottom: 1px solid rgba(255,255,255,0.12);
             gap: 16px;
-            flex-wrap: wrap;
         }
         .toolbar-brand {
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 900;
             letter-spacing: 0.5px;
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
             text-transform: uppercase;
+            flex-shrink: 0;
         }
         .badge-pill {
             background: #2563eb;
             color: #fff;
-            padding: 2px 8px;
+            padding: 3px 9px;
             border-radius: 6px;
             font-size: 10px;
             font-weight: 800;
+            letter-spacing: 0.2px;
         }
-        .controls-group {
+
+        /* Right Group Controls */
+        .controls-group-right {
             display: flex;
             align-items: center;
+            justify-content: flex-end;
             gap: 8px;
             flex-wrap: wrap;
         }
         .control-label {
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 800;
             color: #94a3b8;
             text-transform: uppercase;
@@ -514,13 +664,16 @@ export function CekRak2() {
             background: #1e293b;
             color: #94a3b8;
             border: 1px solid #334155;
-            padding: 6px 12px;
+            padding: 6px 11px;
             border-radius: 8px;
             cursor: pointer;
             font-size: 11px;
             font-weight: 800;
             text-transform: uppercase;
             transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
         }
         .btn-toggle:hover {
             background: #334155;
@@ -537,12 +690,56 @@ export function CekRak2() {
             border-color: #34d399;
             box-shadow: 0 0 10px rgba(16,185,129,0.4);
         }
+        .btn-action-customizer {
+            background: linear-gradient(135deg, #4f46e5, #3730a3);
+            color: #fff;
+            border: 1px solid #6366f1;
+            padding: 7px 14px;
+            border-radius: 9px;
+            cursor: pointer;
+            font-weight: 900;
+            font-size: 11px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 2px 12px rgba(79, 70, 229, 0.4);
+            transition: all 0.2s;
+        }
+        .btn-action-customizer:hover {
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            transform: translateY(-1px);
+        }
+        .btn-action-customizer.open {
+            background: #e11d48;
+            border-color: #f43f5e;
+            box-shadow: 0 0 12px rgba(225, 29, 72, 0.5);
+        }
+        .btn-action-save {
+            background: linear-gradient(135deg, #0284c7, #0369a1);
+            color: #fff;
+            border: 1px solid #38bdf8;
+            padding: 7px 13px;
+            border-radius: 9px;
+            cursor: pointer;
+            font-weight: 900;
+            font-size: 11px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: all 0.2s;
+        }
+        .btn-action-save:hover {
+            transform: translateY(-1px);
+            background: linear-gradient(135deg, #0ea5e9, #0284c7);
+        }
         .btn-action-print {
             background: linear-gradient(135deg, #10b981, #059669);
             color: #fff;
             border: none;
-            padding: 8px 18px;
-            border-radius: 10px;
+            padding: 7px 18px;
+            border-radius: 9px;
             cursor: pointer;
             font-weight: 900;
             font-size: 12px;
@@ -551,15 +748,175 @@ export function CekRak2() {
             display: flex;
             align-items: center;
             gap: 6px;
-            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
+            box-shadow: 0 4px 14px rgba(16, 185, 129, 0.4);
             transition: all 0.2s;
         }
         .btn-action-print:hover {
             transform: translateY(-1px);
-            box-shadow: 0 6px 16px rgba(16, 185, 129, 0.5);
+            box-shadow: 0 6px 18px rgba(16, 185, 129, 0.6);
         }
 
-        /* Container of pages */
+        /* Right-Side Sliding Customizer Drawer */
+        .customizer-drawer-right {
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            width: 380px;
+            max-width: 90vw;
+            background: rgba(15, 23, 42, 0.98);
+            backdrop-filter: blur(20px);
+            border-left: 1px solid rgba(255,255,255,0.15);
+            z-index: 100000;
+            box-shadow: -10px 0 40px rgba(0,0,0,0.7);
+            display: flex;
+            flex-direction: column;
+            transform: translateX(100%);
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            color: #fff;
+        }
+        .customizer-drawer-right.active {
+            transform: translateX(0);
+        }
+        .drawer-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid #334155;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #0f172a;
+        }
+        .drawer-title {
+            font-size: 13px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #38bdf8;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .drawer-close-btn {
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .drawer-close-btn:hover {
+            background: #e11d48;
+            color: #fff;
+            border-color: #f43f5e;
+        }
+        .drawer-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+        .drawer-section {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .drawer-section-title {
+            font-size: 11px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: #94a3b8;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            border-bottom: 1px solid #334155;
+            padding-bottom: 8px;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .form-group label {
+            font-size: 10px;
+            font-weight: 800;
+            color: #cbd5e1;
+            text-transform: uppercase;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .val-badge {
+            background: #0f172a;
+            color: #38bdf8;
+            font-size: 11px;
+            font-weight: 900;
+            padding: 1px 6px;
+            border-radius: 4px;
+            border: 1px solid #334155;
+        }
+        .custom-range {
+            width: 100%;
+            height: 6px;
+            background: #0f172a;
+            border-radius: 3px;
+            outline: none;
+            -webkit-appearance: none;
+            cursor: pointer;
+        }
+        .custom-range::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #38bdf8;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 6px rgba(56, 189, 248, 0.8);
+        }
+        .custom-select {
+            background: #0f172a;
+            color: #fff;
+            border: 1px solid #334155;
+            padding: 7px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            outline: none;
+            cursor: pointer;
+        }
+        .drawer-footer {
+            padding: 14px 20px;
+            border-top: 1px solid #334155;
+            background: #0f172a;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .toast-msg {
+            font-size: 11px;
+            font-weight: 800;
+            color: #34d399;
+            opacity: 0;
+            transition: opacity 0.3s;
+            text-align: center;
+        }
+        .toast-msg.show {
+            opacity: 1;
+        }
+
+        /* Container of pages - Smooth margin shift when drawer open */
         .pages-wrapper {
             margin-top: 75px;
             padding: 24px 12px 60px 12px;
@@ -567,12 +924,16 @@ export function CekRak2() {
             flex-direction: column;
             align-items: center;
             gap: 28px;
+            transition: margin-right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        body.drawer-open .pages-wrapper {
+            margin-right: 380px;
         }
 
         /* Single Thermal Sticker Page */
         .thermal-sheet {
             background: #ffffff;
-            width: 78mm;
+            width: var(--paper-width, 78mm);
             border-radius: 4px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.5);
             position: relative;
@@ -581,6 +942,7 @@ export function CekRak2() {
             justify-content: flex-start;
             overflow: hidden;
             box-sizing: border-box;
+            transition: width 0.2s;
         }
 
         /* Height presets */
@@ -600,40 +962,35 @@ export function CekRak2() {
             max-height: none;
         }
 
-        /* Individual Label Slot / Row */
+        /* Individual Label Slot / Row (Dashed divider ALWAYS shown on every row) */
         .label-cell {
             width: 100%;
-            height: 46mm;
-            min-height: 46mm;
-            max-height: 46mm;
+            height: var(--row-height, 46mm);
+            min-height: var(--row-height, 46mm);
+            max-height: var(--row-height, 46mm);
             display: flex;
+            flex-direction: var(--layout-direction, row);
             align-items: center;
-            padding: 6px 8px;
+            padding: var(--cell-pad-y, 6px) var(--cell-pad-x, 8px);
             position: relative;
-            border-bottom: 2px dashed #000;
+            border-bottom: var(--border-width, 2px) var(--border-style, dashed) var(--border-color, #000) !important;
             box-sizing: border-box;
             background: #fff;
             overflow: hidden;
             flex-shrink: 0;
         }
-        .label-cell:last-child {
-            border-bottom: none;
-        }
-        body.size-150 .label-cell {
-            height: 49.3mm;
-            min-height: 49.3mm;
-            max-height: 49.3mm;
-        }
 
-        /* Left QR Code Container */
+        /* QR Code Container with Independent Position Shifting */
         .qr-wrapper {
             flex-shrink: 0;
-            width: 32mm;
-            height: 32mm;
+            width: var(--qr-size, 32mm);
+            height: var(--qr-size, 32mm);
             display: flex;
             align-items: center;
             justify-content: center;
-            margin-right: 8px;
+            margin: 0 8px;
+            transform: translate(var(--qr-offset-x, 0px), var(--qr-offset-y, 0px));
+            transition: width 0.1s, height 0.1s, transform 0.1s;
         }
         .qr-wrapper img {
             width: 100%;
@@ -643,19 +1000,22 @@ export function CekRak2() {
             image-rendering: pixelated;
         }
 
-        /* Right Content Area */
+        /* Details (SKU + ID) Container with Independent Position Shifting */
         .details-wrapper {
             flex: 1;
             min-width: 0;
             display: flex;
             flex-direction: column;
             justify-content: center;
-            padding-right: 14px;
+            padding: 0 8px;
+            text-align: var(--text-align, left);
+            transform: translate(var(--text-offset-x, 0px), var(--text-offset-y, 0px));
+            transition: transform 0.1s;
         }
         .product-sku {
             font-family: 'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            font-size: 15px;
-            font-weight: 900;
+            font-size: var(--sku-size, 15px);
+            font-weight: var(--sku-weight, 900);
             line-height: 1.15;
             color: #000;
             text-transform: uppercase;
@@ -664,29 +1024,33 @@ export function CekRak2() {
         }
         .serial-id {
             font-family: 'Consolas', 'Courier New', monospace;
-            font-size: 11px;
+            font-size: var(--id-size, 11px);
             font-weight: 800;
-            color: #333;
+            color: #222;
             margin-top: 4px;
             text-transform: uppercase;
             letter-spacing: 0.2px;
         }
 
-        /* Corner Number Badge (No.1, No.2, No.3) */
+        /* Corner Number Badge (No.1, No.2, No.3) with Position Control */
         .slot-indicator {
             position: absolute;
-            right: 6px;
-            bottom: 3px;
-            font-size: 9px;
+            left: var(--slot-pos-left, auto);
+            right: var(--slot-pos-right, 6px);
+            top: var(--slot-pos-top, auto);
+            bottom: var(--slot-pos-bottom, 3px);
+            font-size: var(--slot-size, 9px);
             font-style: italic;
             font-weight: 900;
             color: #94a3b8;
             font-family: sans-serif;
+            display: var(--show-slot, block);
+            transform: translateX(var(--slot-offset-x, 0px));
         }
 
         /* PRINT MEDIA QUERIES */
         @media print {
-            .no-print {
+            .no-print, .customizer-drawer-right, .toolbar-header {
                 display: none !important;
             }
             body {
@@ -702,7 +1066,7 @@ export function CekRak2() {
             .thermal-sheet {
                 box-shadow: none !important;
                 border-radius: 0 !important;
-                width: 100% !important;
+                width: var(--paper-width, 78mm) !important;
                 page-break-after: always !important;
                 page-break-inside: avoid !important;
             }
@@ -722,22 +1086,19 @@ export function CekRak2() {
                 max-height: none !important;
             }
             .label-cell {
-                border-bottom: 2px dashed #000 !important;
+                border-bottom: var(--border-width, 2px) var(--border-style, dashed) var(--border-color, #000) !important;
                 page-break-inside: avoid !important;
-            }
-            .label-cell:last-child {
-                border-bottom: none !important;
             }
         }
     </style>
 </head>
-<body class="size-140">
+<body class="size-${effective.sizePreset}">
     <div class="toolbar-header no-print">
         <div class="toolbar-brand">
             <span>🖨️ Cetak QR Thermal</span>
             <span id="page-summary-badge" class="badge-pill">${initialSummaryBadge}</span>
         </div>
-        <div class="controls-group">
+        <div class="controls-group-right">
             ${isSingle ? `
             <span class="control-label">Jumlah Label:</span>
             <button id="btn-copy-1" class="btn-toggle btn-copy-opt active" onclick="setCopies(1)">1 Barcode</button>
@@ -745,14 +1106,169 @@ export function CekRak2() {
             <button id="btn-copy-3" class="btn-toggle btn-copy-opt" onclick="setCopies(3)">3 Barcode (Full)</button>
             <span style="border-right: 1px solid #334155; height: 18px; margin: 0 4px;"></span>
             ` : ''}
-            <span class="control-label">Ukuran Kertas:</span>
-            <button id="btn-140" class="btn-toggle active" onclick="switchSize('140')">140 mm</button>
-            <button id="btn-150" class="btn-toggle" onclick="switchSize('150')">150 mm</button>
-            <button id="btn-auto" class="btn-toggle" onclick="switchSize('auto')">Auto / Roll</button>
+            <span class="control-label">Preset:</span>
+            <button id="btn-140" class="btn-toggle ${effective.sizePreset === '140' ? 'active' : ''}" onclick="switchSize('140')">140 mm</button>
+            <button id="btn-150" class="btn-toggle ${effective.sizePreset === '150' ? 'active' : ''}" onclick="switchSize('150')">150 mm</button>
+            <button id="btn-80" class="btn-toggle ${effective.paperWidth === 80 ? 'active' : ''}" onclick="switchPresetPaper(80)">80mm POS</button>
+            <button id="btn-58" class="btn-toggle ${effective.paperWidth === 58 ? 'active' : ''}" onclick="switchPresetPaper(58)">58mm Mini</button>
+            <button id="btn-auto" class="btn-toggle ${effective.sizePreset === 'auto' ? 'active' : ''}" onclick="switchSize('auto')">Auto / Roll</button>
+            <span style="border-right: 1px solid #334155; height: 18px; margin: 0 4px;"></span>
+            <button id="btn-toggle-customizer" class="btn-action-customizer" onclick="toggleCustomizer()">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <span>Atur Style</span>
+            </button>
+            <button class="btn-action-save" onclick="saveSettingsToSupabase(true)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                <span>Simpan Style</span>
+            </button>
             <button class="btn-action-print" onclick="window.print()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
                 <span>Cetak / Print</span>
             </button>
+        </div>
+    </div>
+
+    <!-- Right-Side Sliding Style Customizer Drawer -->
+    <div id="customizer-drawer-right" class="customizer-drawer-right no-print">
+        <div class="drawer-header">
+            <div class="drawer-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <span>Atur Style Thermal</span>
+            </div>
+            <button class="drawer-close-btn" onclick="toggleCustomizer()" title="Tutup">✕</button>
+        </div>
+
+        <div class="drawer-body">
+            <!-- SECTION: QR CODE -->
+            <div class="drawer-section">
+                <div class="drawer-section-title">🔲 Posisi & Ukuran QR Code</div>
+                <div class="form-group">
+                    <label>Posisi Tampil QR:</label>
+                    <select id="input-qr-position" class="custom-select" onchange="onCustomChange()">
+                        <option value="left" ${effective.layoutDirection !== 'row-reverse' ? 'selected' : ''}>QR di Kiri (Teks di Kanan)</option>
+                        <option value="right" ${effective.layoutDirection === 'row-reverse' ? 'selected' : ''}>QR di Kanan (Teks di Kiri)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Ukuran QR: <span id="val-qr-size" class="val-badge">${effective.qrSize} mm</span></label>
+                    <input id="input-qr-size" type="range" class="custom-range" min="16" max="55" step="1" value="${effective.qrSize}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Geser QR (Kiri ◀ ▶ Kanan): <span id="val-qr-offset-x" class="val-badge">${effective.qrOffsetX} px</span></label>
+                    <input id="input-qr-offset-x" type="range" class="custom-range" min="-45" max="45" step="1" value="${effective.qrOffsetX}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Geser QR (Atas ▲ ▼ Bawah): <span id="val-qr-offset-y" class="val-badge">${effective.qrOffsetY} px</span></label>
+                    <input id="input-qr-offset-y" type="range" class="custom-range" min="-25" max="25" step="1" value="${effective.qrOffsetY}" oninput="onCustomChange()" />
+                </div>
+            </div>
+
+            <!-- SECTION: SKU & ID TEXT -->
+            <div class="drawer-section">
+                <div class="drawer-section-title">🔤 Teks SKU & ID Bersamaan</div>
+                <div class="form-group">
+                    <label>Geser Teks (Kiri ◀ ▶ Kanan): <span id="val-text-offset-x" class="val-badge">${effective.textOffsetX} px</span></label>
+                    <input id="input-text-offset-x" type="range" class="custom-range" min="-45" max="45" step="1" value="${effective.textOffsetX}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Geser Teks (Atas ▲ ▼ Bawah): <span id="val-text-offset-y" class="val-badge">${effective.textOffsetY} px</span></label>
+                    <input id="input-text-offset-y" type="range" class="custom-range" min="-25" max="25" step="1" value="${effective.textOffsetY}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Ukuran Font SKU: <span id="val-sku-size" class="val-badge">${effective.skuSize} px</span></label>
+                    <input id="input-sku-size" type="range" class="custom-range" min="9" max="28" step="1" value="${effective.skuSize}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Ketebalan SKU:</label>
+                    <select id="input-sku-weight" class="custom-select" onchange="onCustomChange()">
+                        <option value="900" ${effective.skuWeight === '900' ? 'selected' : ''}>Black (Ekstra Tebal - 900)</option>
+                        <option value="700" ${effective.skuWeight === '700' ? 'selected' : ''}>Bold (Tebal - 700)</option>
+                        <option value="600" ${effective.skuWeight === '600' ? 'selected' : ''}>Semi-Bold (600)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Ukuran Font ID: <span id="val-id-size" class="val-badge">${effective.idSize} px</span></label>
+                    <input id="input-id-size" type="range" class="custom-range" min="7" max="18" step="1" value="${effective.idSize}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Perataan Teks:</label>
+                    <select id="input-text-align" class="custom-select" onchange="onCustomChange()">
+                        <option value="left" ${effective.textAlign === 'left' ? 'selected' : ''}>Rata Kiri</option>
+                        <option value="right" ${effective.textAlign === 'right' ? 'selected' : ''}>Rata Kanan</option>
+                        <option value="center" ${effective.textAlign === 'center' ? 'selected' : ''}>Rata Tengah</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- SECTION: SLOT INDICATOR -->
+            <div class="drawer-section">
+                <div class="drawer-section-title">🏷️ Nomor Slot (No.1/2/3)</div>
+                <div class="form-group">
+                    <label>Tampilkan Nomor Slot:</label>
+                    <select id="input-show-slot" class="custom-select" onchange="onCustomChange()">
+                        <option value="block" ${effective.showSlot === 'block' ? 'selected' : ''}>Tampilkan (Aktif)</option>
+                        <option value="none" ${effective.showSlot === 'none' ? 'selected' : ''}>Sembunyikan</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Posisi Nomor Slot:</label>
+                    <select id="input-slot-position" class="custom-select" onchange="onCustomChange()">
+                        <option value="bottom-right" ${effective.slotPosition === 'bottom-right' ? 'selected' : ''}>Pojok Kanan Bawah</option>
+                        <option value="bottom-left" ${effective.slotPosition === 'bottom-left' ? 'selected' : ''}>Pojok Kiri Bawah</option>
+                        <option value="top-right" ${effective.slotPosition === 'top-right' ? 'selected' : ''}>Pojok Kanan Atas</option>
+                        <option value="top-left" ${effective.slotPosition === 'top-left' ? 'selected' : ''}>Pojok Kiri Atas</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Ukuran Font Slot: <span id="val-slot-size" class="val-badge">${effective.slotSize} px</span></label>
+                    <input id="input-slot-size" type="range" class="custom-range" min="6" max="16" step="1" value="${effective.slotSize}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Geser Nomor Slot (X): <span id="val-slot-offset-x" class="val-badge">${effective.slotOffsetX} px</span></label>
+                    <input id="input-slot-offset-x" type="range" class="custom-range" min="-30" max="30" step="1" value="${effective.slotOffsetX}" oninput="onCustomChange()" />
+                </div>
+            </div>
+
+            <!-- SECTION: PAPER & ROW SIZES -->
+            <div class="drawer-section">
+                <div class="drawer-section-title">📐 Kertas & Baris Thermal</div>
+                <div class="form-group">
+                    <label>Lebar Kertas: <span id="val-paper-width" class="val-badge">${effective.paperWidth} mm</span></label>
+                    <input id="input-paper-width" type="range" class="custom-range" min="48" max="120" step="1" value="${effective.paperWidth}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Tinggi Baris Label: <span id="val-row-height" class="val-badge">${effective.rowHeight} mm</span></label>
+                    <input id="input-row-height" type="range" class="custom-range" min="25" max="70" step="1" value="${effective.rowHeight}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Gaya Garis Pemisah:</label>
+                    <select id="input-border-style" class="custom-select" onchange="onCustomChange()">
+                        <option value="dashed" ${effective.borderStyle === 'dashed' ? 'selected' : ''}>Putus-putus (Dashed)</option>
+                        <option value="dotted" ${effective.borderStyle === 'dotted' ? 'selected' : ''}>Titik-titik (Dotted)</option>
+                        <option value="solid" ${effective.borderStyle === 'solid' ? 'selected' : ''}>Garis Lurus (Solid)</option>
+                        <option value="none" ${effective.borderStyle === 'none' ? 'selected' : ''}>Tanpa Garis</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Tebal Garis Pemisah:</label>
+                    <select id="input-border-width" class="custom-select" onchange="onCustomChange()">
+                        <option value="1px" ${effective.borderWidth === '1px' ? 'selected' : ''}>1 px (Halus)</option>
+                        <option value="2px" ${effective.borderWidth === '2px' ? 'selected' : ''}>2 px (Standar)</option>
+                        <option value="3px" ${effective.borderWidth === '3px' ? 'selected' : ''}>3 px (Tebal)</option>
+                        <option value="4px" ${effective.borderWidth === '4px' ? 'selected' : ''}>4 px (Ekstra)</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="drawer-footer">
+            <button class="btn-action-save" style="width: 100%; justify-content: center;" onclick="saveSettingsToSupabase(true)">
+                💾 Simpan Style Default Akun (${activeEmail})
+            </button>
+            <button class="btn-toggle" style="width: 100%; justify-content: center;" onclick="resetToFactoryDefaults()">
+                🔄 Reset Default Pabrik
+            </button>
+            <span id="toast-indicator" class="toast-msg">✅ Style tersimpan di Akun Supabase!</span>
         </div>
     </div>
 
@@ -762,6 +1278,188 @@ export function CekRak2() {
 
     <script>
         const singleData = ${singleDataJs};
+        const activeUserEmail = "${activeEmail}";
+        const SUPABASE_URL = "${activeSupabaseUrl}";
+        const SUPABASE_ANON_KEY = "${activeSupabaseKey}";
+        const STORAGE_KEY = "thermal_style_pref_" + encodeURIComponent(activeUserEmail);
+
+        const defaultSettings = ${JSON.stringify(effective)};
+        let currentSettings = Object.assign({}, defaultSettings);
+
+        function toggleCustomizer() {
+            const drawer = document.getElementById('customizer-drawer-right');
+            const btn = document.getElementById('btn-toggle-customizer');
+            if (!drawer) return;
+            const isOpen = drawer.classList.toggle('active');
+            if (btn) btn.classList.toggle('open', isOpen);
+            document.body.classList.toggle('drawer-open', isOpen);
+        }
+
+        function applyStylesToDom(s) {
+            const isLeftSlot = (s.slotPosition || '').includes('left');
+            const isTopSlot = (s.slotPosition || '').includes('top');
+
+            const varsTag = document.getElementById('dynamic-vars-css');
+            if (varsTag) {
+                varsTag.innerHTML = ':root {' +
+                    '--paper-width: ' + s.paperWidth + 'mm;' +
+                    '--page-height: ' + s.pageHeight + 'mm;' +
+                    '--row-height: ' + s.rowHeight + 'mm;' +
+                    '--layout-direction: ' + (s.layoutDirection || 'row') + ';' +
+                    '--qr-size: ' + s.qrSize + 'mm;' +
+                    '--qr-offset-x: ' + (s.qrOffsetX || 0) + 'px;' +
+                    '--qr-offset-y: ' + (s.qrOffsetY || 0) + 'px;' +
+                    '--text-offset-x: ' + (s.textOffsetX || 0) + 'px;' +
+                    '--text-offset-y: ' + (s.textOffsetY || 0) + 'px;' +
+                    '--text-align: ' + (s.textAlign || 'left') + ';' +
+                    '--sku-size: ' + s.skuSize + 'px;' +
+                    '--sku-weight: ' + s.skuWeight + ';' +
+                    '--id-size: ' + s.idSize + 'px;' +
+                    '--slot-size: ' + s.slotSize + 'px;' +
+                    '--slot-pos-left: ' + (isLeftSlot ? '8px' : 'auto') + ';' +
+                    '--slot-pos-right: ' + (isLeftSlot ? 'auto' : '8px') + ';' +
+                    '--slot-pos-top: ' + (isTopSlot ? '4px' : 'auto') + ';' +
+                    '--slot-pos-bottom: ' + (isTopSlot ? 'auto' : '4px') + ';' +
+                    '--slot-offset-x: ' + (s.slotOffsetX || 0) + 'px;' +
+                    '--cell-pad-y: ' + s.cellPadY + 'px;' +
+                    '--cell-pad-x: ' + s.cellPadX + 'px;' +
+                    '--border-style: ' + s.borderStyle + ';' +
+                    '--border-width: ' + s.borderWidth + ';' +
+                    '--border-color: ' + (s.borderColor || '#000') + ';' +
+                    '--show-slot: ' + s.showSlot + ';' +
+                '}';
+            }
+
+            const pageTag = document.getElementById('dynamic-page-css');
+            if (pageTag) {
+                if (s.sizePreset === 'auto') {
+                    pageTag.innerHTML = '@page { size: ' + s.paperWidth + 'mm auto; margin: 0; }';
+                } else {
+                    pageTag.innerHTML = '@page { size: ' + s.paperWidth + 'mm ' + s.pageHeight + 'mm; margin: 0; }';
+                }
+            }
+        }
+
+        function updateFormInputs(s) {
+            const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+            const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.innerText = txt; };
+
+            setVal('input-qr-position', s.layoutDirection === 'row-reverse' ? 'right' : 'left');
+            setVal('input-qr-size', s.qrSize);
+            setText('val-qr-size', s.qrSize + ' mm');
+
+            setVal('input-qr-offset-x', s.qrOffsetX || 0);
+            setText('val-qr-offset-x', (s.qrOffsetX || 0) + ' px');
+
+            setVal('input-qr-offset-y', s.qrOffsetY || 0);
+            setText('val-qr-offset-y', (s.qrOffsetY || 0) + ' px');
+
+            setVal('input-text-offset-x', s.textOffsetX || 0);
+            setText('val-text-offset-x', (s.textOffsetX || 0) + ' px');
+
+            setVal('input-text-offset-y', s.textOffsetY || 0);
+            setText('val-text-offset-y', (s.textOffsetY || 0) + ' px');
+
+            setVal('input-sku-size', s.skuSize);
+            setText('val-sku-size', s.skuSize + ' px');
+
+            setVal('input-sku-weight', s.skuWeight);
+            setVal('input-text-align', s.textAlign || 'left');
+
+            setVal('input-id-size', s.idSize);
+            setText('val-id-size', s.idSize + ' px');
+
+            setVal('input-show-slot', s.showSlot);
+            setVal('input-slot-position', s.slotPosition || 'bottom-right');
+
+            setVal('input-slot-size', s.slotSize);
+            setText('val-slot-size', s.slotSize + ' px');
+
+            setVal('input-slot-offset-x', s.slotOffsetX || 0);
+            setText('val-slot-offset-x', (s.slotOffsetX || 0) + ' px');
+
+            setVal('input-row-height', s.rowHeight);
+            setText('val-row-height', s.rowHeight + ' mm');
+
+            setVal('input-paper-width', s.paperWidth);
+            setText('val-paper-width', s.paperWidth + ' mm');
+
+            setVal('input-border-style', s.borderStyle);
+            setVal('input-border-width', s.borderWidth);
+        }
+
+        function syncSettingsWithStorageAndParent() {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(currentSettings));
+            } catch (e) {}
+            if (window.opener && !window.opener.closed) {
+                try {
+                    window.opener.postMessage({
+                        type: 'SAVE_THERMAL_PRINT_SETTINGS',
+                        email: activeUserEmail,
+                        settings: currentSettings
+                    }, '*');
+                } catch (e) {}
+            }
+        }
+
+        function onCustomChange() {
+            const getVal = (id) => document.getElementById(id)?.value;
+            
+            currentSettings.layoutDirection = getVal('input-qr-position') === 'right' ? 'row-reverse' : 'row';
+            currentSettings.qrSize = Number(getVal('input-qr-size') || 32);
+            currentSettings.qrOffsetX = Number(getVal('input-qr-offset-x') || 0);
+            currentSettings.qrOffsetY = Number(getVal('input-qr-offset-y') || 0);
+            currentSettings.textOffsetX = Number(getVal('input-text-offset-x') || 0);
+            currentSettings.textOffsetY = Number(getVal('input-text-offset-y') || 0);
+            currentSettings.textAlign = getVal('input-text-align') || 'left';
+            currentSettings.skuSize = Number(getVal('input-sku-size') || 15);
+            currentSettings.skuWeight = getVal('input-sku-weight') || '900';
+            currentSettings.idSize = Number(getVal('input-id-size') || 11);
+            currentSettings.showSlot = getVal('input-show-slot') || 'block';
+            currentSettings.slotPosition = getVal('input-slot-position') || 'bottom-right';
+            currentSettings.slotSize = Number(getVal('input-slot-size') || 9);
+            currentSettings.slotOffsetX = Number(getVal('input-slot-offset-x') || 0);
+            currentSettings.rowHeight = Number(getVal('input-row-height') || 46);
+            currentSettings.paperWidth = Number(getVal('input-paper-width') || 78);
+            currentSettings.borderStyle = getVal('input-border-style') || 'dashed';
+            currentSettings.borderWidth = getVal('input-border-width') || '2px';
+
+            updateFormInputs(currentSettings);
+            applyStylesToDom(currentSettings);
+            syncSettingsWithStorageAndParent();
+        }
+
+        function switchSize(size) {
+            document.body.classList.remove('size-140', 'size-150', 'size-auto');
+            document.body.classList.add('size-' + size);
+            
+            document.querySelectorAll('#btn-140, #btn-150, #btn-auto').forEach(function(btn) { btn.classList.remove('active'); });
+            const activeBtn = document.getElementById('btn-' + size);
+            if (activeBtn) activeBtn.classList.add('active');
+
+            currentSettings.sizePreset = size;
+            if (size === '140') {
+                currentSettings.pageHeight = 140;
+                currentSettings.rowHeight = 46;
+            } else if (size === '150') {
+                currentSettings.pageHeight = 150;
+                currentSettings.rowHeight = 49.3;
+            } else {
+                currentSettings.pageHeight = 140;
+            }
+
+            updateFormInputs(currentSettings);
+            applyStylesToDom(currentSettings);
+            syncSettingsWithStorageAndParent();
+        }
+
+        function switchPresetPaper(widthMm) {
+            currentSettings.paperWidth = widthMm;
+            updateFormInputs(currentSettings);
+            applyStylesToDom(currentSettings);
+            syncSettingsWithStorageAndParent();
+        }
 
         function setCopies(num) {
             if (!singleData) return;
@@ -797,32 +1495,87 @@ export function CekRak2() {
             }
         }
 
-        function switchSize(size) {
-            document.body.classList.remove('size-140', 'size-150', 'size-auto');
-            document.body.classList.add('size-' + size);
-            
-            document.querySelectorAll('#btn-140, #btn-150, #btn-auto').forEach(function(btn) { btn.classList.remove('active'); });
-            const activeBtn = document.getElementById('btn-' + size);
-            if (activeBtn) activeBtn.classList.add('active');
+        async function saveSettingsToSupabase(showToast) {
+            syncSettingsWithStorageAndParent();
 
-            const styleTag = document.getElementById('dynamic-page-css');
-            if (styleTag) {
-                if (size === '140') {
-                    styleTag.innerHTML = '@page { size: 80mm 140mm; margin: 0; }';
-                } else if (size === '150') {
-                    styleTag.innerHTML = '@page { size: 80mm 150mm; margin: 0; }';
-                } else {
-                    styleTag.innerHTML = '@page { size: 80mm auto; margin: 0; }';
+            const toast = document.getElementById('toast-indicator');
+            if (toast && showToast) {
+                toast.innerText = '⏳ Menyimpan ke Supabase...';
+                toast.classList.add('show');
+            }
+
+            try {
+                const resp = await fetch(SUPABASE_URL + '/rest/v1/user_print_settings', {
+                    method: 'POST',
+                    headers: {
+                        'apikey': SUPABASE_ANON_KEY,
+                        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+                        'Content-Type': 'application/json',
+                        'Prefer': 'resolution=merge-duplicates'
+                    },
+                    body: JSON.stringify({
+                        user_email: activeUserEmail,
+                        settings: currentSettings,
+                        updated_at: new Date().toISOString()
+                    })
+                });
+
+                if (toast && showToast) {
+                    if (resp.ok) {
+                        toast.innerText = '✅ Tersimpan di Supabase (' + activeUserEmail + ')';
+                    } else {
+                        toast.innerText = '✅ Tersimpan di Akun & Browser!';
+                    }
+                    setTimeout(() => toast.classList.remove('show'), 3500);
+                }
+            } catch (err) {
+                if (toast && showToast) {
+                    toast.innerText = '✅ Tersimpan di Akun & Browser!';
+                    setTimeout(() => toast.classList.remove('show'), 3500);
                 }
             }
         }
 
-        // Auto trigger print dialog once loaded
-        window.addEventListener('load', function() {
-            setTimeout(function() {
-                window.print();
-            }, 600);
-        });
+        function resetToFactoryDefaults() {
+            if (!confirm('Kembalikan seluruh ukuran & style cetak ke default pabrik?')) return;
+            currentSettings = {
+                paperWidth: 78,
+                pageHeight: 140,
+                rowHeight: 46,
+                layoutDirection: "row",
+                qrSize: 32,
+                qrOffsetX: 0,
+                qrOffsetY: 0,
+                textOffsetX: 0,
+                textOffsetY: 0,
+                textAlign: "left",
+                skuSize: 15,
+                skuWeight: "900",
+                idSize: 11,
+                slotPosition: "bottom-right",
+                slotSize: 9,
+                slotOffsetX: 0,
+                cellPadY: 6,
+                cellPadX: 8,
+                borderStyle: "dashed",
+                borderWidth: "2px",
+                borderColor: "#000",
+                showSlot: "block",
+                sizePreset: "140"
+            };
+            updateFormInputs(currentSettings);
+            applyStylesToDom(currentSettings);
+            saveSettingsToSupabase(true);
+        }
+
+        // Apply styles and form values immediately
+        updateFormInputs(currentSettings);
+        applyStylesToDom(currentSettings);
+
+        // Auto print trigger
+        setTimeout(function() {
+            window.print();
+        }, 600);
     </script>
 </body>
 </html>`;
@@ -2907,19 +3660,19 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 <div className="max-w-7xl mx-auto w-full px-3.5 sm:px-6 lg:px-8 mt-4 sm:mt-6 lg:mt-8 relative z-20 space-y-5 sm:space-y-6">
 
                     {/* MAIN NAVIGATION TABS (OPNAME RAK vs DATA SELESAI PROSES) */}
-                    <div className="flex items-center justify-between flex-wrap gap-3 bg-white p-2 sm:p-2.5 rounded-2xl sm:rounded-3xl border border-slate-200/90 shadow-xl shadow-slate-900/5">
+                    <div className="flex items-center justify-between flex-wrap gap-2.5 bg-white p-2 sm:p-2.5 rounded-2xl sm:rounded-3xl border border-slate-200/90 shadow-xl shadow-slate-900/5">
                         <div className="flex items-center gap-2 w-full sm:w-auto">
                             <button
                                 type="button"
                                 onClick={() => setActiveMainTab('opname_rak')}
                                 className={cn(
-                                    "flex-1 sm:flex-none px-5 py-3 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2.5 cursor-pointer shadow-sm",
+                                    "h-11 px-4 sm:px-5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-95",
                                     activeMainTab === 'opname_rak'
                                         ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25"
                                         : "bg-slate-100 hover:bg-slate-200 text-slate-600"
                                 )}
                             >
-                                <MapPin className="w-4 h-4" />
+                                <MapPin className="w-4 h-4 flex-shrink-0" />
                                 <span>Cek & Scan Rak</span>
                                 <span className={cn(
                                     "px-2 py-0.5 rounded-full text-[10px] font-bold",
@@ -2936,13 +3689,13 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     fetchAllFinishedItems();
                                 }}
                                 className={cn(
-                                    "flex-1 sm:flex-none px-5 py-3 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2.5 cursor-pointer shadow-sm relative",
+                                    "h-11 px-4 sm:px-5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm relative active:scale-95",
                                     activeMainTab === 'selesai_proses'
                                         ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-500/25"
                                         : "bg-slate-100 hover:bg-slate-200 text-slate-600"
                                 )}
                             >
-                                <CheckCircle2 className="w-4 h-4" />
+                                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
                                 <span>Data Selesai Diproses</span>
                                 <span className={cn(
                                     "px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1",
@@ -2955,34 +3708,38 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         </div>
 
                         {activeMainTab === 'selesai_proses' && (
-                            <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
+                            <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
                                 {isAdminOrDev && finishedLogs.length > 0 && (
-                                    <Button
+                                    <button
+                                        type="button"
                                         onClick={handleClearAllFinishedPrompt}
-                                        className="h-10 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-black rounded-xl text-xs uppercase tracking-wider border border-rose-200 transition-all shadow-sm"
+                                        className="h-11 px-3.5 sm:px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 font-black rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider border border-rose-200/80 transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95 flex-1 sm:flex-none"
                                         title="Batal dan reset seluruh data selesai di semua rak (Khusus Dev/Admin)"
                                     >
-                                        <XCircle className="h-3.5 w-3.5 mr-1.5 text-rose-600" />
-                                        <span>Batal Semua Selesai</span>
-                                    </Button>
+                                        <XCircle className="h-4 w-4 text-rose-600 flex-shrink-0" />
+                                        <span className="whitespace-nowrap">Batal Semua Selesai</span>
+                                    </button>
                                 )}
                                 {finishedLogs.length > 0 && (
-                                    <Button
+                                    <button
+                                        type="button"
                                         onClick={handlePrintBatchThermalLabels}
-                                        className="h-10 px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black rounded-xl text-xs uppercase tracking-wider shadow-sm flex items-center gap-1.5 cursor-pointer"
+                                        className="h-11 px-4 sm:px-5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider shadow-sm flex items-center justify-center gap-2 cursor-pointer transition-all hover:shadow-md hover:shadow-blue-500/20 active:scale-95 flex-1 sm:flex-none"
                                         title="Print QR seluruh data selesai (3 label per halaman thermal)"
                                     >
-                                        <Printer className="h-3.5 w-3.5" />
-                                        <span>Print Semua QR</span>
-                                    </Button>
+                                        <Printer className="h-4 w-4 flex-shrink-0" />
+                                        <span className="whitespace-nowrap">Print Semua QR</span>
+                                    </button>
                                 )}
-                                <Button
+                                <button
+                                    type="button"
                                     onClick={fetchAllFinishedItems}
-                                    className="h-10 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider border border-slate-200"
+                                    className="h-11 px-3.5 sm:px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider border border-slate-200 transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95 flex-1 sm:flex-none"
+                                    title="Segarkan Data Selesai"
                                 >
-                                    <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", isLoadingFinished && "animate-spin")} />
-                                    <span>Refresh Data</span>
-                                </Button>
+                                    <RefreshCw className={cn("h-4 w-4 text-slate-600 flex-shrink-0", isLoadingFinished && "animate-spin")} />
+                                    <span className="whitespace-nowrap">Refresh Data</span>
+                                </button>
                             </div>
                         )}
                     </div>
