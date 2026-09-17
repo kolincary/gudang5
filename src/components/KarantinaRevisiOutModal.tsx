@@ -201,7 +201,7 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
     };
 
     const handleExecuteDelete = async () => {
-        if (!deleteModal.item) return;
+        if (!deleteModal.item || !canManageRevisi) return;
         const targetId = deleteModal.item.id;
         const targetLogId = deleteModal.item.original_log_id || undefined;
         setDeleteModal(prev => ({ ...prev, isDeleting: true }));
@@ -562,19 +562,21 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
                                                     )}
                                                 </button>
 
-                                                {/* Delete / Hapus Button */}
-                                                <button
-                                                    onClick={() => setDeleteModal({
-                                                        isOpen: true,
-                                                        item,
-                                                        isDeleting: false
-                                                    })}
-                                                    title="Hapus data dari Wadah Karantina"
-                                                    className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 hover:text-rose-700 border border-rose-200/80 font-black text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-                                                >
-                                                    <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                                                    <span>Hapus</span>
-                                                </button>
+                                                {/* Delete / Hapus Button (Khusus Admin & Developer) */}
+                                                {canManageRevisi && (
+                                                    <button
+                                                        onClick={() => setDeleteModal({
+                                                            isOpen: true,
+                                                            item,
+                                                            isDeleting: false
+                                                        })}
+                                                        title="Hapus data dari Wadah Karantina"
+                                                        className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 hover:text-rose-700 border border-rose-200/80 font-black text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                                                        <span>Hapus</span>
+                                                    </button>
+                                                )}
                                             </div>
 
                                             {/* Admin / Dev Controls */}
