@@ -507,11 +507,59 @@ export function CekRak2() {
         return 'UTAMA';
     };
 
+    // Helper to format any date string strictly into DD-MM-YYYY (e.g. 17-09-2026) without time or prefix
+    const formatToDDMMYYYY = (dateInput?: any): string => {
+        if (!dateInput) {
+            const d = new Date();
+            const dd = String(d.getDate()).padStart(2, '0');
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const yyyy = d.getFullYear();
+            return `${dd}-${mm}-${yyyy}`;
+        }
+        const clean = String(dateInput).trim();
+        if (!clean) {
+            const d = new Date();
+            const dd = String(d.getDate()).padStart(2, '0');
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const yyyy = d.getFullYear();
+            return `${dd}-${mm}-${yyyy}`;
+        }
+
+        // Match YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD (e.g. 2026-09-17 08:20:20)
+        const ymdMatch = clean.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+        if (ymdMatch) {
+            const year = ymdMatch[1];
+            const month = ymdMatch[2].padStart(2, '0');
+            const day = ymdMatch[3].padStart(2, '0');
+            return `${day}-${month}-${year}`;
+        }
+
+        // Match DD-MM-YYYY or DD/MM/YYYY or DD.MM.YYYY
+        const dmyMatch = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+        if (dmyMatch) {
+            const day = dmyMatch[1].padStart(2, '0');
+            const month = dmyMatch[2].padStart(2, '0');
+            const year = dmyMatch[3];
+            return `${day}-${month}-${year}`;
+        }
+
+        // Try new Date parsing
+        const parsed = new Date(clean);
+        if (!isNaN(parsed.getTime())) {
+            const dd = String(parsed.getDate()).padStart(2, '0');
+            const mm = String(parsed.getMonth() + 1).padStart(2, '0');
+            const yyyy = parsed.getFullYear();
+            return `${dd}-${mm}-${yyyy}`;
+        }
+
+        return clean;
+    };
+
     interface ThermalPrintConfig {
         title: string;
         mode: 'single' | 'batch';
-        singleItem?: { sku: string; sn1: string; sn2: string; sn3: string; rak: string };
-        batchItems?: Array<{ sku: string; sn: string; rak: string; slotNum?: number }>;
+        singleItem?: { sku: string; sn1: string; sn2: string; sn3: string; rak: string; tgl_scan?: string; waktu?: string };
+        batchItems?: Array<{ sku: string; sn: string; rak: string; slotNum?: number; tgl_scan?: string; waktu?: string }>;
     }
 
     // Open Thermal Label Print in a New Tab with Interactive Customizer & Supabase Sync
@@ -538,19 +586,22 @@ export function CekRak2() {
         }
 
         const effective = {
-            paperWidth: Number(savedPref?.paperWidth ?? 78),
+            paperWidth: Number(savedPref?.paperWidth ?? 100),
             pageHeight: Number(savedPref?.pageHeight ?? 140),
             rowHeight: Number(savedPref?.rowHeight ?? 46),
             layoutDirection: (savedPref?.layoutDirection === 'row-reverse' ? 'row-reverse' : 'row'),
             qrSize: Number(savedPref?.qrSize ?? 32),
             qrOffsetX: Number(savedPref?.qrOffsetX ?? 0),
             qrOffsetY: Number(savedPref?.qrOffsetY ?? 0),
-            textOffsetX: Number(savedPref?.textOffsetX ?? 0),
+            textOffsetX: Number(savedPref?.textOffsetX ?? 5),
             textOffsetY: Number(savedPref?.textOffsetY ?? 0),
             textAlign: savedPref?.textAlign ?? 'left',
-            skuSize: Number(savedPref?.skuSize ?? 15),
+            skuSize: Number(savedPref?.skuSize ?? 22),
             skuWeight: savedPref?.skuWeight ?? '900',
-            idSize: Number(savedPref?.idSize ?? 11),
+            idSize: Number(savedPref?.idSize ?? 14),
+            dateSize: Number(savedPref?.dateSize ?? 12),
+            dateWeight: savedPref?.dateWeight ?? '800',
+            showDate: savedPref?.showDate ?? 'block',
             slotPosition: savedPref?.slotPosition ?? 'bottom-right',
             slotSize: Number(savedPref?.slotSize ?? 9),
             slotOffsetX: Number(savedPref?.slotOffsetX ?? 0),
@@ -572,23 +623,28 @@ export function CekRak2() {
 
         if (isSingle && config.singleItem) {
             const item = config.singleItem;
-            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(item.sku);
+            const formattedDate = formatToDDMMYYYY(item.tgl_scan || item.waktu);
+            const sn = item.sn1;
+            const qrPayload = `${formattedDate}\t${item.sku}\t${sn}`;
+            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
             initialSummaryBadge = '1 Halaman (1 Label)';
-            initialPagesHtml = '<div class="thermal-sheet">' +
-                '<div class="label-cell">' +
-                    '<div class="qr-wrapper">' +
-                        '<img src="' + qrUrl + '" alt="QR" />' +
-                    '</div>' +
-                    '<div class="details-wrapper">' +
-                        '<div class="product-sku">' + item.sku + '</div>' +
-                        '<div class="serial-id">ID: ' + item.sn1 + '</div>' +
-                    '</div>' +
-                    '<div class="slot-indicator">No.1</div>' +
-                '</div>' +
-            '</div>';
+            const dateDisplay = formattedDate ? `<div class="scan-date">${formattedDate}</div>` : '';
+            initialPagesHtml = `<div class="thermal-sheet">` +
+                `<div class="label-cell" data-qr="${encodeURIComponent(qrPayload)}" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID">` +
+                    `<div class="qr-wrapper">` +
+                        `<img src="${qrUrl}" alt="QR" />` +
+                    `</div>` +
+                    `<div class="details-wrapper">` +
+                        dateDisplay +
+                        `<div class="product-sku">${item.sku}</div>` +
+                        `<div class="serial-id">ID: ${sn}</div>` +
+                    `</div>` +
+                    `<div class="slot-indicator">No.1</div>` +
+                `</div>` +
+            `</div>`;
         } else if (config.batchItems && config.batchItems.length > 0) {
             const batch = config.batchItems;
-            const pages: Array<Array<{ sku: string; sn: string; rak: string; slotNum?: number }>> = [];
+            const pages: Array<Array<{ sku: string; sn: string; rak: string; slotNum?: number; tgl_scan?: string; waktu?: string }>> = [];
             for (let i = 0; i < batch.length; i += 3) {
                 pages.push(batch.slice(i, i + 3));
             }
@@ -597,18 +653,22 @@ export function CekRak2() {
             pages.forEach((pageRows) => {
                 initialPagesHtml += '<div class="thermal-sheet">';
                 pageRows.forEach((row, rIdx) => {
-                    const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(row.sku);
+                    const formattedDate = formatToDDMMYYYY(row.tgl_scan || row.waktu);
+                    const qrPayload = `${formattedDate}\t${row.sku}\t${row.sn}`;
+                    const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
                     const slotText = 'No.' + (rIdx + 1);
-                    initialPagesHtml += '<div class="label-cell">' +
-                        '<div class="qr-wrapper">' +
-                            '<img src="' + qrUrl + '" alt="QR" />' +
-                        '</div>' +
-                        '<div class="details-wrapper">' +
-                            '<div class="product-sku">' + row.sku + '</div>' +
-                            '<div class="serial-id">ID: ' + row.sn + '</div>' +
-                        '</div>' +
-                        '<div class="slot-indicator">' + slotText + '</div>' +
-                    '</div>';
+                    const dateDisplay = formattedDate ? `<div class="scan-date">${formattedDate}</div>` : '';
+                    initialPagesHtml += `<div class="label-cell" data-qr="${encodeURIComponent(qrPayload)}" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID">` +
+                        `<div class="qr-wrapper">` +
+                            `<img src="${qrUrl}" alt="QR" />` +
+                        `</div>` +
+                        `<div class="details-wrapper">` +
+                            dateDisplay +
+                            `<div class="product-sku">${row.sku}</div>` +
+                            `<div class="serial-id">ID: ${row.sn}</div>` +
+                        `</div>` +
+                        `<div class="slot-indicator">${slotText}</div>` +
+                    `</div>`;
                 });
                 initialPagesHtml += '</div>';
             });
@@ -643,6 +703,9 @@ export function CekRak2() {
             --sku-size: ${effective.skuSize}px;
             --sku-weight: ${effective.skuWeight};
             --id-size: ${effective.idSize}px;
+            --date-size: ${effective.dateSize}px;
+            --date-weight: ${effective.dateWeight};
+            --show-date: ${effective.showDate};
             --slot-size: ${effective.slotSize}px;
             --slot-pos-left: ${isLeftSlot ? '8px' : 'auto'};
             --slot-pos-right: ${isLeftSlot ? 'auto' : '8px'};
@@ -802,6 +865,25 @@ export function CekRak2() {
             transform: translateY(-1px);
             background: linear-gradient(135deg, #0ea5e9, #0284c7);
         }
+        .btn-action-copy {
+            background: linear-gradient(135deg, #0d9488, #0f766e);
+            color: #fff;
+            border: 1px solid #14b8a6;
+            padding: 7px 13px;
+            border-radius: 9px;
+            cursor: pointer;
+            font-weight: 900;
+            font-size: 11px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: all 0.2s;
+        }
+        .btn-action-copy:hover {
+            transform: translateY(-1px);
+            background: linear-gradient(135deg, #14b8a6, #0d9488);
+        }
         .btn-action-print {
             background: linear-gradient(135deg, #10b981, #059669);
             color: #fff;
@@ -822,6 +904,30 @@ export function CekRak2() {
         .btn-action-print:hover {
             transform: translateY(-1px);
             box-shadow: 0 6px 18px rgba(16, 185, 129, 0.6);
+        }
+        .floating-toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #0f172a;
+            color: #38bdf8;
+            border: 1px solid #0284c7;
+            padding: 10px 20px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 800;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+            z-index: 999999;
+            opacity: 0;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            white-space: pre-line;
+            text-align: center;
+            pointer-events: none;
+        }
+        .floating-toast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
         }
 
         /* Right-Side Sliding Customizer Drawer */
@@ -986,7 +1092,7 @@ export function CekRak2() {
 
         /* Container of pages - Smooth margin shift when drawer open */
         .pages-wrapper {
-            margin-top: 75px;
+            margin-top: 135px;
             padding: 24px 12px 60px 12px;
             display: flex;
             flex-direction: column;
@@ -1001,7 +1107,7 @@ export function CekRak2() {
         /* Single Thermal Sticker Page */
         .thermal-sheet {
             background: #ffffff;
-            width: var(--paper-width, 78mm);
+            width: var(--paper-width, 100mm);
             border-radius: 4px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.5);
             position: relative;
@@ -1046,6 +1152,7 @@ export function CekRak2() {
             background: #fff;
             overflow: hidden;
             flex-shrink: 0;
+            cursor: pointer;
         }
 
         /* QR Code Container with Independent Position Shifting */
@@ -1080,9 +1187,21 @@ export function CekRak2() {
             transform: translate(var(--text-offset-x, 0px), var(--text-offset-y, 0px));
             transition: transform 0.1s;
         }
+        .scan-date {
+            font-family: 'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: var(--date-size, 12px);
+            font-weight: var(--date-weight, 800);
+            color: #111;
+            margin-bottom: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.2px;
+            display: var(--show-date, block);
+            line-height: 1.15;
+            word-break: break-word;
+        }
         .product-sku {
             font-family: 'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            font-size: var(--sku-size, 15px);
+            font-size: var(--sku-size, 22px);
             font-weight: var(--sku-weight, 900);
             line-height: 1.15;
             color: #000;
@@ -1092,7 +1211,7 @@ export function CekRak2() {
         }
         .serial-id {
             font-family: 'Consolas', 'Courier New', monospace;
-            font-size: var(--id-size, 11px);
+            font-size: var(--id-size, 14px);
             font-weight: 800;
             color: #222;
             margin-top: 4px;
@@ -1118,7 +1237,7 @@ export function CekRak2() {
 
         /* PRINT MEDIA QUERIES */
         @media print {
-            .no-print, .customizer-drawer-right, .toolbar-header {
+            .no-print, .customizer-drawer-right, .toolbar-header, .floating-toast {
                 display: none !important;
             }
             body {
@@ -1134,7 +1253,7 @@ export function CekRak2() {
             .thermal-sheet {
                 box-shadow: none !important;
                 border-radius: 0 !important;
-                width: var(--paper-width, 78mm) !important;
+                width: var(--paper-width, 100mm) !important;
                 page-break-after: always !important;
                 page-break-inside: avoid !important;
             }
@@ -1175,6 +1294,7 @@ export function CekRak2() {
             <span style="border-right: 1px solid #334155; height: 18px; margin: 0 4px;"></span>
             ` : ''}
             <span class="control-label">Preset:</span>
+            <button id="btn-100" class="btn-toggle ${effective.paperWidth === 100 ? 'active' : ''}" onclick="switchPresetPaper(100)">100 mm (Default)</button>
             <button id="btn-140" class="btn-toggle ${effective.sizePreset === '140' ? 'active' : ''}" onclick="switchSize('140')">140 mm</button>
             <button id="btn-150" class="btn-toggle ${effective.sizePreset === '150' ? 'active' : ''}" onclick="switchSize('150')">150 mm</button>
             <button id="btn-80" class="btn-toggle ${effective.paperWidth === 80 ? 'active' : ''}" onclick="switchPresetPaper(80)">80mm POS</button>
@@ -1188,6 +1308,10 @@ export function CekRak2() {
             <button class="btn-action-save" onclick="saveSettingsToSupabase(true)">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
                 <span>Simpan Style</span>
+            </button>
+            <button class="btn-action-copy" onclick="copyAllDataTSV()" title="Salin seluruh data QR ke Clipboard (Format 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>Salin 3 Kolom</span>
             </button>
             <button class="btn-action-print" onclick="window.print()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
@@ -1231,9 +1355,20 @@ export function CekRak2() {
                 </div>
             </div>
 
-            <!-- SECTION: SKU & ID TEXT -->
+            <!-- SECTION: SKU, ID & TANGGAL TEXT -->
             <div class="drawer-section">
-                <div class="drawer-section-title">🔤 Teks SKU & ID Bersamaan</div>
+                <div class="drawer-section-title">🔤 Teks Tanggal, SKU & ID</div>
+                <div class="form-group">
+                    <label>Tampilkan Tanggal Scan:</label>
+                    <select id="input-show-date" class="custom-select" onchange="onCustomChange()">
+                        <option value="block" ${effective.showDate === 'block' ? 'selected' : ''}>Tampilkan (Aktif)</option>
+                        <option value="none" ${effective.showDate === 'none' ? 'selected' : ''}>Sembunyikan</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Ukuran Font Tanggal: <span id="val-date-size" class="val-badge">${effective.dateSize} px</span></label>
+                    <input id="input-date-size" type="range" class="custom-range" min="8" max="22" step="1" value="${effective.dateSize}" oninput="onCustomChange()" />
+                </div>
                 <div class="form-group">
                     <label>Geser Teks (Kiri ◀ ▶ Kanan): <span id="val-text-offset-x" class="val-badge">${effective.textOffsetX} px</span></label>
                     <input id="input-text-offset-x" type="range" class="custom-range" min="-45" max="45" step="1" value="${effective.textOffsetX}" oninput="onCustomChange()" />
@@ -1244,7 +1379,7 @@ export function CekRak2() {
                 </div>
                 <div class="form-group">
                     <label>Ukuran Font SKU: <span id="val-sku-size" class="val-badge">${effective.skuSize} px</span></label>
-                    <input id="input-sku-size" type="range" class="custom-range" min="9" max="28" step="1" value="${effective.skuSize}" oninput="onCustomChange()" />
+                    <input id="input-sku-size" type="range" class="custom-range" min="9" max="32" step="1" value="${effective.skuSize}" oninput="onCustomChange()" />
                 </div>
                 <div class="form-group">
                     <label>Ketebalan SKU:</label>
@@ -1256,7 +1391,7 @@ export function CekRak2() {
                 </div>
                 <div class="form-group">
                     <label>Ukuran Font ID: <span id="val-id-size" class="val-badge">${effective.idSize} px</span></label>
-                    <input id="input-id-size" type="range" class="custom-range" min="7" max="18" step="1" value="${effective.idSize}" oninput="onCustomChange()" />
+                    <input id="input-id-size" type="range" class="custom-range" min="7" max="22" step="1" value="${effective.idSize}" oninput="onCustomChange()" />
                 </div>
                 <div class="form-group">
                     <label>Perataan Teks:</label>
@@ -1354,6 +1489,46 @@ export function CekRak2() {
         const defaultSettings = ${JSON.stringify(effective)};
         let currentSettings = Object.assign({}, defaultSettings);
 
+        function formatToDDMMYYYY(dateInput) {
+            if (!dateInput) {
+                const d = new Date();
+                const dd = String(d.getDate()).padStart(2, '0');
+                const mm = String(d.getMonth() + 1).padStart(2, '0');
+                const yyyy = d.getFullYear();
+                return dd + '-' + mm + '-' + yyyy;
+            }
+            const clean = String(dateInput).trim();
+            if (!clean) {
+                const d = new Date();
+                const dd = String(d.getDate()).padStart(2, '0');
+                const mm = String(d.getMonth() + 1).padStart(2, '0');
+                const yyyy = d.getFullYear();
+                return dd + '-' + mm + '-' + yyyy;
+            }
+            const ymdMatch = clean.match(/^(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})/);
+            if (ymdMatch) {
+                const year = ymdMatch[1];
+                const month = ymdMatch[2].padStart(2, '0');
+                const day = ymdMatch[3].padStart(2, '0');
+                return day + '-' + month + '-' + year;
+            }
+            const dmyMatch = clean.match(/^(\\d{1,2})[-/.](\\d{1,2})[-/.](\\d{4})/);
+            if (dmyMatch) {
+                const day = dmyMatch[1].padStart(2, '0');
+                const month = dmyMatch[2].padStart(2, '0');
+                const year = dmyMatch[3];
+                return day + '-' + month + '-' + year;
+            }
+            const parsed = new Date(clean);
+            if (!isNaN(parsed.getTime())) {
+                const dd = String(parsed.getDate()).padStart(2, '0');
+                const mm = String(parsed.getMonth() + 1).padStart(2, '0');
+                const yyyy = parsed.getFullYear();
+                return dd + '-' + mm + '-' + yyyy;
+            }
+            return clean;
+        }
+
         function toggleCustomizer() {
             const drawer = document.getElementById('customizer-drawer-right');
             const btn = document.getElementById('btn-toggle-customizer');
@@ -1383,6 +1558,9 @@ export function CekRak2() {
                     '--sku-size: ' + s.skuSize + 'px;' +
                     '--sku-weight: ' + s.skuWeight + ';' +
                     '--id-size: ' + s.idSize + 'px;' +
+                    '--date-size: ' + (s.dateSize || 12) + 'px;' +
+                    '--date-weight: ' + (s.dateWeight || '800') + ';' +
+                    '--show-date: ' + (s.showDate || 'block') + ';' +
                     '--slot-size: ' + s.slotSize + 'px;' +
                     '--slot-pos-left: ' + (isLeftSlot ? '8px' : 'auto') + ';' +
                     '--slot-pos-right: ' + (isLeftSlot ? 'auto' : '8px') + ';' +
@@ -1437,6 +1615,10 @@ export function CekRak2() {
             setVal('input-id-size', s.idSize);
             setText('val-id-size', s.idSize + ' px');
 
+            setVal('input-date-size', s.dateSize || 12);
+            setText('val-date-size', (s.dateSize || 12) + ' px');
+            setVal('input-show-date', s.showDate || 'block');
+
             setVal('input-show-slot', s.showSlot);
             setVal('input-slot-position', s.slotPosition || 'bottom-right');
 
@@ -1481,15 +1663,17 @@ export function CekRak2() {
             currentSettings.textOffsetX = Number(getVal('input-text-offset-x') || 0);
             currentSettings.textOffsetY = Number(getVal('input-text-offset-y') || 0);
             currentSettings.textAlign = getVal('input-text-align') || 'left';
-            currentSettings.skuSize = Number(getVal('input-sku-size') || 15);
+            currentSettings.skuSize = Number(getVal('input-sku-size') || 22);
             currentSettings.skuWeight = getVal('input-sku-weight') || '900';
-            currentSettings.idSize = Number(getVal('input-id-size') || 11);
+            currentSettings.idSize = Number(getVal('input-id-size') || 14);
+            currentSettings.dateSize = Number(getVal('input-date-size') || 12);
+            currentSettings.showDate = getVal('input-show-date') || 'block';
             currentSettings.showSlot = getVal('input-show-slot') || 'block';
             currentSettings.slotPosition = getVal('input-slot-position') || 'bottom-right';
             currentSettings.slotSize = Number(getVal('input-slot-size') || 9);
             currentSettings.slotOffsetX = Number(getVal('input-slot-offset-x') || 0);
             currentSettings.rowHeight = Number(getVal('input-row-height') || 46);
-            currentSettings.paperWidth = Number(getVal('input-paper-width') || 78);
+            currentSettings.paperWidth = Number(getVal('input-paper-width') || 100);
             currentSettings.borderStyle = getVal('input-border-style') || 'dashed';
             currentSettings.borderWidth = getVal('input-border-width') || '2px';
 
@@ -1538,18 +1722,23 @@ export function CekRak2() {
             const wrapper = document.getElementById('pages-container');
             if (!wrapper) return;
 
+            const formattedDate = formatToDDMMYYYY(singleData.tgl_scan || singleData.waktu);
             const sns = [singleData.sn1, singleData.sn2, singleData.sn3];
+            const dateDisplay = formattedDate ? '<div class="scan-date">' + formattedDate + '</div>' : '';
             let html = '<div class="thermal-sheet">';
             for (let i = 0; i < num; i++) {
-                const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(singleData.sku);
+                const sn = sns[i] || singleData.sn1;
+                const qrPayload = formattedDate + '\t' + singleData.sku + '\t' + sn;
+                const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
                 const slotText = 'No.' + (i + 1);
-                html += '<div class="label-cell">' +
+                html += '<div class="label-cell" data-qr="' + encodeURIComponent(qrPayload) + '" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID">' +
                     '<div class="qr-wrapper">' +
                         '<img src="' + qrUrl + '" alt="QR" />' +
                     '</div>' +
                     '<div class="details-wrapper">' +
+                        dateDisplay +
                         '<div class="product-sku">' + singleData.sku + '</div>' +
-                        '<div class="serial-id">ID: ' + sns[i] + '</div>' +
+                        '<div class="serial-id">ID: ' + sn + '</div>' +
                     '</div>' +
                     '<div class="slot-indicator">' + slotText + '</div>' +
                 '</div>';
@@ -1561,6 +1750,67 @@ export function CekRak2() {
             if (badge) {
                 badge.innerText = '1 Halaman (' + num + ' Label)';
             }
+        }
+
+        function copyLabelData(el) {
+            const raw = el ? el.getAttribute('data-qr') : '';
+            if (!raw) return;
+            const text = decodeURIComponent(raw);
+            copyTextToClipboard(text, '📋 Data QR Tersalin (3 Kolom Excel):\n' + text.replace(/\t/g, '   |   '));
+        }
+
+        function copyAllDataTSV() {
+            const cells = document.querySelectorAll('.label-cell');
+            if (!cells || cells.length === 0) return;
+            const rows = [];
+            cells.forEach(function(c) {
+                const raw = c.getAttribute('data-qr');
+                if (raw) rows.push(decodeURIComponent(raw));
+            });
+            if (rows.length === 0) return;
+            const allTsv = rows.join('\n');
+            copyTextToClipboard(allTsv, '📋 ' + rows.length + ' Baris Data QR Tersalin ke Clipboard (3 Kolom Excel)');
+        }
+
+        function copyTextToClipboard(text, successMsg) {
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(function() {
+                    showToastBanner(successMsg);
+                }).catch(function() {
+                    fallbackCopy(text, successMsg);
+                });
+            } else {
+                fallbackCopy(text, successMsg);
+            }
+        }
+
+        function fallbackCopy(text, successMsg) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+                document.execCommand('copy');
+                showToastBanner(successMsg);
+            } catch (e) {
+                alert('Data:\n' + text);
+            }
+            document.body.removeChild(ta);
+        }
+
+        function showToastBanner(msg) {
+            let t = document.getElementById('floating-copy-toast');
+            if (!t) {
+                t = document.createElement('div');
+                t.id = 'floating-copy-toast';
+                t.className = 'floating-toast no-print';
+                document.body.appendChild(t);
+            }
+            t.innerText = msg;
+            t.classList.add('show');
+            setTimeout(function() { t.classList.remove('show'); }, 3200);
         }
 
         async function saveSettingsToSupabase(showToast) {
@@ -1607,19 +1857,22 @@ export function CekRak2() {
         function resetToFactoryDefaults() {
             if (!confirm('Kembalikan seluruh ukuran & style cetak ke default pabrik?')) return;
             currentSettings = {
-                paperWidth: 78,
+                paperWidth: 100,
                 pageHeight: 140,
                 rowHeight: 46,
                 layoutDirection: "row",
                 qrSize: 32,
                 qrOffsetX: 0,
                 qrOffsetY: 0,
-                textOffsetX: 0,
+                textOffsetX: 5,
                 textOffsetY: 0,
                 textAlign: "left",
-                skuSize: 15,
+                skuSize: 22,
                 skuWeight: "900",
-                idSize: 11,
+                idSize: 14,
+                dateSize: 12,
+                dateWeight: "800",
+                showDate: "block",
                 slotPosition: "bottom-right",
                 slotSize: 9,
                 slotOffsetX: 0,
@@ -1639,11 +1892,6 @@ export function CekRak2() {
         // Apply styles and form values immediately
         updateFormInputs(currentSettings);
         applyStylesToDom(currentSettings);
-
-        // Auto print trigger
-        setTimeout(function() {
-            window.print();
-        }, 600);
     </script>
 </body>
 </html>`;
@@ -1657,6 +1905,8 @@ export function CekRak2() {
     const handlePrintThermalLabel = (item: any) => {
         const sku = item.sku || item.nama_barang || item.nama_produk || '-';
         const rak = item.sub_rak || item.rak || '-';
+        const tgl_scan = item.tgl_scan || item.tgl || '';
+        const waktu = item.waktu || '';
         const sn1 = generateSnCode(item, 1);
         const sn2 = generateSnCode(item, 2);
         const sn3 = generateSnCode(item, 3);
@@ -1664,7 +1914,7 @@ export function CekRak2() {
         renderThermalPrintWindow({
             title: `Print Label QR Thermal - ${sku}`,
             mode: 'single',
-            singleItem: { sku, sn1, sn2, sn3, rak }
+            singleItem: { sku, sn1, sn2, sn3, rak, tgl_scan, waktu }
         });
     };
 
@@ -1676,13 +1926,15 @@ export function CekRak2() {
             return;
         }
 
-        const batchItems: Array<{ sku: string; sn: string; rak: string; slotNum: number }> = [];
+        const batchItems: Array<{ sku: string; sn: string; rak: string; slotNum: number; tgl_scan: string; waktu: string }> = [];
         targetList.forEach((log, idx) => {
             const sku = log.sku || log.nama_barang || log.nama_produk || '-';
             const rak = log.sub_rak || log.rak || '-';
+            const tgl_scan = log.tgl_scan || log.tgl || '';
+            const waktu = log.waktu || '';
             const sn = generateSnCode(log, idx + 1);
             const slotNum = (idx % 3) + 1;
-            batchItems.push({ sku, sn, rak, slotNum });
+            batchItems.push({ sku, sn, rak, slotNum, tgl_scan, waktu });
         });
 
         renderThermalPrintWindow({
