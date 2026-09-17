@@ -706,8 +706,10 @@ export function InputBarangKeluar() {
     useEffect(() => {
         let keySequence = '';
         let devModeSequence = '';
+        let showMenuSequence = '';
         const targetSequence = 'SHOW';
         const devModeTarget = 'DEVMODE';
+        const showMenuTarget = 'SHOWMENU';
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
                 // Abaikan input jika user sedang mengetik di input field, textarea, dll.
@@ -715,16 +717,35 @@ export function InputBarangKeluar() {
                 if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
                     keySequence = ''; // Reset jika user mengetik di tempat lain
                     devModeSequence = '';
+                    showMenuSequence = '';
                     return;
                 }
                 const char = event.key.toUpperCase();
                 keySequence += char;
                 devModeSequence += char;
+                showMenuSequence += char;
                 if (keySequence.length > targetSequence.length) {
                     keySequence = keySequence.slice(-targetSequence.length);
                 }
                 if (devModeSequence.length > devModeTarget.length) {
                     devModeSequence = devModeSequence.slice(-devModeTarget.length);
+                }
+                if (showMenuSequence.length > showMenuTarget.length) {
+                    showMenuSequence = showMenuSequence.slice(-showMenuTarget.length);
+                }
+
+                if (showMenuSequence === showMenuTarget) {
+                    setScanModalSku('');
+                    setScanModalRak('');
+                    setScanModalQty('');
+                    setScanModalUniqueCode('');
+                    setScanModalTglScan('');
+                    setScanModalStatus('idle');
+                    setScanModalLoading(false);
+                    setScanModalBridgeInfo(null);
+                    setShowScanModal(true);
+                    showToast('Modal Add Cut Stock dibuka (Shortcut SHOWMENU)', 'info');
+                    showMenuSequence = '';
                 }
 
                 if (keySequence === targetSequence) {
@@ -4293,17 +4314,34 @@ export function InputBarangKeluar() {
                                         <span>Scan Barcode SKU</span>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        <input
-                                            type="text"
-                                            value={scanModalSku}
-                                            onChange={(e) => setScanModalSku(e.target.value)}
-                                            readOnly
-                                            className="flex-1 h-12 px-4 border border-gray-200 rounded-xl text-sm font-bold text-gray-500 bg-gray-100 cursor-not-allowed outline-none transition-all"
-                                            placeholder="SKU akan terisi otomatis..."
-                                        />
+                                        <div className="relative flex-1">
+                                            <input
+                                                type="text"
+                                                value={scanModalSku}
+                                                onChange={(e) => setScanModalSku(e.target.value.toUpperCase())}
+                                                className={`w-full h-12 px-4 ${scanModalSku ? 'pr-9' : ''} border rounded-xl text-sm font-bold outline-none transition-all ${
+                                                    scanModalSku 
+                                                        ? 'border-blue-300 bg-blue-50/40 text-gray-900' 
+                                                        : 'border-gray-200 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500'
+                                                }`}
+                                                placeholder="Ketik SKU atau klik scan..."
+                                            />
+                                            {scanModalSku && (
+                                                <button
+                                                    onClick={() => { setScanModalSku(''); setScanModalTglScan(''); setScanModalUniqueCode(''); }}
+                                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                                >
+                                                    <X className="h-4 w-4" />
+                                                </button>
+                                            )}
+                                        </div>
                                         <button
-                                            onClick={() => setShowScanner(true)}
-                                            className="w-12 h-12 rounded-xl bg-blue-50 border border-blue-200 text-blue-600 flex items-center justify-center active:scale-95 transition-all hover:bg-blue-100"
+                                            onClick={() => {
+                                                setScannerMode('sku');
+                                                setShowScanner(true);
+                                            }}
+                                            className="w-12 h-12 rounded-xl bg-blue-50 border border-blue-200 text-blue-600 flex items-center justify-center active:scale-95 transition-all hover:bg-blue-100 shrink-0"
+                                            title="Scan Barcode SKU"
                                         >
                                             <Camera className="h-5 w-5" />
                                         </button>
