@@ -1501,11 +1501,11 @@ export function CekRak2() {
                 var yyyy = d.getFullYear();
                 return dd + '-' + mm + '-' + yyyy;
             }
-            var ymdMatch = clean.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+            var ymdMatch = clean.match(/^([0-9]{4})[-/.]([0-9]{1,2})[-/.]([0-9]{1,2})/);
             if (ymdMatch) {
                 return ymdMatch[3].padStart(2, '0') + '-' + ymdMatch[2].padStart(2, '0') + '-' + ymdMatch[1];
             }
-            var dmyMatch = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+            var dmyMatch = clean.match(/^([0-9]{1,2})[-/.]([0-9]{1,2})[-/.]([0-9]{4})/);
             if (dmyMatch) {
                 return dmyMatch[1].padStart(2, '0') + '-' + dmyMatch[2].padStart(2, '0') + '-' + dmyMatch[3];
             }
@@ -1752,10 +1752,11 @@ export function CekRak2() {
                 var formattedDate = window.formatToDDMMYYYY(window.singleData.tgl_scan || window.singleData.waktu);
                 var sns = [window.singleData.sn1, window.singleData.sn2, window.singleData.sn3];
                 var dateDisplay = formattedDate ? '<div class="scan-date">' + formattedDate + '</div>' : '';
+                var tabChar = String.fromCharCode(9);
                 var html = '<div class="thermal-sheet">';
                 for (var i = 0; i < num; i++) {
                     var sn = sns[i] || window.singleData.sn1;
-                    var qrPayload = formattedDate + '\t' + window.singleData.sku + '\t' + sn;
+                    var qrPayload = formattedDate + tabChar + window.singleData.sku + tabChar + sn;
                     var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
                     var slotText = 'No.' + (i + 1);
                     html += '<div class="label-cell" data-qr="' + encodeURIComponent(qrPayload) + '" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID">' +
@@ -1787,7 +1788,10 @@ export function CekRak2() {
                 var raw = el ? el.getAttribute('data-qr') : '';
                 if (!raw) return;
                 var text = decodeURIComponent(raw);
-                window.copyTextToClipboard(text, '📋 Data QR Tersalin (3 Kolom Excel):\n' + text.replace(/\t/g, '   |   '));
+                var tabChar = String.fromCharCode(9);
+                var nlChar = String.fromCharCode(10);
+                var displayFormatted = text.split(tabChar).join('   |   ');
+                window.copyTextToClipboard(text, '📋 Data QR Tersalin (3 Kolom Excel):' + nlChar + displayFormatted);
             } catch (e) {
                 console.error('copyLabelData error:', e);
             }
@@ -1803,7 +1807,8 @@ export function CekRak2() {
                     if (raw) rows.push(decodeURIComponent(raw));
                 });
                 if (rows.length === 0) return;
-                var allTsv = rows.join('\n');
+                var nlChar = String.fromCharCode(10);
+                var allTsv = rows.join(nlChar);
                 window.copyTextToClipboard(allTsv, '📋 ' + rows.length + ' Baris Data QR Tersalin ke Clipboard (3 Kolom Excel)');
             } catch (e) {
                 console.error('copyAllDataTSV error:', e);
@@ -1833,7 +1838,8 @@ export function CekRak2() {
                 document.execCommand('copy');
                 window.showToastBanner(successMsg);
             } catch (e) {
-                alert('Data:\n' + text);
+                var nlChar = String.fromCharCode(10);
+                alert('Data:' + nlChar + text);
             }
             document.body.removeChild(ta);
         };
