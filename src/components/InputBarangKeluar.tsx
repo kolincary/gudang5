@@ -25,6 +25,7 @@ import {
     getTempRackForPrefix,
     ActiveOpnameZonesState,
     resolveRakForBarcodeScan,
+    getTempRackTransferDate,
     getOpnameOriginRack,
     countRemainingTempItems
 } from '../services/opnameZoneBridgeService';
@@ -501,6 +502,9 @@ export function InputBarangKeluar() {
                 const opnameRes = await resolveRakForBarcodeScan(targetSku, finalTglScan, extractedUniqueCode);
                 if (opnameRes) {
                     setScanModalRak(opnameRes.resolvedRak);
+                    if (opnameRes.tglScanUsed) {
+                        setScanModalTglScan(opnameRes.tglScanUsed);
+                    }
                     setScanModalStatus('found');
                     setScanModalBridgeInfo(opnameRes.explanation);
                     setScanModalLoading(false);
@@ -4408,11 +4412,17 @@ export function InputBarangKeluar() {
                                         <div className="relative flex-1">
                                             <CustomDropdown
                                                 value={scanModalRak}
-                                                onChange={(e) => {
+                                                onChange={async (e) => {
                                                     const val = (e.target.value || '').toUpperCase();
                                                     setScanModalRak(val);
                                                     setScanModalStatus('idle');
                                                     setScanModalBridgeInfo(null);
+                                                    if (val.startsWith('TEMP') && scanModalSku) {
+                                                        const transferDate = await getTempRackTransferDate(scanModalSku, val);
+                                                        if (transferDate) {
+                                                            setScanModalTglScan(transferDate);
+                                                        }
+                                                    }
                                                 }}
                                                 options={filteredRackOptions}
                                                 placeholder="Ketik lokasi rak..."

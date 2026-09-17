@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
-import { Search, Package, CheckCircle, CheckCircle2, CheckCheck, XCircle, SearchCode, ArrowDownToLine, Archive, AlertTriangle, RefreshCw, QrCode, Camera, Menu, X, ChevronRight, ArrowRightLeft, Loader, MoveRight, Lock, MapPin } from 'lucide-react';
+import { Search, Package, CheckCircle, CheckCircle2, CheckCheck, XCircle, SearchCode, ArrowDownToLine, Archive, AlertTriangle, RefreshCw, QrCode, Camera, Menu, X, ChevronRight, ArrowRightLeft, Loader, MoveRight, Lock, MapPin, Sparkles } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
@@ -1700,15 +1700,23 @@ export function CekRak() {
                                         </form>
 
                                         {isDeveloper && (
-                                            <div className="pt-3 border-t border-slate-100 flex justify-center">
+                                            <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row gap-2">
+                                                <a
+                                                    href="/stock-opname"
+                                                    className="flex-1 px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md shadow-amber-500/20 flex items-center justify-center gap-2 group cursor-pointer text-center"
+                                                    title="Buka Menu Stock Opname untuk mengelola Sesi Opname Zona (Auto-Bridge Real-Time)"
+                                                >
+                                                    <Sparkles className="w-4 h-4 text-amber-200" />
+                                                    <span>Sesi Stock Opname Zona</span>
+                                                </a>
                                                 <button
                                                     type="button"
                                                     onClick={() => setShowBulkUnverifyModal(true)}
-                                                    className="w-full px-4 py-2.5 bg-rose-50/80 hover:bg-rose-100 text-rose-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-all border border-rose-200/80 shadow-sm flex items-center justify-center gap-2 group"
+                                                    className="flex-1 px-4 py-2.5 bg-rose-50/80 hover:bg-rose-100 text-rose-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-all border border-rose-200/80 shadow-sm flex items-center justify-center gap-2 group cursor-pointer"
                                                     title="DevMode: Batalkan konfirmasi secara serentak untuk banyak rak terpilih"
                                                 >
                                                     <XCircle className="w-4 h-4 text-rose-600 group-hover:rotate-90 transition-transform duration-200" />
-                                                    <span>Batal Konfirmasi Massal (DevMode)</span>
+                                                    <span>Batal Konfirmasi Massal</span>
                                                 </button>
                                             </div>
                                         )}

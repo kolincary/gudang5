@@ -479,36 +479,35 @@ export const resolveRakForBarcodeScan = async (
             continue; // Try next active zone
         }
 
-        // Step 2: SKU found in TEMP rack — look up MOVE log to find origin rack
-        //         Match by SKU + tgl_scan from barcode for precision
+        // Step 2: SKU found in TEMP rack — look up MOVE log to find origin rack and opname transfer date
         let originRak: string | null = null;
+        let transferTglScan: string | null = null;
 
-        if (cleanTglScan) {
-            // Try to find the MOVE log with matching tgl_scan (barcode date)
-            // The tgl_scan in the MOVE log should match the original item's tgl_scan
-            // We look at rak_asal to get the origin rack
-            
-            // First: try looking up using the barcode tgl_scan against the original IN records 
-            // that were moved (the MOVE log stores rak_asal)
-            const { data: moveLogs } = await supabase
-                .from('database_log')
-                .select('rak_asal, rak_tujuan, tgl_scan, jumlah')
-                .ilike('sku', cleanSku)
-                .eq('type', 'MOVE')
-                .eq('gudang', 'STOCK_OPNAME_BATCH')
-                .ilike('rak_tujuan', tempRack)
-                .order('created_at', { ascending: false })
-                .limit(20);
+        // Query MOVE logs for this SKU into tempRack
+        const { data: moveLogs } = await supabase
+            .from('database_log')
+            .select('rak_asal, rak_tujuan, tgl_scan, tgl, created_at')
+            .ilike('sku', cleanSku)
+            .eq('type', 'MOVE')
+            .ilike('rak_tujuan', tempRack)
+            .order('created_at', { ascending: false })
+            .limit(10);
 
-            if (moveLogs && moveLogs.length > 0) {
-                // Found MOVE logs — the origin rack is rak_asal
-                // All items from the same SKU in the same zone go to the same TEMP
-                // so we just take the first (most recent) rak_asal
-                originRak = moveLogs[0].rak_asal || null;
+        if (moveLogs && moveLogs.length > 0) {
+            originRak = moveLogs[0].rak_asal || null;
+            transferTglScan = moveLogs[0].tgl_scan || moveLogs[0].tgl || null;
+        }
+
+        // Fallback to session started_at date or today
+        if (!transferTglScan) {
+            if (session.started_at) {
+                transferTglScan = session.started_at.split('T')[0];
+            } else {
+                transferTglScan = new Date().toISOString().split('T')[0];
             }
         }
 
-        // If no MOVE log found, try to get origin from any IN record in zone racks
+        // If no originRak found from MOVE, try to get origin from previous IN logs in zone racks
         if (!originRak) {
             const { data: inLogs } = await supabase
                 .from('database_log')
@@ -525,7 +524,8 @@ export const resolveRakForBarcodeScan = async (
             }
         }
 
-        // Return: potong dari TEMP (karena data nyata di sana), tapi info asal rak ditampilkan
+        // Return: potong dari TEMP dengan tgl_scan real-time transfer opname
+        const effectiveTglScan = transferTglScan || cleanTglScan;
         return {
             resolvedRak: tempRack,
             originRak,
@@ -534,12 +534,36 @@ export const resolveRakForBarcodeScan = async (
             explanation: originRak
                 ? `⚡ Stock Opname Zona ${zonePrefix} aktif — Data di ${tempRack} (asal rak ${originRak})`
                 : `⚡ Stock Opname Zona ${zonePrefix} aktif — Data di ${tempRack}`,
-            tglScanUsed: cleanTglScan
+            tglScanUsed: effectiveTglScan
         };
     }
 
     // No match found in any active zone
     return null;
+};
+
+/**
+ * Get the transfer date (tgl_scan) of an SKU in a TEMP rack during active opname
+ */
+export const getTempRackTransferDate = async (sku: string, tempRack: string): Promise<string> => {
+    const today = new Date().toISOString().split('T')[0];
+    try {
+        const { data, error } = await supabase
+            .from('database_log')
+            .select('tgl_scan, tgl')
+            .ilike('sku', sku.trim())
+            .eq('type', 'MOVE')
+            .ilike('rak_tujuan', tempRack.trim())
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+        if (!error && data && data.length > 0) {
+            return data[0].tgl_scan || data[0].tgl || today;
+        }
+    } catch (e) {
+        console.warn('Error fetching temp rack transfer date:', e);
+    }
+    return today;
 };
 
 /**
