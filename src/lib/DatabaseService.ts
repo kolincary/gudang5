@@ -1462,13 +1462,6 @@ export const DatabaseService = {
               log_update_user: '[RESTORED] Dibatalkan dari Wadah Karantina'
             })
             .eq('id', tLogId);
-
-          // Clean up any transfer pairs associated with this revision
-          await supabase
-            .from('database_log')
-            .delete()
-            .eq('status', 'TRANSFER_REVISI')
-            .eq('matched_log_id', tLogId);
         } catch (dbLogErr) {
           console.warn('Auto-restore database_log warning:', dbLogErr);
         }

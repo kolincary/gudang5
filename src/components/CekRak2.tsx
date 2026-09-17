@@ -2979,7 +2979,6 @@ export function CekRak2() {
                     tgl_normalized: tglNormalized,
                     user_name: `System (Revisi: ${actor})`,
                     status: 'TRANSFER_REVISI',
-                    matched_log_id: String(selectedOutLog.id),
                     created_at: new Date(now.getTime() + 500).toISOString()
                 },
                 {
@@ -2995,7 +2994,6 @@ export function CekRak2() {
                     tgl_normalized: tglNormalized,
                     user_name: `System (Revisi: ${actor})`,
                     status: 'TRANSFER_REVISI',
-                    matched_log_id: String(selectedOutLog.id),
                     created_at: new Date(now.getTime() + 1000).toISOString()
                 }
             ];
