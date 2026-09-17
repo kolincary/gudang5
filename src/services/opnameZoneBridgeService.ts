@@ -197,6 +197,48 @@ export const toggleOpnameZoneSession = async (
 };
 
 /**
+ * Helper to check if a SKU in a specific rack is verified in Stock Opname
+ */
+export const checkIfItemVerified = async (rack: string, sku: string): Promise<boolean> => {
+    if (!rack || !sku) return false;
+    const cleanRak = rack.trim().toUpperCase();
+    if (cleanRak.startsWith('TEMP')) return false;
+
+    try {
+        // 1. Check database_log first (realtime multi-device audit log)
+        const { data: vLogs, error: logErr } = await supabase
+            .from('database_log')
+            .select('gudang, created_at, id')
+            .or(`rak.eq.${cleanRak},sub_rak.eq.${cleanRak}`)
+            .ilike('sku', sku.trim())
+            .in('gudang', ['VERIFY', 'UNVERIFY'])
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: false })
+            .limit(1);
+
+        if (!logErr && vLogs && vLogs.length > 0) {
+            return vLogs[0].gudang === 'VERIFY';
+        }
+
+        // 2. Fallback check stock_items is_verified column
+        const { data: sItem, error: sErr } = await supabase
+            .from('stock_items')
+            .select('is_verified')
+            .eq('rak', cleanRak)
+            .ilike('nama_produk', sku.trim())
+            .limit(1)
+            .maybeSingle();
+
+        if (!sErr && sItem && sItem.is_verified === true) {
+            return true;
+        }
+    } catch (err) {
+        console.warn('Error checking item verification status:', err);
+    }
+    return false;
+};
+
+/**
  * Smart Routing Helper for Outbound Deductions (InputBarangKeluar)
  * Resolves whether a deduction for a requested rack should be routed to a TEMP rack during active Opname.
  */
@@ -217,7 +259,7 @@ export const resolveOutDeductionRack = (
     const cleanRequested = (requestedRack || '').trim().toUpperCase();
 
     // Case 1: Origin rack already has verified stock / finished Stock Opname
-    if (isOriginVerified && originStockAvailable > 0) {
+    if (isOriginVerified) {
         return {
             routedRack: cleanRequested,
             isBridge: false,
@@ -240,21 +282,23 @@ export const resolveOutDeductionRack = (
     const prefix = extractRackPrefix(cleanRequested);
     const tempRack = getTempRackForPrefix(prefix);
 
-    if (tempRack && originStockAvailable <= 0) {
+    if (tempRack && isOpnameZoneActive(cleanRequested)) {
         return {
             routedRack: tempRack,
             isBridge: true,
             originRack: cleanRequested,
             tempRack: tempRack,
             zonePrefix: prefix,
-            explanation: `Auto-Bridge: Stok dialihkan ke ${tempRack} karena Zona ${prefix} sedang dalam sesi Stock Opname`
+            explanation: `Auto-Bridge: Dialihkan ke ${tempRack} (Zona ${prefix} sedang aktif Stock Opname)`
         };
     }
 
-    // Default: Normal rack
+    // Default: Normal rack (zone is inactive/finished)
     return {
         routedRack: cleanRequested,
         isBridge: false,
-        originRack: cleanRequested
+        originRack: cleanRequested,
+        explanation: 'Validasi Normal'
     };
 };
+
