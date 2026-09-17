@@ -394,12 +394,13 @@ export function RiwayatBarang() {
 
   const cleanEmail = (userEmail || '').trim().toLowerCase();
   const currentRole = (userRole || localStorage.getItem('cached_user_role') || '').toLowerCase();
-  const isDev = currentRole === 'developer' || localStorage.getItem('devmode') === 'true' || cleanEmail === 'devmode' || cleanEmail === 'rianambong@gmail.com' || cleanEmail === 'kepin@gmail.com' || cleanEmail === 'admin@gmail.com';
-  const isAdmin = isDev || currentRole === 'admin' || currentRole === 'staf_admin' || currentRole.includes('admin');
+  const isDev = currentRole === 'developer' || localStorage.getItem('devmode') === 'true' || cleanEmail === 'devmode' || cleanEmail === 'rianambong@gmail.com' || cleanEmail === 'kepin@gmail.com';
   const isGudang = currentRole === 'gudang' || currentRole === 'staf_gudang' || currentRole.includes('gudang');
   const isWhitelistedEmail = cleanEmail === 'kalindosukses4@gmail.com' || cleanEmail === '952250hendryk22@gmail.com';
 
-  const canViewMoveAndTransfer = isDev || isAdmin || isGudang || isWhitelistedEmail;
+  // Hanya role developer, gudang, dan email kalindosukses4@gmail.com / 952250hendryk22@gmail.com yang bisa lihat MOVE & TRANSFER.
+  // Role Admin lain (seperti jgilbeth2@gmail.com) TIDAK BISA melihat.
+  const canViewMoveAndTransfer = isDev || isGudang || isWhitelistedEmail;
 
   useEffect(() => {
     const fetchAppSettings = async () => {
