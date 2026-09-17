@@ -1237,10 +1237,11 @@ export const DatabaseService = {
           };
 
           const key = `qi_${row.id}`;
-          // Avoid duplicate if already mapped from karantina_revisi_out with same SKU + timestamp
+          // Avoid duplicate if already mapped from karantina_revisi_out with same ID, original_log_id, or SKU + timestamp
           const isDuplicate = Array.from(itemMap.values()).some((existing: any) => 
-            existing.sku === itemFormatted.sku && 
-            Math.abs(new Date(existing.created_at || 0).getTime() - new Date(itemFormatted.created_at || 0).getTime()) < 5000
+            String(existing.id) === String(itemFormatted.id) ||
+            (existing.original_log_id && itemFormatted.original_log_id && String(existing.original_log_id) === String(itemFormatted.original_log_id)) ||
+            (existing.sku === itemFormatted.sku && Math.abs(new Date(existing.created_at || 0).getTime() - new Date(itemFormatted.created_at || 0).getTime()) < 5000)
           );
 
           if (!isDuplicate) {
@@ -1263,6 +1264,7 @@ export const DatabaseService = {
               const key = `loc_${item.id}`;
               const isAlreadyPresent = Array.from(itemMap.values()).some((existing: any) => 
                 String(existing.id) === String(item.id) ||
+                (existing.original_log_id && item.original_log_id && String(existing.original_log_id) === String(item.original_log_id)) ||
                 (existing.sku === item.sku && Math.abs(new Date(existing.created_at || 0).getTime() - new Date(item.created_at || 0).getTime()) < 5000)
               );
               if (!isAlreadyPresent) {
@@ -1301,12 +1303,17 @@ export const DatabaseService = {
     return { data: sortedResult, error: null };
   },
 
-  async updateKarantina(id: string | number, updates: any, mode: DatabaseWriteMode = 'both') {
-    const idStr = String(id);
+  async updateKarantina(id: string | number, updates: any, mode: DatabaseWriteMode = 'both', originalLogId?: string | number) {
+    const idStr = String(id || '').trim();
+    const origIdStr = (originalLogId ? String(originalLogId) : '').trim();
     const isNumericId = typeof id === 'number' || (/^\d+$/.test(idStr) && !isNaN(Number(idStr)));
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idStr);
 
-    // 1. Update in LocalStorage strictly by item.id
+    const matchIds = new Set<string>();
+    if (idStr) matchIds.add(idStr);
+    if (origIdStr && origIdStr !== 'null' && origIdStr !== 'undefined') matchIds.add(origIdStr);
+
+    // 1. Update in LocalStorage
     if (typeof window !== 'undefined') {
       try {
         const rawLocal = localStorage.getItem('karantina_revisi_items');
@@ -1314,7 +1321,9 @@ export const DatabaseService = {
           const localList = JSON.parse(rawLocal);
           if (Array.isArray(localList)) {
             const updatedList = localList.map((item: any) => {
-              if (String(item.id) === idStr) {
+              const itemId = String(item.id || '').trim();
+              const itemOrigId = String(item.original_log_id || '').trim();
+              if (matchIds.has(itemId) || (itemOrigId && matchIds.has(itemOrigId))) {
                 return { ...item, ...updates };
               }
               return item;
@@ -1327,29 +1336,35 @@ export const DatabaseService = {
       }
     }
 
-    // 2. Update in 'karantina_revisi_out' strictly by item.id
+    // 2. Update in 'karantina_revisi_out'
     if (mode === 'supabase' || mode === 'both') {
       try {
         if (isNumericId) {
-          await supabase
-            .from('karantina_revisi_out')
-            .update(updates)
-            .eq('id', Number(id));
+          await supabase.from('karantina_revisi_out').update(updates).eq('id', Number(idStr));
+        }
+        if (origIdStr) {
+          await supabase.from('karantina_revisi_out').update(updates).eq('original_log_id', origIdStr);
+        }
+        if (!isNumericId && idStr) {
+          await supabase.from('karantina_revisi_out').update(updates).eq('original_log_id', idStr);
         }
       } catch (e) {
         // Ignore
       }
 
-      // 3. Update in 'quarantined_items' strictly by item.id
+      // 3. Update in 'quarantined_items'
       try {
         const qUpdates: any = {};
         if (updates.status) qUpdates.status = updates.status;
         if (Object.keys(qUpdates).length > 0) {
           if (isUuid) {
-            await supabase
-              .from('quarantined_items')
-              .update(qUpdates)
-              .eq('id', idStr);
+            await supabase.from('quarantined_items').update(qUpdates).eq('id', idStr);
+          }
+          if (origIdStr) {
+            await supabase.from('quarantined_items').update(qUpdates).eq('original_row_id', origIdStr);
+          }
+          if (idStr && idStr !== origIdStr) {
+            await supabase.from('quarantined_items').update(qUpdates).eq('original_row_id', idStr);
           }
         }
       } catch (e) {
@@ -1359,27 +1374,39 @@ export const DatabaseService = {
 
     // 4. Update in Firestore
     try {
-      const docRef = doc(db, 'karantina_revisi_out', idStr);
-      await setDoc(docRef, updates, { merge: true });
+      for (const mId of matchIds) {
+        const docRef = doc(db, 'karantina_revisi_out', mId);
+        await setDoc(docRef, updates, { merge: true }).catch(() => {});
+      }
     } catch (e) {
       // Ignore
     }
   },
 
   async deleteKarantina(id: string | number, mode: DatabaseWriteMode = 'both', originalLogId?: string | number) {
-    const idStr = String(id);
-    const origIdStr = originalLogId ? String(originalLogId) : null;
+    const idStr = String(id || '').trim();
+    const origIdStr = (originalLogId ? String(originalLogId) : '').trim();
     const isNumericId = typeof id === 'number' || (/^\d+$/.test(idStr) && !isNaN(Number(idStr)));
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idStr);
 
-    // 1. Delete from LocalStorage strictly by item.id
+    const matchIds = new Set<string>();
+    if (idStr) matchIds.add(idStr);
+    if (origIdStr && origIdStr !== 'null' && origIdStr !== 'undefined') matchIds.add(origIdStr);
+
+    // 1. Delete from LocalStorage strictly by any matching id or original_log_id
     if (typeof window !== 'undefined') {
       try {
         const rawLocal = localStorage.getItem('karantina_revisi_items');
         if (rawLocal) {
           const localList = JSON.parse(rawLocal);
           if (Array.isArray(localList)) {
-            const filtered = localList.filter((item: any) => String(item.id) !== idStr);
+            const filtered = localList.filter((item: any) => {
+              const itemId = String(item.id || '').trim();
+              const itemOrigId = String(item.original_log_id || '').trim();
+              if (matchIds.has(itemId)) return false;
+              if (itemOrigId && matchIds.has(itemOrigId)) return false;
+              return true;
+            });
             localStorage.setItem('karantina_revisi_items', JSON.stringify(filtered));
           }
         }
@@ -1388,33 +1415,43 @@ export const DatabaseService = {
       }
     }
 
-    // 2. Delete from 'karantina_revisi_out' strictly by item.id
+    // 2. Delete from 'karantina_revisi_out'
     if (mode === 'supabase' || mode === 'both') {
       try {
         if (isNumericId) {
-          await supabase
-            .from('karantina_revisi_out')
-            .delete()
-            .eq('id', Number(id));
+          await supabase.from('karantina_revisi_out').delete().eq('id', Number(idStr));
+        }
+        if (origIdStr) {
+          await supabase.from('karantina_revisi_out').delete().eq('original_log_id', origIdStr);
+        }
+        if (!isNumericId && idStr) {
+          await supabase.from('karantina_revisi_out').delete().eq('original_log_id', idStr);
         }
       } catch (e) {
-        // Ignore
+        console.warn('karantina_revisi_out delete notice:', e);
       }
 
-      // 3. Delete from 'quarantined_items' strictly by item.id
+      // 3. Delete from 'quarantined_items'
       try {
         if (isUuid) {
-          await supabase
-            .from('quarantined_items')
-            .delete()
-            .eq('id', idStr);
+          await supabase.from('quarantined_items').delete().eq('id', idStr);
+        }
+        if (origIdStr) {
+          await supabase.from('quarantined_items').delete().eq('original_row_id', origIdStr);
+        }
+        if (idStr && idStr !== origIdStr) {
+          await supabase.from('quarantined_items').delete().eq('original_row_id', idStr);
         }
       } catch (e) {
-        // Ignore
+        console.warn('quarantined_items delete notice:', e);
       }
 
       // 4. Auto-restore original log in database_log if originalLogId exists
-      if (origIdStr && origIdStr !== 'null' && origIdStr !== 'undefined' && origIdStr.trim() !== '') {
+      const targetLogIds = new Set<string>();
+      if (origIdStr && origIdStr !== 'null' && origIdStr !== 'undefined') targetLogIds.add(origIdStr);
+      if (isUuid) targetLogIds.add(idStr);
+
+      for (const tLogId of targetLogIds) {
         try {
           // Revert log from MOVE / REVISI_KARANTINA back to OUT / COMPLETED
           await supabase
@@ -1424,14 +1461,14 @@ export const DatabaseService = {
               status: 'COMPLETED',
               log_update_user: '[RESTORED] Dibatalkan dari Wadah Karantina'
             })
-            .eq('id', origIdStr);
+            .eq('id', tLogId);
 
           // Clean up any transfer pairs associated with this revision
           await supabase
             .from('database_log')
             .delete()
             .eq('status', 'TRANSFER_REVISI')
-            .eq('matched_log_id', origIdStr);
+            .eq('matched_log_id', tLogId);
         } catch (dbLogErr) {
           console.warn('Auto-restore database_log warning:', dbLogErr);
         }
@@ -1440,8 +1477,17 @@ export const DatabaseService = {
 
     // 5. Delete from Firestore
     try {
-      const docRef = doc(db, 'karantina_revisi_out', idStr);
-      await deleteDoc(docRef);
+      for (const mId of matchIds) {
+        const docRef = doc(db, 'karantina_revisi_out', mId);
+        await deleteDoc(docRef).catch(() => {});
+      }
+      if (origIdStr) {
+        const colRef = collection(db, 'karantina_revisi_out');
+        const qSnap = await getDocs(firestoreQuery(colRef, where('original_log_id', '==', origIdStr)));
+        for (const d of qSnap.docs) {
+          await deleteDoc(d.ref).catch(() => {});
+        }
+      }
     } catch (e) {
       // Ignore
     }
