@@ -27,7 +27,6 @@ import {
 
 export const navigationItems = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Konversi PCS', href: '/konversi-pcs', icon: Boxes },
   { name: 'Stok Lantai 3', href: '/stok-lantai-3', icon: Building },
   { name: 'Monitoring Harian', href: '/monitoring-harian', icon: Activity },
   { name: 'Input Barang Masuk', href: '/input-masuk', icon: Package },
@@ -69,6 +68,7 @@ export const monitoringItems = [
 ];
 
 export const additionalMenuItems = [
+  { name: 'Konversi PCS', href: '/konversi-pcs', icon: Boxes },
   { name: 'Cek Rak', href: '/cek-rak', icon: QrCode },
   { name: 'Stock Opname', href: '/stock-opname', icon: QrCode },
 ];
