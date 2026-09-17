@@ -202,20 +202,14 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
 
     const handleExecuteDelete = async () => {
         if (!deleteModal.item) return;
+        const targetId = deleteModal.item.id;
         setDeleteModal(prev => ({ ...prev, isDeleting: true }));
 
         try {
-            await DatabaseService.deleteKarantina(
-                deleteModal.item.id,
-                'both',
-                deleteModal.item.original_log_id || undefined
-            );
+            await DatabaseService.deleteKarantina(targetId);
 
             showToast('✅ Data berhasil dihapus dari wadah karantina!', 'success');
-            setItems(prev => prev.filter(i => 
-                i.id !== deleteModal.item?.id && 
-                (!deleteModal.item?.original_log_id || i.original_log_id !== deleteModal.item?.original_log_id)
-            ));
+            setItems(prev => prev.filter(i => String(i.id) !== String(targetId)));
 
             setDeleteModal({
                 isOpen: false,

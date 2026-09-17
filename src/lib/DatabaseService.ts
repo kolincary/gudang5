@@ -1187,7 +1187,7 @@ export const DatabaseService = {
           .order('created_at', { ascending: false });
         if (!error && Array.isArray(data)) {
           for (const item of data) {
-            const key = String(item.id || item.original_log_id || `${item.sku}_${item.created_at}`);
+            const key = `kro_${item.id}`;
             itemMap.set(key, item);
           }
         }
@@ -1236,8 +1236,14 @@ export const DatabaseService = {
             created_at: row.created_at || meta.created_at || new Date().toISOString()
           };
 
-          const key = String(itemFormatted.id || itemFormatted.original_log_id || `${itemFormatted.sku}_${itemFormatted.created_at}`);
-          if (!itemMap.has(key)) {
+          const key = `qi_${row.id}`;
+          // Avoid duplicate if already mapped from karantina_revisi_out with same SKU + timestamp
+          const isDuplicate = Array.from(itemMap.values()).some((existing: any) => 
+            existing.sku === itemFormatted.sku && 
+            Math.abs(new Date(existing.created_at || 0).getTime() - new Date(itemFormatted.created_at || 0).getTime()) < 5000
+          );
+
+          if (!isDuplicate) {
             itemMap.set(key, itemFormatted);
           }
         }
@@ -1254,8 +1260,12 @@ export const DatabaseService = {
           const localList = JSON.parse(rawLocal);
           if (Array.isArray(localList)) {
             for (const item of localList) {
-              const key = String(item.id || item.original_log_id || `${item.sku}_${item.created_at}`);
-              if (!itemMap.has(key)) {
+              const key = `loc_${item.id}`;
+              const isAlreadyPresent = Array.from(itemMap.values()).some((existing: any) => 
+                String(existing.id) === String(item.id) ||
+                (existing.sku === item.sku && Math.abs(new Date(existing.created_at || 0).getTime() - new Date(item.created_at || 0).getTime()) < 5000)
+              );
+              if (!isAlreadyPresent) {
                 itemMap.set(key, item);
               }
             }
@@ -1274,10 +1284,7 @@ export const DatabaseService = {
         if (!snap.empty) {
           snap.docs.forEach(d => {
             const data = { ...d.data(), id: d.id };
-            const key = String(data.id || (data as any).original_log_id || `${(data as any).sku}_${(data as any).created_at}`);
-            if (!itemMap.has(key)) {
-              itemMap.set(key, data);
-            }
+            itemMap.set(`fs_${d.id}`, data);
           });
         }
       } catch (fbErr) {
@@ -1294,13 +1301,12 @@ export const DatabaseService = {
     return { data: sortedResult, error: null };
   },
 
-  async updateKarantina(id: string | number, updates: any, mode: DatabaseWriteMode = 'both', originalLogId?: string | number) {
+  async updateKarantina(id: string | number, updates: any, mode: DatabaseWriteMode = 'both') {
     const idStr = String(id);
-    const origIdStr = originalLogId ? String(originalLogId) : null;
     const isNumericId = typeof id === 'number' || (/^\d+$/.test(idStr) && !isNaN(Number(idStr)));
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idStr);
 
-    // 1. Update in LocalStorage
+    // 1. Update in LocalStorage strictly by item.id
     if (typeof window !== 'undefined') {
       try {
         const rawLocal = localStorage.getItem('karantina_revisi_items');
@@ -1308,11 +1314,7 @@ export const DatabaseService = {
           const localList = JSON.parse(rawLocal);
           if (Array.isArray(localList)) {
             const updatedList = localList.map((item: any) => {
-              if (
-                String(item.id) === idStr || 
-                (origIdStr && String(item.original_log_id) === origIdStr) ||
-                String(item.original_log_id) === idStr
-              ) {
+              if (String(item.id) === idStr) {
                 return { ...item, ...updates };
               }
               return item;
@@ -1325,7 +1327,7 @@ export const DatabaseService = {
       }
     }
 
-    // 2. Update in 'karantina_revisi_out'
+    // 2. Update in 'karantina_revisi_out' strictly by item.id
     if (mode === 'supabase' || mode === 'both') {
       try {
         if (isNumericId) {
@@ -1333,18 +1335,12 @@ export const DatabaseService = {
             .from('karantina_revisi_out')
             .update(updates)
             .eq('id', Number(id));
-        } else if (origIdStr || !isUuid) {
-          const targetLogId = origIdStr || idStr;
-          await supabase
-            .from('karantina_revisi_out')
-            .update(updates)
-            .eq('original_log_id', targetLogId);
         }
       } catch (e) {
         // Ignore
       }
 
-      // 3. Update in 'quarantined_items'
+      // 3. Update in 'quarantined_items' strictly by item.id
       try {
         const qUpdates: any = {};
         if (updates.status) qUpdates.status = updates.status;
@@ -1354,12 +1350,6 @@ export const DatabaseService = {
               .from('quarantined_items')
               .update(qUpdates)
               .eq('id', idStr);
-          } else {
-            const targetLogId = origIdStr || idStr;
-            await supabase
-              .from('quarantined_items')
-              .update(qUpdates)
-              .eq('original_row_id', targetLogId);
           }
         }
       } catch (e) {
@@ -1376,25 +1366,19 @@ export const DatabaseService = {
     }
   },
 
-  async deleteKarantina(id: string | number, mode: DatabaseWriteMode = 'both', originalLogId?: string | number) {
+  async deleteKarantina(id: string | number, mode: DatabaseWriteMode = 'both') {
     const idStr = String(id);
-    const origIdStr = originalLogId ? String(originalLogId) : null;
     const isNumericId = typeof id === 'number' || (/^\d+$/.test(idStr) && !isNaN(Number(idStr)));
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idStr);
 
-    // 1. Delete from LocalStorage
+    // 1. Delete from LocalStorage strictly by item.id
     if (typeof window !== 'undefined') {
       try {
         const rawLocal = localStorage.getItem('karantina_revisi_items');
         if (rawLocal) {
           const localList = JSON.parse(rawLocal);
           if (Array.isArray(localList)) {
-            const filtered = localList.filter((item: any) => {
-              if (String(item.id) === idStr) return false;
-              if (origIdStr && String(item.original_log_id) === origIdStr) return false;
-              if (String(item.original_log_id) === idStr) return false;
-              return true;
-            });
+            const filtered = localList.filter((item: any) => String(item.id) !== idStr);
             localStorage.setItem('karantina_revisi_items', JSON.stringify(filtered));
           }
         }
@@ -1403,7 +1387,7 @@ export const DatabaseService = {
       }
     }
 
-    // 2. Delete from 'karantina_revisi_out'
+    // 2. Delete from 'karantina_revisi_out' strictly by item.id
     if (mode === 'supabase' || mode === 'both') {
       try {
         if (isNumericId) {
@@ -1411,30 +1395,18 @@ export const DatabaseService = {
             .from('karantina_revisi_out')
             .delete()
             .eq('id', Number(id));
-        } else if (origIdStr || !isUuid) {
-          const targetLogId = origIdStr || idStr;
-          await supabase
-            .from('karantina_revisi_out')
-            .delete()
-            .eq('original_log_id', targetLogId);
         }
       } catch (e) {
         // Ignore
       }
 
-      // 3. Delete from 'quarantined_items'
+      // 3. Delete from 'quarantined_items' strictly by item.id
       try {
         if (isUuid) {
           await supabase
             .from('quarantined_items')
             .delete()
             .eq('id', idStr);
-        } else {
-          const targetLogId = origIdStr || idStr;
-          await supabase
-            .from('quarantined_items')
-            .delete()
-            .eq('original_row_id', targetLogId);
         }
       } catch (e) {
         // Ignore
