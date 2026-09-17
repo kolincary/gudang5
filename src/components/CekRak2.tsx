@@ -28,6 +28,7 @@ import {
     getTempRackForPrefix,
     ActiveOpnameZonesState 
 } from '../services/opnameZoneBridgeService';
+import { skuConversionService } from '../services/skuConversionService';
 
 interface StockItem {
     id: string;
@@ -558,8 +559,26 @@ export function CekRak2() {
     interface ThermalPrintConfig {
         title: string;
         mode: 'single' | 'batch';
-        singleItem?: { sku: string; sn1: string; sn2: string; sn3: string; rak: string; tgl_scan?: string; waktu?: string };
-        batchItems?: Array<{ sku: string; sn: string; rak: string; slotNum?: number; tgl_scan?: string; waktu?: string }>;
+        singleItem?: {
+            sku: string;
+            sn1: string;
+            sn2: string;
+            sn3: string;
+            rak: string;
+            tgl_scan?: string;
+            waktu?: string;
+            totalQty?: number;
+            boxQty?: number;
+        };
+        batchItems?: Array<{
+            sku: string;
+            sn: string;
+            rak: string;
+            slotNum?: number;
+            tgl_scan?: string;
+            waktu?: string;
+            qty?: number;
+        }>;
     }
 
     // Open Thermal Label Print in a New Tab with Interactive Customizer & Supabase Sync
@@ -596,6 +615,13 @@ export function CekRak2() {
             dateSize: Number(savedPref?.dateSize ?? 12),
             dateWeight: savedPref?.dateWeight ?? '800',
             showDate: savedPref?.showDate ?? 'block',
+            showRak: savedPref?.showRak ?? 'inline-block',
+            showKoli: savedPref?.showKoli ?? 'inline-block',
+            showQty: savedPref?.showQty ?? 'block',
+            rakSize: Number(savedPref?.rakSize ?? 11),
+            koliSize: Number(savedPref?.koliSize ?? 11),
+            qtySize: Number(savedPref?.qtySize ?? 13),
+            qtyWeight: savedPref?.qtyWeight ?? '900',
             slotPosition: savedPref?.slotPosition ?? 'bottom-right',
             slotSize: Number(savedPref?.slotSize ?? 9),
             slotOffsetX: Number(savedPref?.slotOffsetX ?? 0),
@@ -617,28 +643,64 @@ export function CekRak2() {
 
         if (isSingle && config.singleItem) {
             const item = config.singleItem;
+            const totalQty = Math.max(1, Number(item.totalQty || 1));
+            const boxCapacity = Math.max(1, Number(item.boxQty || (totalQty >= 48 ? 48 : (totalQty >= 24 ? 24 : totalQty))));
             const formattedDate = formatToDDMMYYYY(item.tgl_scan || item.waktu);
-            const sn = item.sn1;
-            const qrPayload = `${formattedDate}\t${item.sku}\t${sn}`;
-            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
-            initialSummaryBadge = '1 Halaman (1 Label)';
-            const dateDisplay = formattedDate ? `<div class="scan-date">${formattedDate}</div>` : '';
-            initialPagesHtml = `<div class="thermal-sheet">` +
-                `<div class="label-cell" data-qr="${encodeURIComponent(qrPayload)}" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID">` +
-                    `<div class="qr-wrapper">` +
-                        `<img src="${qrUrl}" alt="QR" />` +
-                    `</div>` +
-                    `<div class="details-wrapper">` +
-                        dateDisplay +
-                        `<div class="product-sku">${item.sku}</div>` +
-                        `<div class="serial-id">ID: ${sn}</div>` +
-                    `</div>` +
-                    `<div class="slot-indicator">No.1</div>` +
-                `</div>` +
-            `</div>`;
+            
+            const fullBoxes = boxCapacity > 0 ? Math.floor(totalQty / boxCapacity) : 1;
+            const rem = boxCapacity > 0 ? totalQty % boxCapacity : 0;
+            const totalBoxes = fullBoxes + (rem > 0 ? 1 : 0);
+            
+            const boxes: Array<{ boxIndex: number; totalBoxes: number; qty: number; totalQty: number; isRemainder: boolean }> = [];
+            for (let i = 0; i < fullBoxes; i++) {
+                boxes.push({ boxIndex: i + 1, totalBoxes, qty: boxCapacity, totalQty, isRemainder: false });
+            }
+            if (rem > 0) {
+                boxes.push({ boxIndex: totalBoxes, totalBoxes, qty: rem, totalQty, isRemainder: true });
+            }
+            if (boxes.length === 0) {
+                boxes.push({ boxIndex: 1, totalBoxes: 1, qty: totalQty, totalQty, isRemainder: false });
+            }
+
+            const numSheets = Math.ceil(boxes.length / 3);
+            initialSummaryBadge = totalBoxes > 1 
+                ? `${numSheets} Halaman (${boxes.length} Karton @ ${boxCapacity} PCS - Total ${totalQty} PCS)`
+                : `1 Halaman (1 Label - ${totalQty} PCS)`;
+
+            for (let p = 0; p < boxes.length; p += 3) {
+                const pageBoxes = boxes.slice(p, p + 3);
+                initialPagesHtml += '<div class="thermal-sheet">';
+                pageBoxes.forEach((box, bIdx) => {
+                    const sn = box.totalBoxes > 1 ? `${item.sn1}-B${box.boxIndex}` : item.sn1;
+                    const qrPayload = `${formattedDate}\t${item.sku}\t${sn}`;
+                    const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
+                    const slotText = 'No.' + (bIdx + 1);
+                    const koliText = box.totalBoxes > 1 ? `KOLI ${box.boxIndex}/${box.totalBoxes}` : '';
+                    const qtyText = `QTY: ${box.qty} PCS${box.totalBoxes > 1 ? ` (TOTAL: ${box.totalQty} PCS)` : ''}`;
+                    const rakText = item.rak && item.rak !== '-' ? `RAK: ${item.rak}` : '';
+
+                    initialPagesHtml += `<div class="label-cell" data-qr="${encodeURIComponent(qrPayload)}" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom: Tgl [TAB] SKU [TAB] ID">` +
+                        `<div class="qr-wrapper">` +
+                            `<img src="${qrUrl}" alt="QR" />` +
+                        `</div>` +
+                        `<div class="details-wrapper">` +
+                            `<div class="meta-row">` +
+                                `<span class="scan-date">${formattedDate}</span>` +
+                                (rakText ? `<span class="rack-badge">${rakText}</span>` : '') +
+                                (koliText ? `<span class="koli-badge">${koliText}</span>` : '') +
+                            `</div>` +
+                            `<div class="product-sku">${item.sku}</div>` +
+                            `<div class="serial-id">ID: ${sn}</div>` +
+                            `<div class="qty-info">${qtyText}</div>` +
+                        `</div>` +
+                        `<div class="slot-indicator">${slotText}</div>` +
+                    `</div>`;
+                });
+                initialPagesHtml += '</div>';
+            }
         } else if (config.batchItems && config.batchItems.length > 0) {
             const batch = config.batchItems;
-            const pages: Array<Array<{ sku: string; sn: string; rak: string; slotNum?: number; tgl_scan?: string; waktu?: string }>> = [];
+            const pages: Array<Array<{ sku: string; sn: string; rak: string; slotNum?: number; tgl_scan?: string; waktu?: string; qty?: number }>> = [];
             for (let i = 0; i < batch.length; i += 3) {
                 pages.push(batch.slice(i, i + 3));
             }
@@ -651,15 +713,21 @@ export function CekRak2() {
                     const qrPayload = `${formattedDate}\t${row.sku}\t${row.sn}`;
                     const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
                     const slotText = 'No.' + (rIdx + 1);
-                    const dateDisplay = formattedDate ? `<div class="scan-date">${formattedDate}</div>` : '';
-                    initialPagesHtml += `<div class="label-cell" data-qr="${encodeURIComponent(qrPayload)}" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID">` +
+                    const rakText = row.rak && row.rak !== '-' ? `RAK: ${row.rak}` : '';
+                    const qtyText = row.qty ? `QTY: ${row.qty} PCS` : '';
+
+                    initialPagesHtml += `<div class="label-cell" data-qr="${encodeURIComponent(qrPayload)}" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom: Tgl [TAB] SKU [TAB] ID">` +
                         `<div class="qr-wrapper">` +
                             `<img src="${qrUrl}" alt="QR" />` +
                         `</div>` +
                         `<div class="details-wrapper">` +
-                            dateDisplay +
+                            `<div class="meta-row">` +
+                                `<span class="scan-date">${formattedDate}</span>` +
+                                (rakText ? `<span class="rack-badge">${rakText}</span>` : '') +
+                            `</div>` +
                             `<div class="product-sku">${row.sku}</div>` +
                             `<div class="serial-id">ID: ${row.sn}</div>` +
+                            (qtyText ? `<div class="qty-info">${qtyText}</div>` : '') +
                         `</div>` +
                         `<div class="slot-indicator">${slotText}</div>` +
                     `</div>`;
@@ -700,6 +768,13 @@ export function CekRak2() {
             --date-size: ${effective.dateSize}px;
             --date-weight: ${effective.dateWeight};
             --show-date: ${effective.showDate};
+            --show-rak: ${effective.showRak};
+            --show-koli: ${effective.showKoli};
+            --show-qty: ${effective.showQty};
+            --rak-size: ${effective.rakSize}px;
+            --koli-size: ${effective.koliSize}px;
+            --qty-size: ${effective.qtySize}px;
+            --qty-weight: ${effective.qtyWeight};
             --slot-size: ${effective.slotSize}px;
             --slot-pos-left: ${isLeftSlot ? '8px' : 'auto'};
             --slot-pos-right: ${isLeftSlot ? 'auto' : '8px'};
@@ -768,6 +843,7 @@ export function CekRak2() {
             font-size: 10px;
             font-weight: 800;
             letter-spacing: 0.2px;
+            white-space: nowrap;
         }
 
         /* Right Group Controls */
@@ -784,6 +860,12 @@ export function CekRak2() {
             color: #94a3b8;
             text-transform: uppercase;
             margin-right: 2px;
+        }
+        .toolbar-divider {
+            border-right: 1px solid #334155;
+            height: 18px;
+            margin: 0 4px;
+            display: inline-block;
         }
         .btn-toggle {
             background: #1e293b;
@@ -810,10 +892,26 @@ export function CekRak2() {
             border-color: #60a5fa;
             box-shadow: 0 0 10px rgba(37,99,235,0.4);
         }
-        .btn-copy-opt.active {
-            background: #059669;
-            border-color: #34d399;
-            box-shadow: 0 0 10px rgba(16,185,129,0.4);
+        .btn-action-split {
+            background: linear-gradient(135deg, #ea580c, #c2410c);
+            color: #fff;
+            border: 1px solid #f97316;
+            padding: 7px 13px;
+            border-radius: 9px;
+            cursor: pointer;
+            font-weight: 900;
+            font-size: 11px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            box-shadow: 0 2px 10px rgba(234, 88, 12, 0.4);
+            transition: all 0.2s;
+        }
+        .btn-action-split:hover {
+            background: linear-gradient(135deg, #f97316, #ea580c);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 14px rgba(234, 88, 12, 0.6);
         }
         .btn-action-customizer {
             background: linear-gradient(135deg, #4f46e5, #3730a3);
@@ -930,8 +1028,8 @@ export function CekRak2() {
             top: 0;
             right: 0;
             bottom: 0;
-            width: 380px;
-            max-width: 90vw;
+            width: 390px;
+            max-width: 92vw;
             background: rgba(15, 23, 42, 0.98);
             backdrop-filter: blur(20px);
             border-left: 1px solid rgba(255,255,255,0.15);
@@ -1000,6 +1098,11 @@ export function CekRak2() {
             flex-direction: column;
             gap: 12px;
         }
+        .drawer-section-highlight {
+            border: 1.5px solid #38bdf8 !important;
+            background: linear-gradient(180deg, rgba(14, 165, 233, 0.12), rgba(30, 41, 59, 0.95)) !important;
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.15);
+        }
         .drawer-section-title {
             font-size: 11px;
             font-weight: 900;
@@ -1011,6 +1114,77 @@ export function CekRak2() {
             gap: 6px;
             border-bottom: 1px solid #334155;
             padding-bottom: 8px;
+        }
+        .split-mode-selector {
+            display: flex;
+            background: #0f172a;
+            padding: 3px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            gap: 4px;
+        }
+        .btn-mode {
+            flex: 1;
+            padding: 6px 4px;
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            font-size: 10px;
+            font-weight: 800;
+            border-radius: 6px;
+            cursor: pointer;
+            text-transform: uppercase;
+            transition: all 0.2s;
+        }
+        .btn-mode:hover {
+            color: #fff;
+        }
+        .btn-mode.active {
+            background: #2563eb;
+            color: #fff;
+            box-shadow: 0 2px 6px rgba(37,99,235,0.4);
+        }
+        .custom-number-input {
+            background: #0f172a;
+            color: #38bdf8;
+            border: 1px solid #334155;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 900;
+            outline: none;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .btn-quick-tag {
+            background: #1e293b;
+            color: #cbd5e1;
+            border: 1px solid #334155;
+            padding: 4px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 10px;
+            font-weight: 800;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+        .btn-quick-tag:hover {
+            background: #38bdf8;
+            color: #0f172a;
+            border-color: #38bdf8;
+        }
+        .split-calc-box {
+            background: #0f172a;
+            border: 1px solid #0284c7;
+            border-radius: 8px;
+            padding: 10px;
+            margin-top: 10px;
+            font-size: 11px;
+            color: #e2e8f0;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            line-height: 1.4;
         }
         .form-group {
             display: flex;
@@ -1095,7 +1269,7 @@ export function CekRak2() {
             transition: margin-right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
         }
         body.drawer-open .pages-wrapper {
-            margin-right: 380px;
+            margin-right: 390px;
         }
 
         /* Single Thermal Sticker Page */
@@ -1169,7 +1343,7 @@ export function CekRak2() {
             image-rendering: pixelated;
         }
 
-        /* Details (SKU + ID) Container with Independent Position Shifting */
+        /* Details Container with Independent Position Shifting */
         .details-wrapper {
             flex: 1;
             min-width: 0;
@@ -1181,17 +1355,49 @@ export function CekRak2() {
             transform: translate(var(--text-offset-x, 0px), var(--text-offset-y, 0px));
             transition: transform 0.1s;
         }
+        .meta-row {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-bottom: 2px;
+        }
         .scan-date {
             font-family: 'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             font-size: var(--date-size, 12px);
             font-weight: var(--date-weight, 800);
             color: #111;
-            margin-bottom: 2px;
             text-transform: uppercase;
             letter-spacing: 0.2px;
-            display: var(--show-date, block);
+            display: var(--show-date, inline-block);
             line-height: 1.15;
-            word-break: break-word;
+        }
+        .rack-badge {
+            display: var(--show-rak, inline-block);
+            font-family: 'Arial Black', -apple-system, sans-serif;
+            font-size: var(--rak-size, 11px);
+            font-weight: 900;
+            background: #000;
+            color: #fff;
+            padding: 1px 5px;
+            border-radius: 3px;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+            line-height: 1.1;
+        }
+        .koli-badge {
+            display: var(--show-koli, inline-block);
+            font-family: 'Arial Black', -apple-system, sans-serif;
+            font-size: var(--koli-size, 11px);
+            font-weight: 900;
+            border: 1.5px solid #000;
+            color: #000;
+            padding: 0px 5px;
+            border-radius: 4px;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+            line-height: 1.1;
+            background: #fff;
         }
         .product-sku {
             font-family: 'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -1208,9 +1414,19 @@ export function CekRak2() {
             font-size: var(--id-size, 14px);
             font-weight: 800;
             color: #222;
-            margin-top: 4px;
+            margin-top: 3px;
             text-transform: uppercase;
             letter-spacing: 0.2px;
+        }
+        .qty-info {
+            display: var(--show-qty, block);
+            font-family: 'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: var(--qty-size, 13px);
+            font-weight: var(--qty-weight, 900);
+            color: #000;
+            margin-top: 3px;
+            letter-spacing: 0.2px;
+            line-height: 1.15;
         }
 
         /* Corner Number Badge (No.1, No.2, No.3) with Position Control */
@@ -1281,35 +1497,38 @@ export function CekRak2() {
         </div>
         <div class="controls-group-right">
             ${isSingle ? `
-            <span class="control-label">Jumlah Label:</span>
-            <button id="btn-copy-1" class="btn-toggle btn-copy-opt active" onclick="setCopies(1)">1 Barcode</button>
-            <button id="btn-copy-2" class="btn-toggle btn-copy-opt" onclick="setCopies(2)">2 Barcode</button>
-            <button id="btn-copy-3" class="btn-toggle btn-copy-opt" onclick="setCopies(3)">3 Barcode (Full)</button>
-            <span style="border-right: 1px solid #334155; height: 18px; margin: 0 4px;"></span>
+            <button id="btn-quick-split" class="btn-action-split" onclick="openBoxSplitDrawer()" title="Atur Pembagian QTY & Karton">
+                📦 Pecah Dus (Split QTY)
+            </button>
+            <span class="control-label">Quick:</span>
+            <button id="btn-quick-1" class="btn-toggle active" onclick="quickSelectSplit('1')">1 Lembar</button>
+            <button id="btn-quick-2" class="btn-toggle" onclick="quickSelectSplit('2')">2 Dus</button>
+            <button id="btn-quick-3" class="btn-toggle" onclick="quickSelectSplit('3')">3 Dus</button>
+            <span class="toolbar-divider"></span>
             ` : ''}
             <span class="control-label">Preset:</span>
-            <button id="btn-100" class="btn-toggle ${effective.paperWidth === 100 ? 'active' : ''}" onclick="switchPresetPaper(100)">100 mm (Default)</button>
+            <button id="btn-100" class="btn-toggle ${effective.paperWidth === 100 ? 'active' : ''}" onclick="switchPresetPaper(100)">100 mm</button>
             <button id="btn-140" class="btn-toggle ${effective.sizePreset === '140' ? 'active' : ''}" onclick="switchSize('140')">140 mm</button>
             <button id="btn-150" class="btn-toggle ${effective.sizePreset === '150' ? 'active' : ''}" onclick="switchSize('150')">150 mm</button>
             <button id="btn-80" class="btn-toggle ${effective.paperWidth === 80 ? 'active' : ''}" onclick="switchPresetPaper(80)">80mm POS</button>
             <button id="btn-58" class="btn-toggle ${effective.paperWidth === 58 ? 'active' : ''}" onclick="switchPresetPaper(58)">58mm Mini</button>
-            <button id="btn-auto" class="btn-toggle ${effective.sizePreset === 'auto' ? 'active' : ''}" onclick="switchSize('auto')">Auto / Roll</button>
-            <span style="border-right: 1px solid #334155; height: 18px; margin: 0 4px;"></span>
+            <button id="btn-auto" class="btn-toggle ${effective.sizePreset === 'auto' ? 'active' : ''}" onclick="switchSize('auto')">Auto/Roll</button>
+            <span class="toolbar-divider"></span>
             <button id="btn-toggle-customizer" class="btn-action-customizer" onclick="toggleCustomizer()">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-                <span>Atur Style</span>
+                <span>Atur Style & QTY</span>
             </button>
             <button class="btn-action-save" onclick="saveSettingsToSupabase(true)">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
                 <span>Simpan Style</span>
             </button>
-            <button class="btn-action-copy" onclick="copyAllDataTSV()" title="Salin seluruh data QR ke Clipboard (Format 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID)">
+            <button class="btn-action-copy" onclick="copyAllDataTSV()" title="Salin seluruh data QR ke Clipboard (Format 3 Kolom: Tgl [TAB] SKU [TAB] ID)">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 <span>Salin 3 Kolom</span>
             </button>
             <button class="btn-action-print" onclick="window.print()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
-                <span>Cetak / Print</span>
+                <span>Cetak Label</span>
             </button>
         </div>
     </div>
@@ -1319,12 +1538,105 @@ export function CekRak2() {
         <div class="drawer-header">
             <div class="drawer-title">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-                <span>Atur Style Thermal</span>
+                <span>Atur Style & QTY</span>
             </div>
             <button class="drawer-close-btn" onclick="toggleCustomizer()" title="Tutup">✕</button>
         </div>
 
         <div class="drawer-body">
+            <!-- SECTION: BOX SPLITTING & QTY (SINGLE ITEM MODE ONLY) -->
+            ${isSingle ? `
+            <div id="drawer-box-split-section" class="drawer-section drawer-section-highlight">
+                <div class="drawer-section-title" style="color: #38bdf8;">📦 Pembagian Karton & QTY</div>
+                
+                <div class="split-mode-selector">
+                    <button id="btn-mode-capacity" class="btn-mode active" onclick="switchSplitMode('capacity')">Isi / Dus</button>
+                    <button id="btn-mode-count" class="btn-mode" onclick="switchSplitMode('count')">Bagi Dus</button>
+                    <button id="btn-mode-copies" class="btn-mode" onclick="switchSplitMode('copies')">Salin</button>
+                </div>
+
+                <div class="form-group" style="margin-top: 6px;">
+                    <label>Total Qty di Rak (PCS):</label>
+                    <input id="input-total-qty" type="number" class="custom-number-input" min="1" max="999999" oninput="onBoxSplitParamsChange()" />
+                </div>
+
+                <!-- Mode Capacity Input -->
+                <div id="group-mode-capacity" class="form-group">
+                    <label>Isi per Dus / Kapasitas Karton:</label>
+                    <div style="display:flex; gap:6px;">
+                        <input id="input-box-capacity" type="number" class="custom-number-input" min="1" max="99999" oninput="onBoxSplitParamsChange()" />
+                        <button type="button" class="btn-quick-tag" onclick="setQuickCapacity(12)">12</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickCapacity(24)">24</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickCapacity(48)">48</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickCapacity(96)">96</button>
+                    </div>
+                </div>
+
+                <!-- Mode Count Input -->
+                <div id="group-mode-count" class="form-group" style="display:none;">
+                    <label>Bagi Rata Berapa Dus / Karton:</label>
+                    <div style="display:flex; gap:6px;">
+                        <input id="input-box-count" type="number" class="custom-number-input" min="1" max="100" oninput="onBoxSplitParamsChange()" />
+                        <button type="button" class="btn-quick-tag" onclick="setQuickBoxCount(2)">2 Dus</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickBoxCount(3)">3 Dus</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickBoxCount(4)">4 Dus</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickBoxCount(6)">6 Dus</button>
+                    </div>
+                </div>
+
+                <!-- Mode Copies Input -->
+                <div id="group-mode-copies" class="form-group" style="display:none;">
+                    <label>Jumlah Lembar Salinan (Copies):</label>
+                    <div style="display:flex; gap:6px;">
+                        <input id="input-copies-count" type="number" class="custom-number-input" min="1" max="50" oninput="onBoxSplitParamsChange()" />
+                        <button type="button" class="btn-quick-tag" onclick="setQuickCopies(1)">1</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickCopies(2)">2</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickCopies(3)">3</button>
+                    </div>
+                </div>
+
+                <div id="split-calc-summary" class="split-calc-box"></div>
+            </div>
+            ` : ''}
+
+            <!-- SECTION: BADGE QTY, KOLI & LOKASI RAK -->
+            <div class="drawer-section">
+                <div class="drawer-section-title">🏷️ Label QTY, Koli & Lokasi Rak</div>
+                <div class="form-group">
+                    <label>Tampilkan Lokasi Rak (contoh: RAK: A1):</label>
+                    <select id="input-show-rak" class="custom-select" onchange="onCustomChange()">
+                        <option value="inline-block" ${effective.showRak !== 'none' ? 'selected' : ''}>Tampilkan (Aktif)</option>
+                        <option value="none" ${effective.showRak === 'none' ? 'selected' : ''}>Sembunyikan</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Tampilkan Badge Koli (contoh: KOLI 1/2):</label>
+                    <select id="input-show-koli" class="custom-select" onchange="onCustomChange()">
+                        <option value="inline-block" ${effective.showKoli !== 'none' ? 'selected' : ''}>Tampilkan (Aktif)</option>
+                        <option value="none" ${effective.showKoli === 'none' ? 'selected' : ''}>Sembunyikan</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Tampilkan Teks QTY (contoh: QTY: 48 PCS):</label>
+                    <select id="input-show-qty" class="custom-select" onchange="onCustomChange()">
+                        <option value="block" ${effective.showQty !== 'none' ? 'selected' : ''}>Tampilkan (Aktif)</option>
+                        <option value="none" ${effective.showQty === 'none' ? 'selected' : ''}>Sembunyikan</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Ukuran Font QTY: <span id="val-qty-size" class="val-badge">${effective.qtySize} px</span></label>
+                    <input id="input-qty-size" type="range" class="custom-range" min="9" max="22" step="1" value="${effective.qtySize}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Ukuran Font Rak: <span id="val-rak-size" class="val-badge">${effective.rakSize} px</span></label>
+                    <input id="input-rak-size" type="range" class="custom-range" min="8" max="18" step="1" value="${effective.rakSize}" oninput="onCustomChange()" />
+                </div>
+                <div class="form-group">
+                    <label>Ukuran Font Koli: <span id="val-koli-size" class="val-badge">${effective.koliSize} px</span></label>
+                    <input id="input-koli-size" type="range" class="custom-range" min="8" max="18" step="1" value="${effective.koliSize}" oninput="onCustomChange()" />
+                </div>
+            </div>
+
             <!-- SECTION: QR CODE -->
             <div class="drawer-section">
                 <div class="drawer-section-title">🔲 Posisi & Ukuran QR Code</div>
@@ -1484,7 +1796,18 @@ export function CekRak2() {
         window.defaultSettings = ${JSON.stringify(effective)};
         window.currentSettings = Object.assign({}, window.defaultSettings);
 
-        // Core Functions defined globally on window
+        // Splitting Parameters for Single Item Mode
+        var initialTot = window.singleData ? Math.max(1, Number(window.singleData.totalQty || 1)) : 1;
+        var initialCap = window.singleData ? Math.max(1, Number(window.singleData.boxQty || (initialTot >= 48 ? 48 : (initialTot >= 24 ? 24 : initialTot)))) : 48;
+        window.splitParams = {
+            mode: initialTot > 1 ? 'capacity' : 'copies',
+            totalQty: initialTot,
+            boxCapacity: initialCap,
+            boxCount: Math.max(1, Math.ceil(initialTot / initialCap)),
+            numCopies: 1
+        };
+
+        // Core Date Formatting
         window.formatToDDMMYYYY = function(dateInput) {
             if (!dateInput) {
                 var d = new Date();
@@ -1532,6 +1855,215 @@ export function CekRak2() {
             }
         };
 
+        window.openBoxSplitDrawer = function() {
+            try {
+                var drawer = document.getElementById('customizer-drawer-right');
+                var btn = document.getElementById('btn-toggle-customizer');
+                if (!drawer) return;
+                drawer.classList.add('active');
+                if (btn) btn.classList.add('open', true);
+                document.body.classList.add('drawer-open');
+                var sec = document.getElementById('drawer-box-split-section');
+                if (sec) sec.scrollIntoView({ behavior: 'smooth' });
+            } catch (e) {}
+        };
+
+        window.switchSplitMode = function(mode) {
+            try {
+                window.splitParams.mode = mode;
+                document.querySelectorAll('.split-mode-selector .btn-mode').forEach(function(b) { b.classList.remove('active'); });
+                var activeModeBtn = document.getElementById('btn-mode-' + mode);
+                if (activeModeBtn) activeModeBtn.classList.add('active');
+
+                var grpCap = document.getElementById('group-mode-capacity');
+                var grpCnt = document.getElementById('group-mode-count');
+                var grpCp = document.getElementById('group-mode-copies');
+                if (grpCap) grpCap.style.display = mode === 'capacity' ? 'flex' : 'none';
+                if (grpCnt) grpCnt.style.display = mode === 'count' ? 'flex' : 'none';
+                if (grpCp) grpCp.style.display = mode === 'copies' ? 'flex' : 'none';
+
+                window.recalculateAndRenderBoxes();
+            } catch (e) {
+                console.error('switchSplitMode error:', e);
+            }
+        };
+
+        window.onBoxSplitParamsChange = function() {
+            try {
+                var getNum = function(id, def) {
+                    var el = document.getElementById(id);
+                    var val = el ? Number(el.value) : def;
+                    return isNaN(val) || val <= 0 ? def : val;
+                };
+
+                window.splitParams.totalQty = getNum('input-total-qty', 1);
+                window.splitParams.boxCapacity = getNum('input-box-capacity', 48);
+                window.splitParams.boxCount = getNum('input-box-count', 2);
+                window.splitParams.numCopies = getNum('input-copies-count', 1);
+
+                window.recalculateAndRenderBoxes();
+            } catch (e) {
+                console.error('onBoxSplitParamsChange error:', e);
+            }
+        };
+
+        window.setQuickCapacity = function(cap) {
+            window.splitParams.boxCapacity = cap;
+            var el = document.getElementById('input-box-capacity');
+            if (el) el.value = cap;
+            window.switchSplitMode('capacity');
+        };
+
+        window.setQuickBoxCount = function(cnt) {
+            window.splitParams.boxCount = cnt;
+            var el = document.getElementById('input-box-count');
+            if (el) el.value = cnt;
+            window.switchSplitMode('count');
+        };
+
+        window.setQuickCopies = function(cp) {
+            window.splitParams.numCopies = cp;
+            var el = document.getElementById('input-copies-count');
+            if (el) el.value = cp;
+            window.switchSplitMode('copies');
+        };
+
+        window.quickSelectSplit = function(type) {
+            try {
+                document.querySelectorAll('#btn-quick-1, #btn-quick-2, #btn-quick-3').forEach(function(b) { b.classList.remove('active'); });
+                var btn = document.getElementById('btn-quick-' + type);
+                if (btn) btn.classList.add('active');
+
+                if (type === '1') {
+                    window.splitParams.numCopies = 1;
+                    window.switchSplitMode('copies');
+                } else if (type === '2') {
+                    window.splitParams.boxCount = 2;
+                    var el = document.getElementById('input-box-count');
+                    if (el) el.value = 2;
+                    window.switchSplitMode('count');
+                } else if (type === '3') {
+                    window.splitParams.boxCount = 3;
+                    var el = document.getElementById('input-box-count');
+                    if (el) el.value = 3;
+                    window.switchSplitMode('count');
+                }
+            } catch (e) {}
+        };
+
+        // Recalculate Box Array & Re-render Pages in DOM
+        window.recalculateAndRenderBoxes = function() {
+            try {
+                if (!window.singleData) return;
+                var p = window.splitParams;
+                var tot = Math.max(1, p.totalQty);
+                var mode = p.mode;
+                var boxes = [];
+
+                if (mode === 'capacity') {
+                    var cap = Math.max(1, p.boxCapacity);
+                    var full = Math.floor(tot / cap);
+                    var rem = tot % cap;
+                    var totalBoxes = full + (rem > 0 ? 1 : 0);
+                    if (totalBoxes === 0) totalBoxes = 1;
+
+                    for (var i = 0; i < full; i++) {
+                        boxes.push({ boxIndex: i + 1, totalBoxes: totalBoxes, qty: cap, totalQty: tot, isRemainder: false });
+                    }
+                    if (rem > 0) {
+                        boxes.push({ boxIndex: totalBoxes, totalBoxes: totalBoxes, qty: rem, totalQty: tot, isRemainder: true });
+                    }
+                    if (boxes.length === 0) {
+                        boxes.push({ boxIndex: 1, totalBoxes: 1, qty: tot, totalQty: tot, isRemainder: false });
+                    }
+                } else if (mode === 'count') {
+                    var cnt = Math.max(1, p.boxCount);
+                    var base = Math.floor(tot / cnt);
+                    var rem = tot % cnt;
+                    for (var i = 0; i < cnt; i++) {
+                        var bQty = base + (i < rem ? 1 : 0);
+                        boxes.push({ boxIndex: i + 1, totalBoxes: cnt, qty: bQty, totalQty: tot, isRemainder: false });
+                    }
+                } else {
+                    // mode === 'copies'
+                    var copies = Math.max(1, p.numCopies);
+                    for (var i = 0; i < copies; i++) {
+                        boxes.push({ boxIndex: i + 1, totalBoxes: copies, qty: tot, totalQty: tot, isCopy: true });
+                    }
+                }
+
+                // Render into Sheets (3 labels per sheet)
+                var container = document.getElementById('pages-container');
+                if (!container) return;
+
+                var formattedDate = window.formatToDDMMYYYY(window.singleData.tgl_scan || window.singleData.waktu);
+                var rakText = window.singleData.rak && window.singleData.rak !== '-' ? 'RAK: ' + window.singleData.rak : '';
+                var tabChar = String.fromCharCode(9);
+                var html = '';
+
+                for (var pIdx = 0; pIdx < boxes.length; pIdx += 3) {
+                    var pageBoxes = boxes.slice(pIdx, pIdx + 3);
+                    html += '<div class="thermal-sheet">';
+                    pageBoxes.forEach(function(box, bIdx) {
+                        var sn = box.totalBoxes > 1 ? window.singleData.sn1 + '-B' + box.boxIndex : window.singleData.sn1;
+                        var qrPayload = formattedDate + tabChar + window.singleData.sku + tabChar + sn;
+                        var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
+                        var slotText = 'No.' + (bIdx + 1);
+                        var koliText = box.totalBoxes > 1 ? (box.isCopy ? 'COPY ' + box.boxIndex + '/' + box.totalBoxes : 'KOLI ' + box.boxIndex + '/' + box.totalBoxes) : '';
+                        var qtyText = 'QTY: ' + box.qty + ' PCS' + (box.totalBoxes > 1 && !box.isCopy ? ' (TOTAL: ' + box.totalQty + ' PCS)' : '');
+
+                        html += '<div class="label-cell" data-qr="' + encodeURIComponent(qrPayload) + '" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom: Tgl [TAB] SKU [TAB] ID">' +
+                            '<div class="qr-wrapper">' +
+                                '<img src="' + qrUrl + '" alt="QR" />' +
+                            '</div>' +
+                            '<div class="details-wrapper">' +
+                                '<div class="meta-row">' +
+                                    '<span class="scan-date">' + formattedDate + '</span>' +
+                                    (rakText ? '<span class="rack-badge">' + rakText + '</span>' : '') +
+                                    (koliText ? '<span class="koli-badge">' + koliText + '</span>' : '') +
+                                '</div>' +
+                                '<div class="product-sku">' + window.singleData.sku + '</div>' +
+                                '<div class="serial-id">ID: ' + sn + '</div>' +
+                                '<div class="qty-info">' + qtyText + '</div>' +
+                            '</div>' +
+                            '<div class="slot-indicator">' + slotText + '</div>' +
+                        '</div>';
+                    });
+                    html += '</div>';
+                }
+
+                container.innerHTML = html;
+
+                // Update summary badge
+                var badge = document.getElementById('page-summary-badge');
+                var numSheets = Math.ceil(boxes.length / 3);
+                if (badge) {
+                    badge.innerText = numSheets + ' Halaman (' + boxes.length + ' Karton - Total ' + tot + ' PCS)';
+                }
+
+                // Update Drawer Calculation Summary Preview
+                var sumBox = document.getElementById('split-calc-summary');
+                if (sumBox) {
+                    var summaryLines = [];
+                    summaryLines.push('<strong>✨ Hasil Pembagian: ' + boxes.length + ' Label Karton</strong>');
+                    summaryLines.push('📄 Total Halaman Kertas: <strong>' + numSheets + ' Lembar</strong> (3 slot/lembar)');
+                    if (mode === 'capacity') {
+                        var fullCount = Math.floor(tot / p.boxCapacity);
+                        var remCount = tot % p.boxCapacity;
+                        if (fullCount > 0) summaryLines.push('• ' + fullCount + ' Karton Utama (@ ' + p.boxCapacity + ' PCS)');
+                        if (remCount > 0) summaryLines.push('• 1 Karton Eceran/Sisa (@ ' + remCount + ' PCS)');
+                    } else if (mode === 'count') {
+                        summaryLines.push('• Dibagi rata menjadi ' + p.boxCount + ' Karton');
+                    } else {
+                        summaryLines.push('• ' + p.numCopies + ' Salinan Lembar Identitas');
+                    }
+                    sumBox.innerHTML = summaryLines.join('<br/>');
+                }
+            } catch (e) {
+                console.error('recalculateAndRenderBoxes error:', e);
+            }
+        };
+
         window.applyStylesToDom = function(s) {
             try {
                 var isLeftSlot = (s.slotPosition || '').indexOf('left') !== -1;
@@ -1556,6 +2088,13 @@ export function CekRak2() {
                         '--date-size: ' + (s.dateSize || 12) + 'px;' +
                         '--date-weight: ' + (s.dateWeight || '800') + ';' +
                         '--show-date: ' + (s.showDate || 'block') + ';' +
+                        '--show-rak: ' + (s.showRak || 'inline-block') + ';' +
+                        '--show-koli: ' + (s.showKoli || 'inline-block') + ';' +
+                        '--show-qty: ' + (s.showQty || 'block') + ';' +
+                        '--rak-size: ' + (s.rakSize || 11) + 'px;' +
+                        '--koli-size: ' + (s.koliSize || 11) + 'px;' +
+                        '--qty-size: ' + (s.qtySize || 13) + 'px;' +
+                        '--qty-weight: ' + (s.qtyWeight || '900') + ';' +
                         '--slot-size: ' + (s.slotSize || 9) + 'px;' +
                         '--slot-pos-left: ' + (isLeftSlot ? '8px' : 'auto') + ';' +
                         '--slot-pos-right: ' + (isLeftSlot ? 'auto' : '8px') + ';' +
@@ -1588,6 +2127,23 @@ export function CekRak2() {
             try {
                 var setVal = function(id, val) { var el = document.getElementById(id); if (el) el.value = val; };
                 var setText = function(id, txt) { var el = document.getElementById(id); if (el) el.innerText = txt; };
+
+                // Split inputs
+                setVal('input-total-qty', window.splitParams.totalQty);
+                setVal('input-box-capacity', window.splitParams.boxCapacity);
+                setVal('input-box-count', window.splitParams.boxCount);
+                setVal('input-copies-count', window.splitParams.numCopies);
+
+                // Style inputs
+                setVal('input-show-rak', s.showRak || 'inline-block');
+                setVal('input-show-koli', s.showKoli || 'inline-block');
+                setVal('input-show-qty', s.showQty || 'block');
+                setVal('input-qty-size', s.qtySize || 13);
+                setText('val-qty-size', (s.qtySize || 13) + ' px');
+                setVal('input-rak-size', s.rakSize || 11);
+                setText('val-rak-size', (s.rakSize || 11) + ' px');
+                setVal('input-koli-size', s.koliSize || 11);
+                setText('val-koli-size', (s.koliSize || 11) + ' px');
 
                 setVal('input-qr-position', s.layoutDirection === 'row-reverse' ? 'right' : 'left');
                 setVal('input-qr-size', s.qrSize || 32);
@@ -1667,6 +2223,13 @@ export function CekRak2() {
                     return isNaN(num) ? def : num;
                 };
                 
+                window.currentSettings.showRak = getVal('input-show-rak', 'inline-block');
+                window.currentSettings.showKoli = getVal('input-show-koli', 'inline-block');
+                window.currentSettings.showQty = getVal('input-show-qty', 'block');
+                window.currentSettings.qtySize = getNum('input-qty-size', 13);
+                window.currentSettings.rakSize = getNum('input-rak-size', 11);
+                window.currentSettings.koliSize = getNum('input-koli-size', 11);
+
                 window.currentSettings.layoutDirection = getVal('input-qr-position', 'left') === 'right' ? 'row-reverse' : 'row';
                 window.currentSettings.qrSize = getNum('input-qr-size', 32);
                 window.currentSettings.qrOffsetX = getNum('input-qr-offset-x', 0);
@@ -1736,50 +2299,6 @@ export function CekRak2() {
                 window.syncSettingsWithStorageAndParent();
             } catch (e) {
                 console.error('switchPresetPaper error:', e);
-            }
-        };
-
-        window.setCopies = function(num) {
-            try {
-                if (!window.singleData) return;
-                document.querySelectorAll('.btn-copy-opt').forEach(function(b) { b.classList.remove('active'); });
-                var activeBtn = document.getElementById('btn-copy-' + num);
-                if (activeBtn) activeBtn.classList.add('active');
-
-                var wrapper = document.getElementById('pages-container');
-                if (!wrapper) return;
-
-                var formattedDate = window.formatToDDMMYYYY(window.singleData.tgl_scan || window.singleData.waktu);
-                var sns = [window.singleData.sn1, window.singleData.sn2, window.singleData.sn3];
-                var dateDisplay = formattedDate ? '<div class="scan-date">' + formattedDate + '</div>' : '';
-                var tabChar = String.fromCharCode(9);
-                var html = '<div class="thermal-sheet">';
-                for (var i = 0; i < num; i++) {
-                    var sn = sns[i] || window.singleData.sn1;
-                    var qrPayload = formattedDate + tabChar + window.singleData.sku + tabChar + sn;
-                    var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
-                    var slotText = 'No.' + (i + 1);
-                    html += '<div class="label-cell" data-qr="' + encodeURIComponent(qrPayload) + '" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID">' +
-                        '<div class="qr-wrapper">' +
-                            '<img src="' + qrUrl + '" alt="QR" />' +
-                        '</div>' +
-                        '<div class="details-wrapper">' +
-                            dateDisplay +
-                            '<div class="product-sku">' + window.singleData.sku + '</div>' +
-                            '<div class="serial-id">ID: ' + sn + '</div>' +
-                        '</div>' +
-                        '<div class="slot-indicator">' + slotText + '</div>' +
-                    '</div>';
-                }
-                html += '</div>';
-                wrapper.innerHTML = html;
-
-                var badge = document.getElementById('page-summary-badge');
-                if (badge) {
-                    badge.innerText = '1 Halaman (' + num + ' Label)';
-                }
-            } catch (e) {
-                console.error('setCopies error:', e);
             }
         };
 
@@ -1913,6 +2432,13 @@ export function CekRak2() {
                 dateSize: 12,
                 dateWeight: "800",
                 showDate: "block",
+                showRak: "inline-block",
+                showKoli: "inline-block",
+                showQty: "block",
+                rakSize: 11,
+                koliSize: 11,
+                qtySize: 13,
+                qtyWeight: "900",
                 slotPosition: "bottom-right",
                 slotSize: 9,
                 slotOffsetX: 0,
@@ -1933,6 +2459,9 @@ export function CekRak2() {
         try {
             window.updateFormInputs(window.currentSettings);
             window.applyStylesToDom(window.currentSettings);
+            if (window.singleData) {
+                window.recalculateAndRenderBoxes();
+            }
         } catch (e) {
             console.error('Init thermal print style error:', e);
         }
@@ -1953,12 +2482,35 @@ export function CekRak2() {
         }
     };
 
-    // Print Single Item (Defaults to 1 label on 1 sheet, with interactive toolbar to choose 1, 2, or 3 labels)
+    // Print Single Item (Auto-detects Box Splitting based on Total QTY & SKU Master Conversion)
     const handlePrintThermalLabel = (item: any) => {
         const sku = item.sku || item.nama_barang || item.nama_produk || '-';
         const rak = item.sub_rak || item.rak || '-';
         const tgl_scan = item.tgl_scan || item.tgl || '';
         const waktu = item.waktu || '';
+        const rawQty = Number(item.jumlah ?? item.qty ?? item.tersedia ?? 1);
+        const totalQty = isNaN(rawQty) || rawQty <= 0 ? 1 : rawQty;
+
+        // Auto-detect box packaging size from SKU conversions cache
+        let boxQty = 0;
+        try {
+            const conversions = skuConversionService.getCachedConversions();
+            const cleanSku = (sku || '').trim().toUpperCase();
+            const foundConv = conversions.find(c => 
+                (c.sku_pcs || '').trim().toUpperCase() === cleanSku || 
+                (c.sku_konversi || '').trim().toUpperCase() === cleanSku
+            );
+            if (foundConv && foundConv.qty > 0) {
+                boxQty = foundConv.qty;
+            } else if (totalQty >= 96 && totalQty % 48 === 0) {
+                boxQty = 48;
+            } else if (totalQty >= 48 && totalQty % 24 === 0) {
+                boxQty = 24;
+            } else if (totalQty >= 24 && totalQty % 12 === 0) {
+                boxQty = 12;
+            }
+        } catch (e) {}
+
         const sn1 = generateSnCode(item, 1);
         const sn2 = generateSnCode(item, 2);
         const sn3 = generateSnCode(item, 3);
@@ -1966,7 +2518,7 @@ export function CekRak2() {
         renderThermalPrintWindow({
             title: `Print Label QR Thermal - ${sku}`,
             mode: 'single',
-            singleItem: { sku, sn1, sn2, sn3, rak, tgl_scan, waktu }
+            singleItem: { sku, sn1, sn2, sn3, rak, tgl_scan, waktu, totalQty, boxQty }
         });
     };
 
@@ -1978,15 +2530,16 @@ export function CekRak2() {
             return;
         }
 
-        const batchItems: Array<{ sku: string; sn: string; rak: string; slotNum: number; tgl_scan: string; waktu: string }> = [];
+        const batchItems: Array<{ sku: string; sn: string; rak: string; slotNum: number; tgl_scan: string; waktu: string; qty?: number }> = [];
         targetList.forEach((log, idx) => {
             const sku = log.sku || log.nama_barang || log.nama_produk || '-';
             const rak = log.sub_rak || log.rak || '-';
             const tgl_scan = log.tgl_scan || log.tgl || '';
             const waktu = log.waktu || '';
+            const rawQty = Number(log.jumlah ?? log.qty ?? 0);
             const sn = generateSnCode(log, idx + 1);
             const slotNum = (idx % 3) + 1;
-            batchItems.push({ sku, sn, rak, slotNum, tgl_scan, waktu });
+            batchItems.push({ sku, sn, rak, slotNum, tgl_scan, waktu, qty: rawQty > 0 ? rawQty : undefined });
         });
 
         renderThermalPrintWindow({
