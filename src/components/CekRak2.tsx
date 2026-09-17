@@ -2820,40 +2820,62 @@ export function CekRak2() {
         setIsLoadingOutLogs(true);
         setSelectedOutLog(null);
         try {
+            // 1. Dapatkan daftar log_id yang SEDANG AKTIF di wadah karantina revisi
+            const activeKarantinaLogIds = new Set<string>();
+            try {
+                const { data: kData } = await DatabaseService.fetchKarantina();
+                if (kData && Array.isArray(kData)) {
+                    kData
+                        .filter((k: any) => k.status === 'MENUNGGU_REVISI')
+                        .forEach((k: any) => {
+                            if (k.original_log_id) activeKarantinaLogIds.add(String(k.original_log_id));
+                        });
+                }
+            } catch (kErr) {
+                console.warn('Gagal memuat id karantina aktif untuk filter:', kErr);
+            }
+
+            // 2. Ambil data log OUT dan MOVE (REVISI_KARANTINA)
             const { data, error } = await supabase
                 .from('database_log')
                 .select('*')
                 .ilike('sku', `%${sku.trim()}%`)
-                .eq('type', 'OUT')
+                .in('type', ['OUT', 'MOVE'])
                 .order('created_at', { ascending: false })
                 .limit(100);
 
             if (error) throw error;
 
-            // Filter out logs created by Dev Mode / Admin / System / Transfer adjustments
+            // Filter log yang relevan untuk ditarik
             const filtered = (data || []).filter(log => {
+                const logIdStr = String(log.id);
                 const uName = (log.user_name || log.user || '').toLowerCase().trim();
                 const gudang = (log.gudang || '').toUpperCase().trim();
-                const status = (log.status || log.keterangan || '').toLowerCase().trim();
+                const status = (log.status || log.keterangan || '').toUpperCase().trim();
+                const type = (log.type || '').toUpperCase().trim();
 
-                // Exclude developer / admin / devmode / system users
+                // Jangan tampilkan jika log ini SEDANG AKTIF di wadah karantina
+                if (activeKarantinaLogIds.has(logIdStr)) {
+                    return false;
+                }
+
+                // Jika type MOVE, hanya tampilkan jika log tersebut bekas REVISI_KARANTINA yang sudah dibatalkan/dihapus
+                if (type === 'MOVE' && status !== 'REVISI_KARANTINA') {
+                    return false;
+                }
+
+                // Abaikan log internal transfer
+                if (gudang === 'TRANSFER' || gudang === 'SYSTEM' || status === 'TRANSFER_REVISI') {
+                    return false;
+                }
+
+                // Abaikan log cron / devmode system sync
                 if (
                     uName.includes('dev mode') || 
                     uName.includes('devmode') || 
-                    uName.includes('developer') || 
-                    uName.includes('admin') || 
-                    uName.includes('system')
+                    uName.includes('developer') ||
+                    uName.includes('auto_bg')
                 ) {
-                    return false;
-                }
-
-                // Exclude transfer / internal adjustment logs
-                if (gudang === 'TRANSFER' || gudang === 'SYSTEM') {
-                    return false;
-                }
-
-                // Exclude revision / karantina / transfer logs
-                if (status.includes('revisi') || status.includes('karantina') || status.includes('transfer')) {
                     return false;
                 }
 

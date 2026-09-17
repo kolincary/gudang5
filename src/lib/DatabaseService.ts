@@ -1366,8 +1366,9 @@ export const DatabaseService = {
     }
   },
 
-  async deleteKarantina(id: string | number, mode: DatabaseWriteMode = 'both') {
+  async deleteKarantina(id: string | number, mode: DatabaseWriteMode = 'both', originalLogId?: string | number) {
     const idStr = String(id);
+    const origIdStr = originalLogId ? String(originalLogId) : null;
     const isNumericId = typeof id === 'number' || (/^\d+$/.test(idStr) && !isNaN(Number(idStr)));
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idStr);
 
@@ -1411,9 +1412,33 @@ export const DatabaseService = {
       } catch (e) {
         // Ignore
       }
+
+      // 4. Auto-restore original log in database_log if originalLogId exists
+      if (origIdStr && origIdStr !== 'null' && origIdStr !== 'undefined' && origIdStr.trim() !== '') {
+        try {
+          // Revert log from MOVE / REVISI_KARANTINA back to OUT / COMPLETED
+          await supabase
+            .from('database_log')
+            .update({
+              type: 'OUT',
+              status: 'COMPLETED',
+              log_update_user: '[RESTORED] Dibatalkan dari Wadah Karantina'
+            })
+            .eq('id', origIdStr);
+
+          // Clean up any transfer pairs associated with this revision
+          await supabase
+            .from('database_log')
+            .delete()
+            .eq('status', 'TRANSFER_REVISI')
+            .eq('matched_log_id', origIdStr);
+        } catch (dbLogErr) {
+          console.warn('Auto-restore database_log warning:', dbLogErr);
+        }
+      }
     }
 
-    // 4. Delete from Firestore
+    // 5. Delete from Firestore
     try {
       const docRef = doc(db, 'karantina_revisi_out', idStr);
       await deleteDoc(docRef);

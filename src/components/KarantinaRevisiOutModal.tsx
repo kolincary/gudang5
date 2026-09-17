@@ -203,10 +203,11 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
     const handleExecuteDelete = async () => {
         if (!deleteModal.item) return;
         const targetId = deleteModal.item.id;
+        const targetLogId = deleteModal.item.original_log_id || undefined;
         setDeleteModal(prev => ({ ...prev, isDeleting: true }));
 
         try {
-            await DatabaseService.deleteKarantina(targetId);
+            await DatabaseService.deleteKarantina(targetId, 'both', targetLogId);
 
             showToast('✅ Data berhasil dihapus dari wadah karantina!', 'success');
             setItems(prev => prev.filter(i => String(i.id) !== String(targetId)));
