@@ -564,12 +564,6 @@ export function CekRak2() {
 
     // Open Thermal Label Print in a New Tab with Interactive Customizer & Supabase Sync
     const renderThermalPrintWindow = (config: ThermalPrintConfig) => {
-        const win = window.open('', '_blank');
-        if (!win) {
-            setToast({ isOpen: true, message: 'Pop-up browser diblokir! Izinkan pop-up untuk mencetak label.', type: 'warning' });
-            return;
-        }
-
         const activeEmail = (user?.email || userEmail || 'staf@gudang').trim();
         const metaEnv = typeof import.meta !== 'undefined' && (import.meta as any).env ? (import.meta as any).env : {};
         const activeSupabaseUrl = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_url') : null) || metaEnv.VITE_SUPABASE_URL || 'https://ajeohbobmvxtaicmpfgs.supabase.co';
@@ -1940,9 +1934,17 @@ export function CekRak2() {
 </body>
 </html>`;
 
-        win.document.open();
-        win.document.write(html);
-        win.document.close();
+        try {
+            const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+            const blobUrl = URL.createObjectURL(blob);
+            const win = window.open(blobUrl, '_blank');
+            if (!win) {
+                setToast({ isOpen: true, message: 'Pop-up browser diblokir! Izinkan pop-up untuk mencetak label.', type: 'warning' });
+            }
+        } catch (err) {
+            console.error('Error opening thermal print window:', err);
+            setToast({ isOpen: true, message: 'Gagal membuka halaman cetak label.', type: 'error' });
+        }
     };
 
     // Print Single Item (Defaults to 1 label on 1 sheet, with interactive toolbar to choose 1, 2, or 3 labels)
