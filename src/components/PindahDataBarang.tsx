@@ -740,7 +740,8 @@ export function PindahDataBarang() {
         completedSteps: 0
       });
 
-      const { todayTgl, nowWaktu } = getRealtimeDateTime();
+      const now = new Date();
+      const { todayTgl, nowWaktu } = getRealtimeDateTime(now);
 
       updateProgress(operationSteps[1], 1);
 
@@ -946,7 +947,8 @@ export function PindahDataBarang() {
 
     try {
       setSubmitting(true);
-      const { todayTgl, nowWaktu } = getRealtimeDateTime();
+      const now = new Date();
+      const { todayTgl, nowWaktu } = getRealtimeDateTime(now);
 
       const userName = user?.user_metadata?.full_name || user?.email || userRole || 'Auto-Klop Admin';
       let baseTime = now.getTime();
@@ -1104,7 +1106,8 @@ export function PindahDataBarang() {
 
     try {
       setSubmitting(true);
-      const { todayTgl, nowWaktu } = getRealtimeDateTime();
+      const now = new Date();
+      const { todayTgl, nowWaktu } = getRealtimeDateTime(now);
 
       const userName = user?.user_metadata?.full_name || user?.email || userRole || 'Dev/Admin Batch Realtime';
       let baseTime = now.getTime();

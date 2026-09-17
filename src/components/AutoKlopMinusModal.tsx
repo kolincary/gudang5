@@ -356,7 +356,8 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
     const executeReconcileForSku = async (item: SkuReconcileItem): Promise<boolean> => {
         if (!item.pairPlans || item.pairPlans.length === 0) return false;
 
-        const { todayTgl, nowWaktu } = getRealtimeDateTime();
+        const now = new Date();
+        const { todayTgl, nowWaktu } = getRealtimeDateTime(now);
 
         const userName = user?.user_metadata?.full_name || user?.email || userRole || 'Auto-Klop Admin';
         let baseTime = now.getTime();
