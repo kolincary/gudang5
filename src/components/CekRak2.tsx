@@ -217,10 +217,10 @@ export function CekRak2() {
     }, []);
 
     const handleToggleZoneSession = async (prefix: string, targetActive: boolean) => {
-        if (!isAdminOrDev) {
+        if (!isDeveloper) {
             setToast({
                 isOpen: true,
-                message: '❌ Hanya Developer & Admin yang dapat mengaktifkan/menonaktifkan Sesi Opname Zona.',
+                message: '❌ Hanya Developer yang dapat mengaktifkan/menonaktifkan Sesi Opname Zona.',
                 type: 'error'
             });
             return;
@@ -4737,7 +4737,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                         Mulai: {session.started_at ? new Date(session.started_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '-'} • Oleh: {session.started_by?.split('@')[0] || 'admin'}
                                                     </p>
                                                 </div>
-                                                {isAdminOrDev && (
+                                                {isDeveloper && (
                                                     <button
                                                         type="button"
                                                         onClick={() => handleToggleZoneSession(prefix, false)}
@@ -4756,8 +4756,8 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         </div>
                     )}
 
-                    {/* DEDICATED DEVMODE / ADMIN STOCK OPNAME ZONE CONTROLLER CARD */}
-                    {isAdminOrDev && (
+                    {/* DEDICATED DEVMODE STOCK OPNAME ZONE CONTROLLER CARD */}
+                    {isDeveloper && (
                         <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200/90 shadow-xl shadow-slate-900/5 space-y-4">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
                                 <div className="flex items-center gap-3">
@@ -4766,9 +4766,9 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     </div>
                                     <div>
                                         <h3 className="text-sm sm:text-base font-black text-slate-900 uppercase tracking-tight flex items-center gap-2">
-                                            <span>Panel Kontrol Sesi Opname Zona (DevMode & Admin)</span>
+                                            <span>Panel Kontrol Sesi Opname Zona (Khusus Developer)</span>
                                             <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 text-[10px] font-black border border-amber-300">
-                                                AUTO-MIGRATE KE TEMP
+                                                DEVMODE ONLY
                                             </span>
                                         </h3>
                                         <p className="text-xs text-slate-500 font-medium">
@@ -5346,7 +5346,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                 </div>
                                             </div>
 
-                                            {isAdminOrDev && (
+                                            {isDeveloper && (
                                                 <button
                                                     type="button"
                                                     onClick={() => handleToggleZoneSession(selectedPrefixTab, !activeOpnameZones[selectedPrefixTab]?.active)}
