@@ -1505,14 +1505,14 @@ export function CekRak2() {
                 const yyyy = d.getFullYear();
                 return dd + '-' + mm + '-' + yyyy;
             }
-            const ymdMatch = clean.match(/^(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})/);
+            const ymdMatch = clean.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
             if (ymdMatch) {
                 const year = ymdMatch[1];
                 const month = ymdMatch[2].padStart(2, '0');
                 const day = ymdMatch[3].padStart(2, '0');
                 return day + '-' + month + '-' + year;
             }
-            const dmyMatch = clean.match(/^(\\d{1,2})[-/.](\\d{1,2})[-/.](\\d{4})/);
+            const dmyMatch = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
             if (dmyMatch) {
                 const day = dmyMatch[1].padStart(2, '0');
                 const month = dmyMatch[2].padStart(2, '0');
@@ -1545,43 +1545,43 @@ export function CekRak2() {
             const varsTag = document.getElementById('dynamic-vars-css');
             if (varsTag) {
                 varsTag.innerHTML = ':root {' +
-                    '--paper-width: ' + s.paperWidth + 'mm;' +
-                    '--page-height: ' + s.pageHeight + 'mm;' +
-                    '--row-height: ' + s.rowHeight + 'mm;' +
+                    '--paper-width: ' + (s.paperWidth || 100) + 'mm;' +
+                    '--page-height: ' + (s.pageHeight || 140) + 'mm;' +
+                    '--row-height: ' + (s.rowHeight || 46) + 'mm;' +
                     '--layout-direction: ' + (s.layoutDirection || 'row') + ';' +
-                    '--qr-size: ' + s.qrSize + 'mm;' +
+                    '--qr-size: ' + (s.qrSize || 32) + 'mm;' +
                     '--qr-offset-x: ' + (s.qrOffsetX || 0) + 'px;' +
                     '--qr-offset-y: ' + (s.qrOffsetY || 0) + 'px;' +
                     '--text-offset-x: ' + (s.textOffsetX || 0) + 'px;' +
                     '--text-offset-y: ' + (s.textOffsetY || 0) + 'px;' +
                     '--text-align: ' + (s.textAlign || 'left') + ';' +
-                    '--sku-size: ' + s.skuSize + 'px;' +
-                    '--sku-weight: ' + s.skuWeight + ';' +
-                    '--id-size: ' + s.idSize + 'px;' +
+                    '--sku-size: ' + (s.skuSize || 22) + 'px;' +
+                    '--sku-weight: ' + (s.skuWeight || '900') + ';' +
+                    '--id-size: ' + (s.idSize || 14) + 'px;' +
                     '--date-size: ' + (s.dateSize || 12) + 'px;' +
                     '--date-weight: ' + (s.dateWeight || '800') + ';' +
                     '--show-date: ' + (s.showDate || 'block') + ';' +
-                    '--slot-size: ' + s.slotSize + 'px;' +
+                    '--slot-size: ' + (s.slotSize || 9) + 'px;' +
                     '--slot-pos-left: ' + (isLeftSlot ? '8px' : 'auto') + ';' +
                     '--slot-pos-right: ' + (isLeftSlot ? 'auto' : '8px') + ';' +
                     '--slot-pos-top: ' + (isTopSlot ? '4px' : 'auto') + ';' +
                     '--slot-pos-bottom: ' + (isTopSlot ? 'auto' : '4px') + ';' +
                     '--slot-offset-x: ' + (s.slotOffsetX || 0) + 'px;' +
-                    '--cell-pad-y: ' + s.cellPadY + 'px;' +
-                    '--cell-pad-x: ' + s.cellPadX + 'px;' +
-                    '--border-style: ' + s.borderStyle + ';' +
-                    '--border-width: ' + s.borderWidth + ';' +
+                    '--cell-pad-y: ' + (s.cellPadY || 6) + 'px;' +
+                    '--cell-pad-x: ' + (s.cellPadX || 8) + 'px;' +
+                    '--border-style: ' + (s.borderStyle || 'dashed') + ';' +
+                    '--border-width: ' + (s.borderWidth || '2px') + ';' +
                     '--border-color: ' + (s.borderColor || '#000') + ';' +
-                    '--show-slot: ' + s.showSlot + ';' +
+                    '--show-slot: ' + (s.showSlot || 'block') + ';' +
                 '}';
             }
 
             const pageTag = document.getElementById('dynamic-page-css');
             if (pageTag) {
                 if (s.sizePreset === 'auto') {
-                    pageTag.innerHTML = '@page { size: ' + s.paperWidth + 'mm auto; margin: 0; }';
+                    pageTag.innerHTML = '@page { size: ' + (s.paperWidth || 100) + 'mm auto; margin: 0; }';
                 } else {
-                    pageTag.innerHTML = '@page { size: ' + s.paperWidth + 'mm ' + s.pageHeight + 'mm; margin: 0; }';
+                    pageTag.innerHTML = '@page { size: ' + (s.paperWidth || 100) + 'mm ' + (s.pageHeight || 140) + 'mm; margin: 0; }';
                 }
             }
         }
@@ -1591,8 +1591,8 @@ export function CekRak2() {
             const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.innerText = txt; };
 
             setVal('input-qr-position', s.layoutDirection === 'row-reverse' ? 'right' : 'left');
-            setVal('input-qr-size', s.qrSize);
-            setText('val-qr-size', s.qrSize + ' mm');
+            setVal('input-qr-size', s.qrSize || 32);
+            setText('val-qr-size', (s.qrSize || 32) + ' mm');
 
             setVal('input-qr-offset-x', s.qrOffsetX || 0);
             setText('val-qr-offset-x', (s.qrOffsetX || 0) + ' px');
@@ -1606,36 +1606,36 @@ export function CekRak2() {
             setVal('input-text-offset-y', s.textOffsetY || 0);
             setText('val-text-offset-y', (s.textOffsetY || 0) + ' px');
 
-            setVal('input-sku-size', s.skuSize);
-            setText('val-sku-size', s.skuSize + ' px');
+            setVal('input-sku-size', s.skuSize || 22);
+            setText('val-sku-size', (s.skuSize || 22) + ' px');
 
-            setVal('input-sku-weight', s.skuWeight);
+            setVal('input-sku-weight', s.skuWeight || '900');
             setVal('input-text-align', s.textAlign || 'left');
 
-            setVal('input-id-size', s.idSize);
-            setText('val-id-size', s.idSize + ' px');
+            setVal('input-id-size', s.idSize || 14);
+            setText('val-id-size', (s.idSize || 14) + ' px');
 
             setVal('input-date-size', s.dateSize || 12);
             setText('val-date-size', (s.dateSize || 12) + ' px');
             setVal('input-show-date', s.showDate || 'block');
 
-            setVal('input-show-slot', s.showSlot);
+            setVal('input-show-slot', s.showSlot || 'block');
             setVal('input-slot-position', s.slotPosition || 'bottom-right');
 
-            setVal('input-slot-size', s.slotSize);
-            setText('val-slot-size', s.slotSize + ' px');
+            setVal('input-slot-size', s.slotSize || 9);
+            setText('val-slot-size', (s.slotSize || 9) + ' px');
 
             setVal('input-slot-offset-x', s.slotOffsetX || 0);
             setText('val-slot-offset-x', (s.slotOffsetX || 0) + ' px');
 
-            setVal('input-row-height', s.rowHeight);
-            setText('val-row-height', s.rowHeight + ' mm');
+            setVal('input-row-height', s.rowHeight || 46);
+            setText('val-row-height', (s.rowHeight || 46) + ' mm');
 
-            setVal('input-paper-width', s.paperWidth);
-            setText('val-paper-width', s.paperWidth + ' mm');
+            setVal('input-paper-width', s.paperWidth || 100);
+            setText('val-paper-width', (s.paperWidth || 100) + ' mm');
 
-            setVal('input-border-style', s.borderStyle);
-            setVal('input-border-width', s.borderWidth);
+            setVal('input-border-style', s.borderStyle || 'dashed');
+            setVal('input-border-width', s.borderWidth || '2px');
         }
 
         function syncSettingsWithStorageAndParent() {
@@ -1654,28 +1654,36 @@ export function CekRak2() {
         }
 
         function onCustomChange() {
-            const getVal = (id) => document.getElementById(id)?.value;
+            const getVal = (id, def) => {
+                const el = document.getElementById(id);
+                return el ? el.value : def;
+            };
+            const getNum = (id, def) => {
+                const val = getVal(id, def);
+                const num = Number(val);
+                return isNaN(num) ? def : num;
+            };
             
-            currentSettings.layoutDirection = getVal('input-qr-position') === 'right' ? 'row-reverse' : 'row';
-            currentSettings.qrSize = Number(getVal('input-qr-size') || 32);
-            currentSettings.qrOffsetX = Number(getVal('input-qr-offset-x') || 0);
-            currentSettings.qrOffsetY = Number(getVal('input-qr-offset-y') || 0);
-            currentSettings.textOffsetX = Number(getVal('input-text-offset-x') || 0);
-            currentSettings.textOffsetY = Number(getVal('input-text-offset-y') || 0);
-            currentSettings.textAlign = getVal('input-text-align') || 'left';
-            currentSettings.skuSize = Number(getVal('input-sku-size') || 22);
-            currentSettings.skuWeight = getVal('input-sku-weight') || '900';
-            currentSettings.idSize = Number(getVal('input-id-size') || 14);
-            currentSettings.dateSize = Number(getVal('input-date-size') || 12);
-            currentSettings.showDate = getVal('input-show-date') || 'block';
-            currentSettings.showSlot = getVal('input-show-slot') || 'block';
-            currentSettings.slotPosition = getVal('input-slot-position') || 'bottom-right';
-            currentSettings.slotSize = Number(getVal('input-slot-size') || 9);
-            currentSettings.slotOffsetX = Number(getVal('input-slot-offset-x') || 0);
-            currentSettings.rowHeight = Number(getVal('input-row-height') || 46);
-            currentSettings.paperWidth = Number(getVal('input-paper-width') || 100);
-            currentSettings.borderStyle = getVal('input-border-style') || 'dashed';
-            currentSettings.borderWidth = getVal('input-border-width') || '2px';
+            currentSettings.layoutDirection = getVal('input-qr-position', 'left') === 'right' ? 'row-reverse' : 'row';
+            currentSettings.qrSize = getNum('input-qr-size', 32);
+            currentSettings.qrOffsetX = getNum('input-qr-offset-x', 0);
+            currentSettings.qrOffsetY = getNum('input-qr-offset-y', 0);
+            currentSettings.textOffsetX = getNum('input-text-offset-x', 0);
+            currentSettings.textOffsetY = getNum('input-text-offset-y', 0);
+            currentSettings.textAlign = getVal('input-text-align', 'left');
+            currentSettings.skuSize = getNum('input-sku-size', 22);
+            currentSettings.skuWeight = getVal('input-sku-weight', '900');
+            currentSettings.idSize = getNum('input-id-size', 14);
+            currentSettings.dateSize = getNum('input-date-size', 12);
+            currentSettings.showDate = getVal('input-show-date', 'block');
+            currentSettings.showSlot = getVal('input-show-slot', 'block');
+            currentSettings.slotPosition = getVal('input-slot-position', 'bottom-right');
+            currentSettings.slotSize = getNum('input-slot-size', 9);
+            currentSettings.slotOffsetX = getNum('input-slot-offset-x', 0);
+            currentSettings.rowHeight = getNum('input-row-height', 46);
+            currentSettings.paperWidth = getNum('input-paper-width', 100);
+            currentSettings.borderStyle = getVal('input-border-style', 'dashed');
+            currentSettings.borderWidth = getVal('input-border-width', '2px');
 
             updateFormInputs(currentSettings);
             applyStylesToDom(currentSettings);
@@ -1707,6 +1715,10 @@ export function CekRak2() {
         }
 
         function switchPresetPaper(widthMm) {
+            document.querySelectorAll('#btn-100, #btn-80, #btn-58').forEach(function(btn) { btn.classList.remove('active'); });
+            const activeBtn = document.getElementById('btn-' + widthMm);
+            if (activeBtn) activeBtn.classList.add('active');
+
             currentSettings.paperWidth = widthMm;
             updateFormInputs(currentSettings);
             applyStylesToDom(currentSettings);
@@ -1818,7 +1830,7 @@ export function CekRak2() {
 
             const toast = document.getElementById('toast-indicator');
             if (toast && showToast) {
-                toast.innerText = '⏳ Menyimpan ke Supabase...';
+                toast.innerText = '⏳ Menyimpan style...';
                 toast.classList.add('show');
             }
 
@@ -1839,16 +1851,12 @@ export function CekRak2() {
                 });
 
                 if (toast && showToast) {
-                    if (resp.ok) {
-                        toast.innerText = '✅ Tersimpan di Supabase (' + activeUserEmail + ')';
-                    } else {
-                        toast.innerText = '✅ Tersimpan di Akun & Browser!';
-                    }
+                    toast.innerText = '✅ Style tersimpan di Akun & Browser!';
                     setTimeout(() => toast.classList.remove('show'), 3500);
                 }
             } catch (err) {
                 if (toast && showToast) {
-                    toast.innerText = '✅ Tersimpan di Akun & Browser!';
+                    toast.innerText = '✅ Style tersimpan di Akun & Browser!';
                     setTimeout(() => toast.classList.remove('show'), 3500);
                 }
             }
@@ -1888,6 +1896,18 @@ export function CekRak2() {
             applyStylesToDom(currentSettings);
             saveSettingsToSupabase(true);
         }
+
+        // Attach explicitly to window object for bulletproof global accessibility
+        window.toggleCustomizer = toggleCustomizer;
+        window.switchSize = switchSize;
+        window.switchPresetPaper = switchPresetPaper;
+        window.setCopies = setCopies;
+        window.onCustomChange = onCustomChange;
+        window.saveSettingsToSupabase = saveSettingsToSupabase;
+        window.resetToFactoryDefaults = resetToFactoryDefaults;
+        window.copyAllDataTSV = copyAllDataTSV;
+        window.copyLabelData = copyLabelData;
+        window.formatToDDMMYYYY = formatToDDMMYYYY;
 
         // Apply styles and form values immediately
         updateFormInputs(currentSettings);
@@ -2022,6 +2042,9 @@ export function CekRak2() {
         const channel = supabase
             .channel('realtime:cekrak2_karantina_count')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'karantina_revisi_out' }, () => {
+                fetchPendingKarantinaCount();
+            })
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'quarantined_items' }, () => {
                 fetchPendingKarantinaCount();
             })
             .subscribe();

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS public.karantina_revisi_out (
     rak_asal TEXT,
     sub_rak_tujuan TEXT,
     tgl_out_asli TEXT,
+    gudang TEXT,
     user_pemotong_out TEXT,
     user_penarik TEXT,
     keterangan_out_asli TEXT,
@@ -21,6 +22,10 @@ CREATE TABLE IF NOT EXISTS public.karantina_revisi_out (
     revisi_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Tambahkan kolom gudang jika tabel sudah dibuat sebelumnya tanpa kolom ini
+ALTER TABLE public.karantina_revisi_out ADD COLUMN IF NOT EXISTS gudang TEXT;
+ALTER TABLE public.karantina_revisi_out ADD COLUMN IF NOT EXISTS tgl_out TEXT;
 
 -- Index untuk mempercepat query status dan pencarian SKU
 CREATE INDEX IF NOT EXISTS idx_karantina_revisi_sku ON public.karantina_revisi_out (sku);

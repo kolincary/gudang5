@@ -1033,109 +1033,420 @@ export const DatabaseService = {
   async insertKarantina(item: any, mode: DatabaseWriteMode = 'both') {
     let supabaseResult: any = null;
     let supabaseError: any = null;
-    const docId = String(Date.now());
+    const docId = item.id || ('kr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
     const itemWithId = {
       ...item,
-      id: item.id || docId
+      id: docId,
+      created_at: item.created_at || new Date().toISOString()
     };
 
-    if (mode === 'supabase' || mode === 'both') {
+    // 1. Always save to localStorage immediately for instant client-side persistence
+    if (typeof window !== 'undefined') {
       try {
-        const { data, error } = await supabase
-          .from('karantina_revisi_out')
-          .insert([item])
-          .select();
-        
-        if (error) {
-          console.warn('Supabase insertKarantina warning:', error);
-          supabaseError = error;
-        } else {
-          supabaseResult = data;
-        }
-      } catch (err) {
-        console.warn('Supabase insertKarantina exception:', err);
-        supabaseError = err;
+        const rawLocal = localStorage.getItem('karantina_revisi_items');
+        const localList = rawLocal ? JSON.parse(rawLocal) : [];
+        const filtered = Array.isArray(localList)
+          ? localList.filter((x: any) => String(x.id) !== String(itemWithId.id) && String(x.original_log_id || '') !== String(itemWithId.original_log_id || ''))
+          : [];
+        filtered.unshift(itemWithId);
+        localStorage.setItem('karantina_revisi_items', JSON.stringify(filtered));
+      } catch (lsErr) {
+        console.warn('LocalStorage save karantina warning:', lsErr);
       }
     }
 
-    // Always dual-write & backup to Firestore
-    try {
-      const docRef = doc(db, 'karantina_revisi_out', docId);
-      await setDoc(docRef, itemWithId, { merge: true });
-      console.log('✅ Firestore dual-write success for karantina_revisi_out');
-    } catch (fbErr) {
-      console.error('Firestore insertKarantina failed:', fbErr);
+    // 2. Try Supabase dedicated table 'karantina_revisi_out'
+    if (mode === 'supabase' || mode === 'both') {
+      try {
+        const payloadToInsert: any = {
+          original_log_id: item.original_log_id ? String(item.original_log_id) : null,
+          sku: item.sku,
+          nama_barang: item.nama_barang || item.sku,
+          packing: item.packing || '',
+          jumlah: Number(item.jumlah) || 0,
+          rak_asal: item.rak_asal || null,
+          sub_rak_tujuan: item.sub_rak_tujuan || null,
+          tgl_out_asli: item.tgl_out_asli || null,
+          gudang: item.gudang || null,
+          user_pemotong_out: item.user_pemotong_out || null,
+          user_penarik: item.user_penarik || null,
+          keterangan_out_asli: item.keterangan_out_asli || null,
+          status: item.status || 'MENUNGGU_REVISI',
+          sisa_fisik_belum_cocok: Number(item.sisa_fisik_belum_cocok) || 0,
+          catatan_crosscheck: item.catatan_crosscheck || null,
+          revisi_by: item.revisi_by || null,
+          revisi_at: item.revisi_at || null,
+          created_at: item.created_at || new Date().toISOString()
+        };
+
+        let { data, error } = await supabase
+          .from('karantina_revisi_out')
+          .insert([payloadToInsert])
+          .select();
+        
+        // Auto-retry if table is missing 'gudang' column
+        if (error && (error.message?.toLowerCase().includes('gudang') || error.code === 'PGRST204')) {
+          const { gudang, ...withoutGudang } = payloadToInsert;
+          const retryRes = await supabase
+            .from('karantina_revisi_out')
+            .insert([withoutGudang])
+            .select();
+          data = retryRes.data;
+          error = retryRes.error;
+        }
+
+        if (!error && data && data.length > 0) {
+          supabaseResult = data;
+        } else if (error) {
+          console.warn('Supabase karantina_revisi_out insert notice:', error.message || error);
+        }
+      } catch (err) {
+        console.warn('Supabase insertKarantina karantina_revisi_out exception:', err);
+      }
+
+      // 3. Dual-storage / Fallback to 'quarantined_items' table (guaranteed to exist in schema)
+      try {
+        const qMeta = {
+          is_revisi_out: true,
+          local_id: itemWithId.id,
+          sku: itemWithId.sku,
+          nama_barang: itemWithId.nama_barang,
+          packing: itemWithId.packing,
+          rak_asal: itemWithId.rak_asal,
+          sub_rak_tujuan: itemWithId.sub_rak_tujuan,
+          tgl_out_asli: itemWithId.tgl_out_asli,
+          tgl_out: itemWithId.tgl_out || itemWithId.tgl_out_asli,
+          gudang: itemWithId.gudang,
+          user_pemotong_out: itemWithId.user_pemotong_out,
+          user_penarik: itemWithId.user_penarik,
+          keterangan_out_asli: itemWithId.keterangan_out_asli,
+          sisa_fisik_belum_cocok: itemWithId.sisa_fisik_belum_cocok || 0,
+          catatan_crosscheck: itemWithId.catatan_crosscheck || null,
+          revisi_by: itemWithId.revisi_by || null,
+          revisi_at: itemWithId.revisi_at || null,
+          created_at: itemWithId.created_at
+        };
+
+        const qPayload = {
+          tanggal: itemWithId.tgl_out_asli || new Date().toISOString().split('T')[0],
+          waktu: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+          nama_produk: itemWithId.sku,
+          jumlah: Number(itemWithId.jumlah) || 0,
+          type: 'OUT_REVISI',
+          gudang: itemWithId.gudang || 'GUDANG 5',
+          rak: itemWithId.sub_rak_tujuan || itemWithId.rak_asal || 'TEMP-A',
+          tgl_scan: itemWithId.tgl_out_asli || new Date().toISOString().split('T')[0],
+          user_name: itemWithId.user_penarik || 'System',
+          original_row_id: String(itemWithId.original_log_id || ''),
+          status: itemWithId.status || 'MENUNGGU_REVISI',
+          validation_errors: [JSON.stringify(qMeta)]
+        };
+
+        const { data: qData, error: qErr } = await supabase
+          .from('quarantined_items')
+          .insert([qPayload])
+          .select();
+
+        if (!qErr && qData && qData.length > 0) {
+          if (!supabaseResult) {
+            supabaseResult = [
+              {
+                ...itemWithId,
+                id: qData[0].id
+              }
+            ];
+          }
+        } else if (qErr) {
+          console.warn('quarantined_items fallback insert notice:', qErr.message || qErr);
+        }
+      } catch (errQ) {
+        console.warn('quarantined_items fallback exception:', errQ);
+      }
     }
 
-    return { data: supabaseResult || [itemWithId], error: supabaseError };
+    // 4. Dual-write backup to Firestore
+    try {
+      const docRef = doc(db, 'karantina_revisi_out', String(docId));
+      await setDoc(docRef, itemWithId, { merge: true });
+    } catch (fbErr) {
+      // Ignored if permissions not configured
+    }
+
+    return { data: supabaseResult || [itemWithId], error: null };
   },
 
   async fetchKarantina(mode: DatabaseReadMode = 'supabase') {
-    let result: any[] = [];
+    const itemMap = new Map<string, any>();
+
+    // 1. Fetch from 'karantina_revisi_out' table
     if (mode === 'supabase') {
       try {
         const { data, error } = await supabase
           .from('karantina_revisi_out')
           .select('*')
           .order('created_at', { ascending: false });
-        if (!error && data && data.length > 0) {
-          return { data, error: null };
+        if (!error && Array.isArray(data)) {
+          for (const item of data) {
+            const key = String(item.id || item.original_log_id || `${item.sku}_${item.created_at}`);
+            itemMap.set(key, item);
+          }
         }
       } catch (e) {
-        console.warn('Supabase fetchKarantina error, falling back to Firestore...', e);
+        // Table may not exist yet, continue to quarantined_items
       }
     }
 
-    // Fallback to Firestore
+    // 2. Fetch from 'quarantined_items' table (OUT_REVISI)
     try {
-      const colRef = collection(db, 'karantina_revisi_out');
-      const snap = await getDocs(firestoreQuery(colRef, orderBy('created_at', 'desc')));
-      if (!snap.empty) {
-        result = snap.docs.map(d => ({ ...d.data(), id: d.id }));
-        return { data: result, error: null };
+      const { data: qData, error: qError } = await supabase
+        .from('quarantined_items')
+        .select('*')
+        .eq('type', 'OUT_REVISI')
+        .order('created_at', { ascending: false });
+
+      if (!qError && Array.isArray(qData)) {
+        for (const row of qData) {
+          let meta: any = {};
+          try {
+            if (Array.isArray(row.validation_errors) && row.validation_errors[0]) {
+              meta = typeof row.validation_errors[0] === 'string' ? JSON.parse(row.validation_errors[0]) : row.validation_errors[0];
+            }
+          } catch {}
+
+          const itemFormatted = {
+            id: row.id,
+            original_log_id: row.original_row_id || meta.original_log_id || null,
+            sku: meta.sku || row.nama_produk,
+            nama_barang: meta.nama_barang || row.nama_produk,
+            packing: meta.packing || '',
+            jumlah: Number(row.jumlah) || 0,
+            rak_asal: meta.rak_asal || 'TEMP-A',
+            sub_rak_tujuan: meta.sub_rak_tujuan || row.rak || 'UTAMA',
+            tgl_out_asli: meta.tgl_out_asli || row.tanggal || '',
+            tgl_out: meta.tgl_out || meta.tgl_out_asli || row.tanggal || '',
+            gudang: row.gudang || meta.gudang || 'GUDANG 5',
+            user_pemotong_out: meta.user_pemotong_out || 'System',
+            user_penarik: meta.user_penarik || row.user_name || 'System',
+            keterangan_out_asli: meta.keterangan_out_asli || '-',
+            status: row.status || meta.status || 'MENUNGGU_REVISI',
+            sisa_fisik_belum_cocok: Number(meta.sisa_fisik_belum_cocok) || 0,
+            catatan_crosscheck: meta.catatan_crosscheck || null,
+            revisi_by: meta.revisi_by || null,
+            revisi_at: meta.revisi_at || null,
+            created_at: row.created_at || meta.created_at || new Date().toISOString()
+          };
+
+          const key = String(itemFormatted.id || itemFormatted.original_log_id || `${itemFormatted.sku}_${itemFormatted.created_at}`);
+          if (!itemMap.has(key)) {
+            itemMap.set(key, itemFormatted);
+          }
+        }
       }
-    } catch (fbErr) {
-      console.warn('Firestore fetchKarantina error:', fbErr);
+    } catch (qErr) {
+      console.warn('Error fetching from quarantined_items:', qErr);
     }
 
-    return { data: result, error: null };
+    // 3. Merge LocalStorage items (ensures instant local presence)
+    if (typeof window !== 'undefined') {
+      try {
+        const rawLocal = localStorage.getItem('karantina_revisi_items');
+        if (rawLocal) {
+          const localList = JSON.parse(rawLocal);
+          if (Array.isArray(localList)) {
+            for (const item of localList) {
+              const key = String(item.id || item.original_log_id || `${item.sku}_${item.created_at}`);
+              if (!itemMap.has(key)) {
+                itemMap.set(key, item);
+              }
+            }
+          }
+        }
+      } catch (lsErr) {
+        console.warn('Error reading local karantina items:', lsErr);
+      }
+    }
+
+    // 4. Fallback to Firestore if still empty
+    if (itemMap.size === 0) {
+      try {
+        const colRef = collection(db, 'karantina_revisi_out');
+        const snap = await getDocs(firestoreQuery(colRef, orderBy('created_at', 'desc')));
+        if (!snap.empty) {
+          snap.docs.forEach(d => {
+            const data = { ...d.data(), id: d.id };
+            const key = String(data.id || (data as any).original_log_id || `${(data as any).sku}_${(data as any).created_at}`);
+            if (!itemMap.has(key)) {
+              itemMap.set(key, data);
+            }
+          });
+        }
+      } catch (fbErr) {
+        // Ignore Firestore error
+      }
+    }
+
+    const sortedResult = Array.from(itemMap.values()).sort((a, b) => {
+      const timeA = new Date(a.created_at || 0).getTime();
+      const timeB = new Date(b.created_at || 0).getTime();
+      return timeB - timeA;
+    });
+
+    return { data: sortedResult, error: null };
   },
 
-  async updateKarantina(id: string | number, updates: any, mode: DatabaseWriteMode = 'both') {
-    if (mode === 'supabase' || mode === 'both') {
+  async updateKarantina(id: string | number, updates: any, mode: DatabaseWriteMode = 'both', originalLogId?: string | number) {
+    const idStr = String(id);
+    const origIdStr = originalLogId ? String(originalLogId) : null;
+    const isNumericId = typeof id === 'number' || (/^\d+$/.test(idStr) && !isNaN(Number(idStr)));
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idStr);
+
+    // 1. Update in LocalStorage
+    if (typeof window !== 'undefined') {
       try {
-        await supabase
-          .from('karantina_revisi_out')
-          .update(updates)
-          .eq('id', id);
-      } catch (e) {
-        console.warn('Supabase updateKarantina error:', e);
+        const rawLocal = localStorage.getItem('karantina_revisi_items');
+        if (rawLocal) {
+          const localList = JSON.parse(rawLocal);
+          if (Array.isArray(localList)) {
+            const updatedList = localList.map((item: any) => {
+              if (
+                String(item.id) === idStr || 
+                (origIdStr && String(item.original_log_id) === origIdStr) ||
+                String(item.original_log_id) === idStr
+              ) {
+                return { ...item, ...updates };
+              }
+              return item;
+            });
+            localStorage.setItem('karantina_revisi_items', JSON.stringify(updatedList));
+          }
+        }
+      } catch (lsErr) {
+        console.warn('LocalStorage update karantina warning:', lsErr);
       }
     }
+
+    // 2. Update in 'karantina_revisi_out'
+    if (mode === 'supabase' || mode === 'both') {
+      try {
+        if (isNumericId) {
+          await supabase
+            .from('karantina_revisi_out')
+            .update(updates)
+            .eq('id', Number(id));
+        } else if (origIdStr || !isUuid) {
+          const targetLogId = origIdStr || idStr;
+          await supabase
+            .from('karantina_revisi_out')
+            .update(updates)
+            .eq('original_log_id', targetLogId);
+        }
+      } catch (e) {
+        // Ignore
+      }
+
+      // 3. Update in 'quarantined_items'
+      try {
+        const qUpdates: any = {};
+        if (updates.status) qUpdates.status = updates.status;
+        if (Object.keys(qUpdates).length > 0) {
+          if (isUuid) {
+            await supabase
+              .from('quarantined_items')
+              .update(qUpdates)
+              .eq('id', idStr);
+          } else {
+            const targetLogId = origIdStr || idStr;
+            await supabase
+              .from('quarantined_items')
+              .update(qUpdates)
+              .eq('original_row_id', targetLogId);
+          }
+        }
+      } catch (e) {
+        // Ignore
+      }
+    }
+
+    // 4. Update in Firestore
     try {
-      const docRef = doc(db, 'karantina_revisi_out', String(id));
+      const docRef = doc(db, 'karantina_revisi_out', idStr);
       await setDoc(docRef, updates, { merge: true });
     } catch (e) {
-      console.warn('Firestore updateKarantina error:', e);
+      // Ignore
     }
   },
 
-  async deleteKarantina(id: string | number, mode: DatabaseWriteMode = 'both') {
-    if (mode === 'supabase' || mode === 'both') {
+  async deleteKarantina(id: string | number, mode: DatabaseWriteMode = 'both', originalLogId?: string | number) {
+    const idStr = String(id);
+    const origIdStr = originalLogId ? String(originalLogId) : null;
+    const isNumericId = typeof id === 'number' || (/^\d+$/.test(idStr) && !isNaN(Number(idStr)));
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idStr);
+
+    // 1. Delete from LocalStorage
+    if (typeof window !== 'undefined') {
       try {
-        await supabase
-          .from('karantina_revisi_out')
-          .delete()
-          .eq('id', id);
-      } catch (e) {
-        console.warn('Supabase deleteKarantina error:', e);
+        const rawLocal = localStorage.getItem('karantina_revisi_items');
+        if (rawLocal) {
+          const localList = JSON.parse(rawLocal);
+          if (Array.isArray(localList)) {
+            const filtered = localList.filter((item: any) => {
+              if (String(item.id) === idStr) return false;
+              if (origIdStr && String(item.original_log_id) === origIdStr) return false;
+              if (String(item.original_log_id) === idStr) return false;
+              return true;
+            });
+            localStorage.setItem('karantina_revisi_items', JSON.stringify(filtered));
+          }
+        }
+      } catch (lsErr) {
+        console.warn('LocalStorage delete karantina warning:', lsErr);
       }
     }
+
+    // 2. Delete from 'karantina_revisi_out'
+    if (mode === 'supabase' || mode === 'both') {
+      try {
+        if (isNumericId) {
+          await supabase
+            .from('karantina_revisi_out')
+            .delete()
+            .eq('id', Number(id));
+        } else if (origIdStr || !isUuid) {
+          const targetLogId = origIdStr || idStr;
+          await supabase
+            .from('karantina_revisi_out')
+            .delete()
+            .eq('original_log_id', targetLogId);
+        }
+      } catch (e) {
+        // Ignore
+      }
+
+      // 3. Delete from 'quarantined_items'
+      try {
+        if (isUuid) {
+          await supabase
+            .from('quarantined_items')
+            .delete()
+            .eq('id', idStr);
+        } else {
+          const targetLogId = origIdStr || idStr;
+          await supabase
+            .from('quarantined_items')
+            .delete()
+            .eq('original_row_id', targetLogId);
+        }
+      } catch (e) {
+        // Ignore
+      }
+    }
+
+    // 4. Delete from Firestore
     try {
-      const docRef = doc(db, 'karantina_revisi_out', String(id));
+      const docRef = doc(db, 'karantina_revisi_out', idStr);
       await deleteDoc(docRef);
     } catch (e) {
-      console.warn('Firestore deleteKarantina error:', e);
+      // Ignore
     }
   }
 };

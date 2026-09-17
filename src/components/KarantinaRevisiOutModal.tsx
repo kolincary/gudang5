@@ -14,15 +14,16 @@ import {
     Calendar, 
     AlertTriangle,
     ShieldCheck,
-    MessageSquare
+    MessageSquare,
+    Trash2
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { DatabaseService } from '../lib/DatabaseService';
 
 export interface KarantinaRevisiItem {
-    id: number;
-    original_log_id: number | null;
+    id: number | string;
+    original_log_id: number | string | null;
     sku: string;
     nama_barang: string | null;
     packing: string | null;
@@ -63,7 +64,7 @@ export const KarantinaRevisiOutModal: React.FC<KarantinaRevisiOutModalProps> = (
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState<'ALL' | 'MENUNGGU_REVISI' | 'SUDAH_REVISI' | 'DITOLAK'>('ALL');
-    const [copiedId, setCopiedId] = useState<number | null>(null);
+    const [copiedId, setCopiedId] = useState<number | string | null>(null);
 
     // Modal Konfirmasi Revisi State
     const [confirmModal, setConfirmModal] = useState<{
@@ -78,6 +79,17 @@ export const KarantinaRevisiOutModal: React.FC<KarantinaRevisiOutModalProps> = (
         action: 'approve',
         note: '',
         isSubmitting: false
+    });
+
+    // Modal Konfirmasi Hapus State
+    const [deleteModal, setDeleteModal] = useState<{
+        isOpen: boolean;
+        item: KarantinaRevisiItem | null;
+        isDeleting: boolean;
+    }>({
+        isOpen: false,
+        item: null,
+        isDeleting: false
     });
 
     const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -106,6 +118,10 @@ export const KarantinaRevisiOutModal: React.FC<KarantinaRevisiOutModalProps> = (
             const channel = supabase
                 .channel('realtime:karantina_revisi_out')
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'karantina_revisi_out' }, () => {
+                    fetchItems();
+                    if (onDataChanged) onDataChanged();
+                })
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'quarantined_items' }, () => {
                     fetchItems();
                     if (onDataChanged) onDataChanged();
                 })
@@ -184,6 +200,37 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
         });
     };
 
+    const handleExecuteDelete = async () => {
+        if (!deleteModal.item) return;
+        setDeleteModal(prev => ({ ...prev, isDeleting: true }));
+
+        try {
+            await DatabaseService.deleteKarantina(
+                deleteModal.item.id,
+                'both',
+                deleteModal.item.original_log_id || undefined
+            );
+
+            showToast('✅ Data berhasil dihapus dari wadah karantina!', 'success');
+            setItems(prev => prev.filter(i => 
+                i.id !== deleteModal.item?.id && 
+                (!deleteModal.item?.original_log_id || i.original_log_id !== deleteModal.item?.original_log_id)
+            ));
+
+            setDeleteModal({
+                isOpen: false,
+                item: null,
+                isDeleting: false
+            });
+
+            if (onDataChanged) onDataChanged();
+        } catch (err: any) {
+            console.error('Error deleting karantina item:', err);
+            showToast(`Gagal menghapus data: ${err.message}`, 'error');
+            setDeleteModal(prev => ({ ...prev, isDeleting: false }));
+        }
+    };
+
     const handleExecuteStatusUpdate = async () => {
         if (!confirmModal.item) return;
         setConfirmModal(prev => ({ ...prev, isSubmitting: true }));
@@ -192,12 +239,17 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
         const actor = userName || user?.email || (isDeveloper ? 'Developer' : 'Admin');
 
         try {
-            await DatabaseService.updateKarantina(confirmModal.item.id, {
-                status: newStatus,
-                catatan_crosscheck: confirmModal.note.trim() || (newStatus === 'SUDAH_REVISI' ? 'Sudah disesuaikan di Accurate' : 'Dibatalkan/Ditolak'),
-                revisi_by: actor,
-                revisi_at: new Date().toISOString()
-            });
+            await DatabaseService.updateKarantina(
+                confirmModal.item.id, 
+                {
+                    status: newStatus,
+                    catatan_crosscheck: confirmModal.note.trim() || (newStatus === 'SUDAH_REVISI' ? 'Sudah disesuaikan di Accurate' : 'Dibatalkan/Ditolak'),
+                    revisi_by: actor,
+                    revisi_at: new Date().toISOString()
+                },
+                'both',
+                confirmModal.item.original_log_id || undefined
+            );
 
             showToast(
                 newStatus === 'SUDAH_REVISI' 
@@ -496,23 +548,39 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
 
                                         {/* Action Buttons */}
                                         <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
-                                            {/* WhatsApp Copy Button */}
-                                            <button
-                                                onClick={() => handleCopyWa(item)}
-                                                className="px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 font-black text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
-                                            >
-                                                {copiedId === item.id ? (
-                                                    <>
-                                                        <Check className="w-3.5 h-3.5 text-emerald-600" />
-                                                        <span>Format WA Tersalin!</span>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
-                                                        <span>Salin Laporan WA</span>
-                                                    </>
-                                                )}
-                                            </button>
+                                            {/* WhatsApp Copy & Delete Buttons */}
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    onClick={() => handleCopyWa(item)}
+                                                    className="px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 font-black text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                                                >
+                                                    {copiedId === item.id ? (
+                                                        <>
+                                                            <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                                            <span>Format WA Tersalin!</span>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
+                                                            <span>Salin Laporan WA</span>
+                                                        </>
+                                                    )}
+                                                </button>
+
+                                                {/* Delete / Hapus Button */}
+                                                <button
+                                                    onClick={() => setDeleteModal({
+                                                        isOpen: true,
+                                                        item,
+                                                        isDeleting: false
+                                                    })}
+                                                    title="Hapus data dari Wadah Karantina"
+                                                    className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 hover:text-rose-700 border border-rose-200/80 font-black text-xs uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                                                >
+                                                    <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                                                    <span>Hapus</span>
+                                                </button>
+                                            </div>
 
                                             {/* Admin / Dev Controls */}
                                             {canManageRevisi && (
@@ -527,9 +595,9 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
                                                                     note: '',
                                                                     isSubmitting: false
                                                                 })}
-                                                                className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-black text-xs uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
+                                                                className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-black text-xs uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
                                                             >
-                                                                <X className="w-3.5 h-3.5 text-rose-600" />
+                                                                <X className="w-3.5 h-3.5 text-slate-500" />
                                                                 <span>Tolak</span>
                                                             </button>
                                                             <button
@@ -647,6 +715,81 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
                                     <>
                                         {confirmModal.action === 'approve' ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
                                         <span>{confirmModal.action === 'approve' ? 'Tandai Sudah Revisi' : 'Konfirmasi Tolak'}</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Delete Confirmation Modal */}
+            {deleteModal.isOpen && deleteModal.item && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[130] flex items-center justify-center p-4 animate-in fade-in">
+                    <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl p-6 border border-slate-200 animate-in zoom-in-95">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-rose-100 text-rose-700">
+                                <Trash2 className="w-5 h-5" />
+                            </div>
+                            <div>
+                                <h4 className="text-base font-black text-slate-900 uppercase tracking-tight">
+                                    Hapus Data Karantina?
+                                </h4>
+                                <p className="text-xs text-slate-500 font-medium">
+                                    Hapus item dari wadah karantina revisi
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80 mb-4 text-xs space-y-1">
+                            <div className="flex justify-between">
+                                <span className="text-slate-400 font-bold">SKU:</span>
+                                <span className="font-black text-slate-800">{deleteModal.item.sku}</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-slate-400 font-bold">Jumlah:</span>
+                                <span className="font-extrabold text-emerald-700">{deleteModal.item.jumlah} pcs</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-slate-400 font-bold">Sub-Rak Tujuan:</span>
+                                <span className="font-extrabold text-indigo-700">{deleteModal.item.sub_rak_tujuan || '-'}</span>
+                            </div>
+                            {deleteModal.item.original_log_id && (
+                                <div className="flex justify-between">
+                                    <span className="text-slate-400 font-bold">Log Asli ID:</span>
+                                    <span className="font-extrabold text-slate-600">#{deleteModal.item.original_log_id}</span>
+                                </div>
+                            )}
+                        </div>
+
+                        <p className="text-xs text-slate-600 mb-5 leading-relaxed">
+                            Data ini akan dihapus dari daftar wadah karantina revisi. Gunakan ini jika transaksi telah dikembalikan atau dibatalkan.
+                        </p>
+
+                        <div className="flex items-center justify-end gap-2.5">
+                            <button
+                                type="button"
+                                onClick={() => setDeleteModal({ isOpen: false, item: null, isDeleting: false })}
+                                disabled={deleteModal.isDeleting}
+                                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer"
+                            >
+                                Batal
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleExecuteDelete}
+                                disabled={deleteModal.isDeleting}
+                                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white font-black text-xs uppercase tracking-wider shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 active:scale-95"
+                            >
+                                {deleteModal.isDeleting ? (
+                                    <>
+                                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                        <span>Menghapus...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                        <span>Ya, Hapus Data</span>
                                     </>
                                 )}
                             </button>
