@@ -4374,34 +4374,31 @@ export function InputBarangKeluar() {
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <div className="relative flex-1">
-                                            <input
-                                                type="text"
+                                            <CustomDropdown
                                                 value={scanModalRak}
                                                 onChange={(e) => {
-                                                    setScanModalRak(e.target.value.toUpperCase());
+                                                    const val = (e.target.value || '').toUpperCase();
+                                                    setScanModalRak(val);
                                                     setScanModalStatus('idle');
+                                                    setScanModalBridgeInfo(null);
                                                 }}
-                                                readOnly={scanModalStatus === 'found' && scanModalRak !== ''}
-                                                className={`w-full h-12 px-4 pr-9 border rounded-xl text-sm font-bold outline-none transition-all ${scanModalRak
-                                                        ? 'border-green-200 bg-green-50 text-green-800'
-                                                        : 'border-blue-300 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500'
-                                                    } ${(scanModalStatus === 'found' && scanModalRak !== '') ? 'cursor-not-allowed opacity-90' : ''}`}
+                                                options={filteredRackOptions}
                                                 placeholder="Ketik lokasi rak..."
+                                                className={`h-12 rounded-xl text-sm font-bold shadow-sm transition-all ${scanModalRak
+                                                        ? 'border-green-300 bg-green-50 text-green-900 ring-2 ring-green-100'
+                                                        : 'border-blue-300 bg-white text-gray-800 focus:ring-2 focus:ring-blue-500'
+                                                    }`}
+                                                showClearButton={true}
+                                                forceUppercase={true}
                                             />
-                                            {scanModalRak && (
-                                                <button
-                                                    onClick={() => { setScanModalRak(''); setScanModalStatus('idle'); }}
-                                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                                                >
-                                                    <X className="h-4 w-4" />
-                                                </button>
-                                            )}
                                         </div>
                                         <button
                                             onClick={() => {
-                                                // Could open scanner for rak too
+                                                setScannerMode('rak');
+                                                setShowScanner(true);
                                             }}
-                                            className="w-12 h-12 rounded-xl bg-gray-50 border border-gray-200 text-gray-500 flex items-center justify-center active:scale-95 transition-all hover:bg-gray-100"
+                                            className="w-12 h-12 rounded-xl bg-gray-50 border border-gray-200 text-gray-500 flex items-center justify-center active:scale-95 transition-all hover:bg-gray-100 shrink-0"
+                                            title="Scan Barcode Rak"
                                         >
                                             <Camera className="h-5 w-5" />
                                         </button>
