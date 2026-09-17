@@ -392,6 +392,15 @@ export function RiwayatBarang() {
   const [isCopied, setIsCopied] = useState(false);
   const { userName, userRole, userEmail } = useAuth();
 
+  const cleanEmail = (userEmail || '').trim().toLowerCase();
+  const currentRole = (userRole || localStorage.getItem('cached_user_role') || '').toLowerCase();
+  const isDev = currentRole === 'developer' || localStorage.getItem('devmode') === 'true' || cleanEmail === 'devmode' || cleanEmail === 'rianambong@gmail.com' || cleanEmail === 'kepin@gmail.com' || cleanEmail === 'admin@gmail.com';
+  const isAdmin = isDev || currentRole === 'admin' || currentRole === 'staf_admin' || currentRole.includes('admin');
+  const isGudang = currentRole === 'gudang' || currentRole === 'staf_gudang' || currentRole.includes('gudang');
+  const isWhitelistedEmail = cleanEmail === 'kalindosukses4@gmail.com' || cleanEmail === '952250hendryk22@gmail.com';
+
+  const canViewMoveAndTransfer = isDev || isAdmin || isGudang || isWhitelistedEmail;
+
   useEffect(() => {
     const fetchAppSettings = async () => {
       try {
@@ -1421,15 +1430,29 @@ export function RiwayatBarang() {
         .gte('tgl_normalized', startISO)
         .lte('tgl_normalized', endISO);
 
+      // Pembatasan hak akses: selain role gudang, developer, admin, kalindosukses4@gmail.com, 952250hendryk22@gmail.com
+      // tidak bisa lihat riwayat barang dengan type : MOVE dan gudang : TRANSFER
+      if (!canViewMoveAndTransfer) {
+        query = query.neq('type', 'MOVE').neq('gudang', 'TRANSFER');
+      }
+
       // Apply conditional filters BEFORE sorting/pagination
       if (filters.barang) {
         query = query.eq('sku', filters.barang);
       }
       if (filters.type) {
-        query = query.eq('type', filters.type);
+        if (!canViewMoveAndTransfer && filters.type === 'MOVE') {
+          query = query.eq('type', '__FORBIDDEN__');
+        } else {
+          query = query.eq('type', filters.type);
+        }
       }
       if (filters.inisial_gudang) {
-        query = query.eq('gudang', filters.inisial_gudang);
+        if (!canViewMoveAndTransfer && filters.inisial_gudang.toUpperCase() === 'TRANSFER') {
+          query = query.eq('gudang', '__FORBIDDEN__');
+        } else {
+          query = query.eq('gudang', filters.inisial_gudang);
+        }
       }
       if (filters.rak) {
         query = query.eq('rak', filters.rak);
@@ -1460,18 +1483,20 @@ export function RiwayatBarang() {
         return;
       }
 
-      const historyItems: HistoryItem[] = (data || []).map(item => ({
-        id: item.id,
-        tgl: item.tgl,
-        waktu: item.waktu,
-        sku: item.sku,
-        jumlah: item.jumlah,
-        type: item.type as 'IN' | 'OUT' | 'MOVE',
-        gudang: item.gudang,
-        rak: item.rak,
-        tgl_scan: item.tgl_scan || '',
-        user_name: item.user_name || ''
-      }));
+      const historyItems: HistoryItem[] = (data || [])
+        .filter(item => canViewMoveAndTransfer || (item.type !== 'MOVE' && (item.gudang || '').toUpperCase() !== 'TRANSFER'))
+        .map(item => ({
+          id: item.id,
+          tgl: item.tgl,
+          waktu: item.waktu,
+          sku: item.sku,
+          jumlah: item.jumlah,
+          type: item.type as 'IN' | 'OUT' | 'MOVE',
+          gudang: item.gudang,
+          rak: item.rak,
+          tgl_scan: item.tgl_scan || '',
+          user_name: item.user_name || ''
+        }));
 
       setHistoryData(historyItems);
       setPaginationInfo({
@@ -1488,7 +1513,7 @@ export function RiwayatBarang() {
     } finally {
       setLoading(false);
     }
-  }, [filters, currentPage, itemsPerPage]);
+  }, [filters, currentPage, itemsPerPage, canViewMoveAndTransfer]);
 
   const fetchAllHistoryData = useCallback(async () => {
     const effectiveStart = filters.tanggal_awal || filters.tanggal_akhir;
@@ -1518,10 +1543,27 @@ export function RiwayatBarang() {
         .gte('tgl_normalized', startISO)
         .lte('tgl_normalized', endISO);
 
+      // Pembatasan hak akses
+      if (!canViewMoveAndTransfer) {
+        query = query.neq('type', 'MOVE').neq('gudang', 'TRANSFER');
+      }
+
       // Apply conditional filters BEFORE sorting/pagination
       if (filters.barang) query = query.eq('sku', filters.barang);
-      if (filters.type) query = query.eq('type', filters.type);
-      if (filters.inisial_gudang) query = query.eq('gudang', filters.inisial_gudang);
+      if (filters.type) {
+        if (!canViewMoveAndTransfer && filters.type === 'MOVE') {
+          query = query.eq('type', '__FORBIDDEN__');
+        } else {
+          query = query.eq('type', filters.type);
+        }
+      }
+      if (filters.inisial_gudang) {
+        if (!canViewMoveAndTransfer && filters.inisial_gudang.toUpperCase() === 'TRANSFER') {
+          query = query.eq('gudang', '__FORBIDDEN__');
+        } else {
+          query = query.eq('gudang', filters.inisial_gudang);
+        }
+      }
       if (filters.rak) query = query.eq('rak', filters.rak);
       if (filters.tanggal_scan) {
         const scanDate = parseDateFlexible(filters.tanggal_scan);
@@ -1556,19 +1598,21 @@ export function RiwayatBarang() {
       }
     }
 
-    return allData.map(item => ({
-      id: item.id,
-      tgl: item.tgl,
-      waktu: item.waktu,
-      sku: item.sku,
-      jumlah: item.jumlah,
-      type: item.type as 'IN' | 'OUT' | 'MOVE',
-      gudang: item.gudang,
-      rak: item.rak,
-      tgl_scan: item.tgl_scan || '',
-      user_name: item.user_name || ''
-    }));
-  }, [filters]);
+    return allData
+      .filter(item => canViewMoveAndTransfer || (item.type !== 'MOVE' && (item.gudang || '').toUpperCase() !== 'TRANSFER'))
+      .map(item => ({
+        id: item.id,
+        tgl: item.tgl,
+        waktu: item.waktu,
+        sku: item.sku,
+        jumlah: item.jumlah,
+        type: item.type as 'IN' | 'OUT' | 'MOVE',
+        gudang: item.gudang,
+        rak: item.rak,
+        tgl_scan: item.tgl_scan || '',
+        user_name: item.user_name || ''
+      }));
+  }, [filters, canViewMoveAndTransfer]);
 
   // --- Copy All Handler (Full Data Across All Pages, Left-Aligned Tab-Separated) ---
   const handleCopyAll = useCallback(async () => {
@@ -1648,15 +1692,16 @@ export function RiwayatBarang() {
   const exportDataDev = async () => {
     try {
       const dataToExport = await fetchAllHistoryData();
+      const filteredDevData = dataToExport.filter(item => item.type !== 'MOVE');
 
-      if (dataToExport.length === 0) {
-        showToast('Tidak ada data untuk diekspor', 'warning');
+      if (filteredDevData.length === 0) {
+        showToast('Tidak ada data untuk diekspor (setelah filter MOVE)', 'warning');
         return;
       }
       const headers = ['Tanggal', 'Waktu', 'SKU/Nama Barang', 'Jumlah', 'Type', 'Gudang', 'Rak', 'Tgl Scan', 'User'];
       const csvContent = [
         headers.join(','),
-        ...dataToExport.map(item => {
+        ...filteredDevData.map(item => {
           const rawRak = item.rak || '';
           const upperRak = rawRak.trim().toUpperCase();
           const displayRak = (upperRak.startsWith('TEMP') || upperRak.startsWith('LORONG-')) ? 'UTAMA' : rawRak;
@@ -1682,7 +1727,7 @@ export function RiwayatBarang() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      showToast(`Export (DEV) berhasil! ${dataToExport.length} data telah diunduh.`, 'success');
+      showToast(`Export (DEV) berhasil! ${filteredDevData.length} data telah diunduh.`, 'success');
     } catch (error) {
       console.error('Error exporting dev data:', error);
       showToast('Terjadi kesalahan saat export data (DEV)', 'error');
@@ -1692,10 +1737,10 @@ export function RiwayatBarang() {
   const exportDataStandard = async () => {
     try {
       const fullData = await fetchAllHistoryData();
-      const filteredData = fullData.filter(item => item.gudang !== 'TRANSFER');
+      const filteredData = fullData.filter(item => item.gudang !== 'TRANSFER' && item.type !== 'MOVE');
 
       if (filteredData.length === 0) {
-        showToast('Tidak ada data yang valid untuk diekspor (setelah filter TRANSFER)', 'warning');
+        showToast('Tidak ada data yang valid untuk diekspor (setelah filter TRANSFER & MOVE)', 'warning');
         return;
       }
 
@@ -1915,11 +1960,19 @@ export function RiwayatBarang() {
 
 
 
+  const displayedWarehouses = React.useMemo(() => {
+    if (!canViewMoveAndTransfer) {
+      return warehouses.filter(w => (w.nama || '').trim().toUpperCase() !== 'TRANSFER');
+    }
+    return warehouses;
+  }, [warehouses, canViewMoveAndTransfer]);
+
   const filteredWarehouses = gudangSearchTerm
-    ? warehouses.filter(warehouse =>
+    ? displayedWarehouses.filter(warehouse =>
+      warehouse.nama.toLowerCase().includes(gudangSearchTerm.toLowerCase()) ||
       warehouse.nama.toLowerCase() === gudangSearchTerm.toLowerCase()
     )
-    : warehouses.slice(0, 50);
+    : displayedWarehouses.slice(0, 50);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -2319,14 +2372,16 @@ export function RiwayatBarang() {
                     <option value="">Semua Jenis</option>
                     <option value="IN">Masuk (IN)</option>
                     <option value="OUT">Keluar (OUT)</option>
-                    <option value="MOVE">Transfer (TRANSFER)</option>
+                    {canViewMoveAndTransfer && (
+                      <option value="MOVE">Transfer (TRANSFER)</option>
+                    )}
                   </select>
                 </div>
 
                 <div>
                   <label className="flex items-center text-xs font-bold uppercase tracking-wider text-gray-500 mb-2 ml-1">
                     <Building className="w-3.5 h-3.5 mr-1.5 text-blue-500" />
-                    Gudang ({warehouses.length})
+                    Gudang ({displayedWarehouses.length})
                   </label>
                   <div className="relative">
                     <input

@@ -476,17 +476,19 @@ export function CekRak2() {
 
     // Real-Time Finished / Verified Items Fetching
     const fetchAllFinishedItems = async () => {
-        setIsLoadingFinished(true);
         try {
+            // 1. Fetch from Supabase database_log
             const { data, error } = await supabase
                 .from('database_log')
                 .select('*')
-                .in('gudang', ['VERIFY', 'UNVERIFY'])
+                .or('gudang.ilike.VERIFY,gudang.ilike.UNVERIFY,type.ilike.VERIFY,type.ilike.UNVERIFY')
                 .order('created_at', { ascending: false })
                 .order('id', { ascending: false })
-                .limit(1000);
+                .limit(2000);
 
-            if (error) throw error;
+            if (error) {
+                console.warn('Error fetching verify logs from DB:', error);
+            }
 
             const seenMap = new Map<string, any>();
             const excludedKeys = new Set<string>();
@@ -498,18 +500,66 @@ export function CekRak2() {
 
                 const pairKey = `${sku}:::${rak}`;
 
-                // If this item in this rack was already resolved by a newer log
                 if (seenMap.has(pairKey) || excludedKeys.has(pairKey)) {
                     return;
                 }
 
-                if (log.gudang === 'UNVERIFY') {
-                    // Newest record for this item in this rack is UNVERIFY, exclude older VERIFY records
+                const gudangUpper = (log.gudang || '').toUpperCase();
+                const typeUpper = (log.type || '').toUpperCase();
+
+                if (gudangUpper === 'UNVERIFY' || typeUpper === 'UNVERIFY') {
                     excludedKeys.add(pairKey);
-                } else if (log.gudang === 'VERIFY' || log.status === 'VERIFIED') {
-                    seenMap.set(pairKey, log);
+                } else if (gudangUpper === 'VERIFY' || typeUpper === 'VERIFY' || log.status === 'VERIFIED') {
+                    seenMap.set(pairKey, {
+                        ...log,
+                        sku: log.sku || log.nama_barang || log.nama_produk,
+                        rak: rak,
+                        sub_rak: rak
+                    });
                 }
             });
+
+            // 2. Also check localStorage verified_rak_* keys to ensure immediate live reflection
+            if (typeof window !== 'undefined') {
+                try {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        if (key && key.startsWith('verified_rak_')) {
+                            const rak = key.replace('verified_rak_', '').trim().toUpperCase();
+                            if (rak.startsWith('TEMP')) continue; // Skip TEMP racks
+                            const raw = localStorage.getItem(key);
+                            if (raw) {
+                                const prodNames: string[] = JSON.parse(raw);
+                                if (Array.isArray(prodNames)) {
+                                    prodNames.forEach(pName => {
+                                        const cleanP = (pName || '').trim().toLowerCase();
+                                        if (!cleanP) return;
+                                        const pairKey = `${cleanP}:::${rak}`;
+                                        if (!seenMap.has(pairKey) && !excludedKeys.has(pairKey)) {
+                                            seenMap.set(pairKey, {
+                                                id: `local-${rak}-${cleanP}`,
+                                                sku: pName.toUpperCase(),
+                                                nama_barang: pName.toUpperCase(),
+                                                nama_produk: pName.toUpperCase(),
+                                                rak: rak,
+                                                sub_rak: rak,
+                                                gudang: 'VERIFY',
+                                                type: 'MOVE',
+                                                user_name: userEmail?.split('@')[0] || userName || 'User',
+                                                tgl: new Date().toISOString().split('T')[0],
+                                                waktu: new Date().toLocaleTimeString('id-ID'),
+                                                created_at: new Date().toISOString()
+                                            });
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } catch (lsErr) {
+                    console.warn('Error reading localStorage for verified items:', lsErr);
+                }
+            }
 
             setFinishedLogs(Array.from(seenMap.values()));
         } catch (err: any) {
@@ -520,24 +570,38 @@ export function CekRak2() {
     };
 
     useEffect(() => {
+        // Fetch immediately on mount
         fetchAllFinishedItems();
         
+        // Supabase Realtime channel subscription
         const channel = supabase
-            .channel('realtime_stock_opname_finished_logs')
+            .channel('realtime_stock_opname_finished_logs_' + Date.now())
             .on('postgres_changes', {
                 event: '*',
                 schema: 'public',
                 table: 'database_log'
-            }, (payload) => {
-                const row = (payload.new || payload.old) as any;
-                if (row && (row.gudang === 'VERIFY' || row.gudang === 'UNVERIFY' || row.status === 'VERIFIED')) {
-                    fetchAllFinishedItems();
-                }
+            }, () => {
+                fetchAllFinishedItems();
             })
             .subscribe();
 
+        // Cross-tab and window listeners
+        const handleSyncEvent = () => fetchAllFinishedItems();
+        window.addEventListener('focus', handleSyncEvent);
+        window.addEventListener('storage', handleSyncEvent);
+        window.addEventListener('finished-logs-updated', handleSyncEvent);
+
+        // Periodic live heartbeat polling every 3 seconds
+        const interval = setInterval(() => {
+            fetchAllFinishedItems();
+        }, 3000);
+
         return () => {
             supabase.removeChannel(channel);
+            window.removeEventListener('focus', handleSyncEvent);
+            window.removeEventListener('storage', handleSyncEvent);
+            window.removeEventListener('finished-logs-updated', handleSyncEvent);
+            clearInterval(interval);
         };
     }, []);
 
