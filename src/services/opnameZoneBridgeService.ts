@@ -7,6 +7,9 @@ export interface OpnameZoneSession {
     started_by: string;
     racks_range: string;
     active: boolean;
+    items_moved?: number;
+    origin_racks?: string[];
+    batch_started_at?: string;
 }
 
 export interface ActiveOpnameZonesState {
@@ -257,4 +260,338 @@ export const resolveOutDeductionRack = (
         isBridge: false,
         originRack: cleanRequested
     };
+};
+
+// =====================================================================
+// BATCH MIGRATION: Move stock_items from prefix racks to TEMP rack
+// =====================================================================
+
+export interface BatchMoveProgress {
+    total: number;
+    moved: number;
+    errors: string[];
+    originRacks: string[];
+}
+
+/**
+ * Batch-move all stock_items from racks matching a prefix (e.g., A1-A999) to TEMP-{prefix}.
+ * Creates MOVE log entries in database_log for traceability.
+ * Processes in batches of 50 to avoid timeouts.
+ * 
+ * @param prefix - The rack prefix (e.g., 'A')
+ * @param userEmail - Who initiated the batch
+ * @param onProgress - Optional callback for progress updates
+ * @returns BatchMoveProgress with counts and any errors
+ */
+export const batchMoveToTemp = async (
+    prefix: string,
+    userEmail: string,
+    onProgress?: (progress: BatchMoveProgress) => void
+): Promise<BatchMoveProgress> => {
+    const cleanPrefix = prefix.trim().toUpperCase();
+    const tempRack = `TEMP-${cleanPrefix}`;
+    const progress: BatchMoveProgress = { total: 0, moved: 0, errors: [], originRacks: [] };
+
+    try {
+        // 1. Fetch all stock_items in racks starting with this prefix that have stock > 0
+        //    Use ilike pattern: A% but NOT TEMP-A%
+        const { data: items, error: fetchErr } = await supabase
+            .from('stock_items')
+            .select('id, nama_produk, rak, sub_rak, tersedia, packing, satuan')
+            .ilike('rak', `${cleanPrefix}%`)
+            .not('rak', 'ilike', 'TEMP%')
+            .gt('tersedia', 0);
+
+        if (fetchErr) {
+            progress.errors.push(`Fetch error: ${fetchErr.message}`);
+            return progress;
+        }
+
+        if (!items || items.length === 0) {
+            return progress; // Nothing to move
+        }
+
+        progress.total = items.length;
+        const uniqueRacks = new Set<string>();
+        const BATCH_SIZE = 50;
+        const now = new Date();
+
+        // 2. Process in batches
+        for (let i = 0; i < items.length; i += BATCH_SIZE) {
+            const batch = items.slice(i, i + BATCH_SIZE);
+
+            // 2a. Create MOVE log entries for each item in this batch
+            const logEntries = batch.map((item, idx) => {
+                const originRak = (item.rak || '').trim();
+                uniqueRacks.add(originRak);
+                const createdAt = new Date(now.getTime() + i + idx).toISOString();
+                return {
+                    sku: item.nama_produk,
+                    nama_barang: item.nama_produk,
+                    packing: item.packing || '',
+                    rak: tempRack,
+                    sub_rak: tempRack,
+                    rak_asal: originRak,
+                    sub_rak_asal: item.sub_rak || originRak,
+                    rak_tujuan: tempRack,
+                    sub_rak_tujuan: tempRack,
+                    jumlah: item.tersedia,
+                    type: 'MOVE',
+                    tgl: now.toISOString().split('T')[0],
+                    waktu: now.toTimeString().split(' ')[0],
+                    tgl_scan: now.toISOString().split('T')[0],
+                    user_name: `System (Batch SO ${cleanPrefix})`,
+                    gudang: 'STOCK_OPNAME_BATCH',
+                    keterangan: `Batch Stock Opname: ${originRak} → ${tempRack}`,
+                    created_at: createdAt
+                };
+            });
+
+            // 2b. Insert MOVE logs
+            const { error: logErr } = await supabase
+                .from('database_log')
+                .insert(logEntries);
+
+            if (logErr) {
+                progress.errors.push(`Log insert batch ${Math.floor(i / BATCH_SIZE) + 1}: ${logErr.message}`);
+                // Continue anyway — we still try to update stock_items
+            }
+
+            // 2c. Update each stock_item's rak to TEMP
+            for (const item of batch) {
+                const { error: updateErr } = await supabase
+                    .from('stock_items')
+                    .update({
+                        rak: tempRack,
+                        sub_rak: tempRack,
+                        updated_at: now.toISOString()
+                    })
+                    .eq('id', item.id);
+
+                if (updateErr) {
+                    progress.errors.push(`Update item ${item.nama_produk} (${item.rak}): ${updateErr.message}`);
+                } else {
+                    progress.moved++;
+                }
+            }
+
+            // 2d. Report progress
+            if (onProgress) {
+                progress.originRacks = Array.from(uniqueRacks);
+                onProgress({ ...progress });
+            }
+        }
+
+        progress.originRacks = Array.from(uniqueRacks);
+        return progress;
+
+    } catch (err: any) {
+        progress.errors.push(`Unexpected error: ${err.message || 'Unknown'}`);
+        return progress;
+    }
+};
+
+// =====================================================================
+// SMART AUTO-FILL: Resolve rak for barcode scan during active Opname
+// =====================================================================
+
+export interface BarcodeScanRakResolution {
+    /** Rak yang harus diisi di kolom Scan Barcode Rak (tempat potong stok) */
+    resolvedRak: string;
+    /** Rak asal sebelum dipindah ke TEMP (untuk info user) */
+    originRak: string | null;
+    /** Apakah resolusi ini karena sesi opname aktif */
+    isOpnameBridge: boolean;
+    /** Prefix zona yang aktif */
+    zonePrefix: string | null;
+    /** Penjelasan untuk UI */
+    explanation: string | null;
+    /** Tanggal scan yang digunakan */
+    tglScanUsed: string;
+}
+
+/**
+ * Smart resolver for Scan Barcode Rak auto-fill in InputBarangKeluar.
+ * 
+ * Flow:
+ * 1. Check if any opname zone is active
+ * 2. If active, search stock_items in TEMP-{prefix} for matching SKU
+ * 3. Look up database_log MOVE records to find origin rack + match tgl_scan
+ * 4. Return the appropriate rack (TEMP if data still there, origin if already pulled back)
+ * 
+ * @param sku - Product SKU from barcode
+ * @param tglScan - Date extracted from barcode (YYYY-MM-DD)
+ * @param uniqueCode - Optional unique code from barcode
+ * @returns Resolution with rack, origin info, and explanation
+ */
+export const resolveRakForBarcodeScan = async (
+    sku: string,
+    tglScan: string,
+    uniqueCode?: string
+): Promise<BarcodeScanRakResolution | null> => {
+    const cleanSku = (sku || '').trim();
+    const cleanTglScan = (tglScan || '').trim();
+    if (!cleanSku) return null;
+
+    const zones = getActiveOpnameZones();
+    const activeZones = Object.entries(zones).filter(([_, s]) => s && s.active);
+
+    if (activeZones.length === 0) {
+        // No active opname session — return null to let caller use default logic
+        return null;
+    }
+
+    // For each active zone, check if SKU exists in the corresponding TEMP rack
+    for (const [zonePrefix, session] of activeZones) {
+        const tempRack = session.temp_rack || `TEMP-${zonePrefix}`;
+
+        // Step 1: Check stock_items in TEMP rack for this SKU
+        const { data: tempItems, error: tempErr } = await supabase
+            .from('stock_items')
+            .select('id, nama_produk, rak, tersedia')
+            .ilike('nama_produk', cleanSku)
+            .ilike('rak', tempRack)
+            .gt('tersedia', 0)
+            .limit(1);
+
+        if (tempErr || !tempItems || tempItems.length === 0) {
+            // SKU not found in this TEMP rack — check if it was already pulled back to origin racks
+            const { data: originItems } = await supabase
+                .from('stock_items')
+                .select('id, nama_produk, rak, tersedia')
+                .ilike('nama_produk', cleanSku)
+                .ilike('rak', `${zonePrefix}%`)
+                .not('rak', 'ilike', 'TEMP%')
+                .gt('tersedia', 0)
+                .limit(1);
+
+            if (originItems && originItems.length > 0) {
+                // Already pulled back to origin rack
+                return {
+                    resolvedRak: originItems[0].rak,
+                    originRak: originItems[0].rak,
+                    isOpnameBridge: true,
+                    zonePrefix,
+                    explanation: `✅ Barang sudah kembali ke rak ${originItems[0].rak} (Stock Opname Zona ${zonePrefix})`,
+                    tglScanUsed: cleanTglScan
+                };
+            }
+            continue; // Try next active zone
+        }
+
+        // Step 2: SKU found in TEMP rack — look up MOVE log to find origin rack
+        //         Match by SKU + tgl_scan from barcode for precision
+        let originRak: string | null = null;
+
+        if (cleanTglScan) {
+            // Try to find the MOVE log with matching tgl_scan (barcode date)
+            // The tgl_scan in the MOVE log should match the original item's tgl_scan
+            // We look at rak_asal to get the origin rack
+            
+            // First: try looking up using the barcode tgl_scan against the original IN records 
+            // that were moved (the MOVE log stores rak_asal)
+            const { data: moveLogs } = await supabase
+                .from('database_log')
+                .select('rak_asal, rak_tujuan, tgl_scan, jumlah')
+                .ilike('sku', cleanSku)
+                .eq('type', 'MOVE')
+                .eq('gudang', 'STOCK_OPNAME_BATCH')
+                .ilike('rak_tujuan', tempRack)
+                .order('created_at', { ascending: false })
+                .limit(20);
+
+            if (moveLogs && moveLogs.length > 0) {
+                // Found MOVE logs — the origin rack is rak_asal
+                // All items from the same SKU in the same zone go to the same TEMP
+                // so we just take the first (most recent) rak_asal
+                originRak = moveLogs[0].rak_asal || null;
+            }
+        }
+
+        // If no MOVE log found, try to get origin from any IN record in zone racks
+        if (!originRak) {
+            const { data: inLogs } = await supabase
+                .from('database_log')
+                .select('rak')
+                .ilike('sku', cleanSku)
+                .eq('type', 'IN')
+                .ilike('rak', `${zonePrefix}%`)
+                .not('rak', 'ilike', 'TEMP%')
+                .order('created_at', { ascending: false })
+                .limit(1);
+
+            if (inLogs && inLogs.length > 0) {
+                originRak = inLogs[0].rak || null;
+            }
+        }
+
+        // Return: potong dari TEMP (karena data nyata di sana), tapi info asal rak ditampilkan
+        return {
+            resolvedRak: tempRack,
+            originRak,
+            isOpnameBridge: true,
+            zonePrefix,
+            explanation: originRak
+                ? `⚡ Stock Opname Zona ${zonePrefix} aktif — Data di ${tempRack} (asal rak ${originRak})`
+                : `⚡ Stock Opname Zona ${zonePrefix} aktif — Data di ${tempRack}`,
+            tglScanUsed: cleanTglScan
+        };
+    }
+
+    // No match found in any active zone
+    return null;
+};
+
+/**
+ * Get the origin rack for an item before it was moved to TEMP during batch Stock Opname.
+ * Looks up database_log MOVE records with gudang='STOCK_OPNAME_BATCH'.
+ */
+export const getOpnameOriginRack = async (
+    sku: string,
+    tempRack: string
+): Promise<string | null> => {
+    try {
+        const { data, error } = await supabase
+            .from('database_log')
+            .select('rak_asal')
+            .ilike('sku', sku.trim())
+            .eq('type', 'MOVE')
+            .eq('gudang', 'STOCK_OPNAME_BATCH')
+            .ilike('rak_tujuan', tempRack.trim())
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+        if (!error && data && data.length > 0) {
+            return data[0].rak_asal || null;
+        }
+    } catch (err) {
+        console.warn('Error looking up opname origin rack:', err);
+    }
+    return null;
+};
+
+/**
+ * Count remaining items in a TEMP rack (for warning before deactivating zone)
+ */
+export const countRemainingTempItems = async (
+    prefix: string
+): Promise<{ count: number; totalStock: number }> => {
+    const tempRack = `TEMP-${prefix.trim().toUpperCase()}`;
+    try {
+        const { data, error } = await supabase
+            .from('stock_items')
+            .select('tersedia')
+            .ilike('rak', tempRack)
+            .gt('tersedia', 0);
+
+        if (!error && data) {
+            return {
+                count: data.length,
+                totalStock: data.reduce((sum, item) => sum + (Number(item.tersedia) || 0), 0)
+            };
+        }
+    } catch (err) {
+        console.warn('Error counting remaining TEMP items:', err);
+    }
+    return { count: 0, totalStock: 0 };
 };

@@ -26,7 +26,10 @@ import {
     toggleOpnameZoneSession, 
     isOpnameZoneActive, 
     getTempRackForPrefix,
-    ActiveOpnameZonesState 
+    ActiveOpnameZonesState,
+    batchMoveToTemp,
+    countRemainingTempItems,
+    BatchMoveProgress
 } from '../services/opnameZoneBridgeService';
 import { skuConversionService } from '../services/skuConversionService';
 
@@ -195,6 +198,12 @@ export function CekRak2() {
     const [activeOpnameZones, setActiveOpnameZones] = useState<ActiveOpnameZonesState>({});
     const [isTogglingZone, setIsTogglingZone] = useState<string | null>(null);
 
+    // Batch migration progress state
+    const [showBatchProgressModal, setShowBatchProgressModal] = useState(false);
+    const [batchProgress, setBatchProgress] = useState<BatchMoveProgress | null>(null);
+    const [isBatchMigrating, setIsBatchMigrating] = useState(false);
+    const [batchMigrationDone, setBatchMigrationDone] = useState(false);
+
     useEffect(() => {
         initOpnameZoneBridgeService().then(zones => {
             setActiveOpnameZones(zones || {});
@@ -220,32 +229,103 @@ export function CekRak2() {
         const cleanPrefix = prefix.trim().toUpperCase();
         if (!cleanPrefix) return;
 
-        const actionName = targetActive ? 'MEMULAI' : 'MENYELESAIKAN';
-        const msg = `${actionName} Sesi Stock Opname untuk Zona ${cleanPrefix}?\n\n` +
-            (targetActive 
-                ? `⚡ Selama sesi aktif, pemotongan stok keluar untuk rak ${cleanPrefix}1-${cleanPrefix}999 akan otomatis dialihkan ke TEMP-${cleanPrefix}.`
-                : `✅ Sesi Zona ${cleanPrefix} akan ditutup dan validasi pemotongan stok kembali Normal.`);
+        // DEACTIVATION: Check remaining TEMP items first
+        if (!targetActive) {
+            const remaining = await countRemainingTempItems(cleanPrefix);
+            let deactivateMsg = `MENYELESAIKAN Sesi Stock Opname untuk Zona ${cleanPrefix}?\n\n` +
+                `✅ Sesi Zona ${cleanPrefix} akan ditutup dan validasi pemotongan stok kembali Normal.`;
+            if (remaining.count > 0) {
+                deactivateMsg += `\n\n⚠️ PERHATIAN: Masih ada ${remaining.count} item (total ${remaining.totalStock} pcs) di TEMP-${cleanPrefix}. ` +
+                    `Item tersebut akan TETAP di TEMP-${cleanPrefix} sampai di-pull manual ke rak tujuan.`;
+            }
+            if (!window.confirm(deactivateMsg)) return;
 
-        if (!window.confirm(msg)) return;
+            try {
+                setIsTogglingZone(cleanPrefix);
+                const res = await toggleOpnameZoneSession(cleanPrefix, false, activeUserEmail);
+                if (res.success) {
+                    setActiveOpnameZones(res.zones);
+                    setToast({
+                        isOpen: true,
+                        message: `✅ Sesi Opname Zona ${cleanPrefix} SELESAI (Validasi Kembali Normal)`,
+                        type: 'info'
+                    });
+                } else {
+                    setToast({ isOpen: true, message: 'Gagal memperbarui status sesi opname di database.', type: 'error' });
+                }
+            } catch (err: any) {
+                console.error('Error deactivating zone session:', err);
+                setToast({ isOpen: true, message: `Error: ${err.message || 'Unknown error'}`, type: 'error' });
+            } finally {
+                setIsTogglingZone(null);
+            }
+            return;
+        }
+
+        // ACTIVATION: Confirm + batch migrate
+        const activateMsg = `MEMULAI Sesi Stock Opname untuk Zona ${cleanPrefix}?\n\n` +
+            `⚡ Seluruh data stock_items dari rak ${cleanPrefix}1-${cleanPrefix}999 akan dipindahkan ke TEMP-${cleanPrefix}.\n` +
+            `⚡ Pemotongan stok keluar otomatis diarahkan ke TEMP-${cleanPrefix}.\n` +
+            `⚡ Operasional gudang tetap berjalan normal.`;
+
+        if (!window.confirm(activateMsg)) return;
 
         try {
             setIsTogglingZone(cleanPrefix);
-            const res = await toggleOpnameZoneSession(cleanPrefix, targetActive, activeUserEmail);
-            if (res.success) {
-                setActiveOpnameZones(res.zones);
+
+            // Step 1: Toggle the zone session flag
+            const res = await toggleOpnameZoneSession(cleanPrefix, true, activeUserEmail);
+            if (!res.success) {
+                setToast({ isOpen: true, message: 'Gagal memperbarui status sesi opname di database.', type: 'error' });
+                setIsTogglingZone(null);
+                return;
+            }
+            setActiveOpnameZones(res.zones);
+
+            // Step 2: Start batch migration with progress modal
+            setShowBatchProgressModal(true);
+            setIsBatchMigrating(true);
+            setBatchMigrationDone(false);
+            setBatchProgress({ total: 0, moved: 0, errors: [], originRacks: [] });
+
+            const result = await batchMoveToTemp(cleanPrefix, activeUserEmail, (progress) => {
+                setBatchProgress({ ...progress });
+            });
+
+            setBatchProgress(result);
+            setIsBatchMigrating(false);
+            setBatchMigrationDone(true);
+
+            // Update session with items_moved count
+            const updatedZones = { ...res.zones };
+            if (updatedZones[cleanPrefix]) {
+                updatedZones[cleanPrefix] = {
+                    ...updatedZones[cleanPrefix],
+                    items_moved: result.moved,
+                    origin_racks: result.originRacks,
+                    batch_started_at: new Date().toISOString()
+                };
+            }
+            setActiveOpnameZones(updatedZones);
+
+            if (result.errors.length === 0) {
                 setToast({
                     isOpen: true,
-                    message: targetActive
-                        ? `⚡ Sesi Opname Zona ${cleanPrefix} AKTIF (Auto-Bridge ke TEMP-${cleanPrefix})`
-                        : `✅ Sesi Opname Zona ${cleanPrefix} SELESAI (Validasi Kembali Normal)`,
-                    type: targetActive ? 'success' : 'info'
+                    message: `⚡ Sesi Opname Zona ${cleanPrefix} AKTIF — ${result.moved}/${result.total} item dipindah ke TEMP-${cleanPrefix}`,
+                    type: 'success'
                 });
             } else {
-                setToast({ isOpen: true, message: 'Gagal memperbarui status sesi opname di database.', type: 'error' });
+                setToast({
+                    isOpen: true,
+                    message: `⚠️ Sesi Zona ${cleanPrefix} aktif, tapi ${result.errors.length} error selama migrasi. ${result.moved}/${result.total} berhasil.`,
+                    type: 'warning'
+                });
             }
         } catch (err: any) {
-            console.error('Error toggling zone session:', err);
+            console.error('Error activating zone session:', err);
             setToast({ isOpen: true, message: `Error: ${err.message || 'Unknown error'}`, type: 'error' });
+            setIsBatchMigrating(false);
+            setShowBatchProgressModal(false);
         } finally {
             setIsTogglingZone(null);
         }
@@ -6856,6 +6936,112 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         if (lastScanned) fetchItems(lastScanned, true);
                     }}
                 />
+            )}
+
+            {/* Batch Migration Progress Modal */}
+            {showBatchProgressModal && (
+                <div className="fixed inset-0 z-[700] flex items-center justify-center p-4">
+                    <div className="fixed inset-0 bg-gray-900/70 backdrop-blur-sm" />
+                    <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md mx-auto overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                        <div className="p-6 space-y-5">
+                            {/* Header */}
+                            <div className="flex items-center gap-3">
+                                <div className={cn(
+                                    "w-12 h-12 rounded-2xl flex items-center justify-center text-xl font-black shrink-0 shadow-md",
+                                    isBatchMigrating
+                                        ? "bg-gradient-to-br from-amber-500 to-orange-600 text-white animate-pulse"
+                                        : batchProgress && batchProgress.errors.length === 0
+                                            ? "bg-gradient-to-br from-emerald-500 to-green-600 text-white"
+                                            : "bg-gradient-to-br from-amber-500 to-yellow-600 text-white"
+                                )}>
+                                    {isBatchMigrating ? '⚡' : batchMigrationDone ? '✅' : '📦'}
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-black text-gray-900 tracking-tight">
+                                        {isBatchMigrating ? 'Memindahkan Data...' : 'Migrasi Selesai'}
+                                    </h3>
+                                    <p className="text-xs text-gray-500 font-medium">
+                                        Batch Stock Opname
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Progress Bar */}
+                            {batchProgress && (
+                                <div className="space-y-3">
+                                    <div className="w-full bg-gray-100 rounded-full h-4 overflow-hidden border border-gray-200">
+                                        <div
+                                            className={cn(
+                                                "h-full rounded-full transition-all duration-500 ease-out",
+                                                isBatchMigrating
+                                                    ? "bg-gradient-to-r from-amber-500 to-orange-500"
+                                                    : batchProgress.errors.length === 0
+                                                        ? "bg-gradient-to-r from-emerald-500 to-green-500"
+                                                        : "bg-gradient-to-r from-amber-500 to-yellow-500"
+                                            )}
+                                            style={{
+                                                width: `${batchProgress.total > 0 ? Math.round((batchProgress.moved / batchProgress.total) * 100) : 0}%`
+                                            }}
+                                        />
+                                    </div>
+                                    <div className="flex items-center justify-between text-sm">
+                                        <span className="font-black text-gray-800">
+                                            {batchProgress.moved}/{batchProgress.total} item
+                                        </span>
+                                        <span className="font-bold text-gray-500">
+                                            {batchProgress.total > 0 ? Math.round((batchProgress.moved / batchProgress.total) * 100) : 0}%
+                                        </span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Affected Racks */}
+                            {batchProgress && batchProgress.originRacks.length > 0 && (
+                                <div className="bg-blue-50 rounded-2xl p-3 border border-blue-200">
+                                    <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider mb-1.5">Rak Terpengaruh</p>
+                                    <div className="flex flex-wrap gap-1">
+                                        {batchProgress.originRacks.slice(0, 20).map(rak => (
+                                            <span key={rak} className="px-2 py-0.5 bg-white rounded-lg text-[10px] font-bold text-blue-800 border border-blue-200">
+                                                {rak}
+                                            </span>
+                                        ))}
+                                        {batchProgress.originRacks.length > 20 && (
+                                            <span className="px-2 py-0.5 bg-blue-100 rounded-lg text-[10px] font-bold text-blue-600">
+                                                +{batchProgress.originRacks.length - 20} lainnya
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Errors */}
+                            {batchProgress && batchProgress.errors.length > 0 && (
+                                <div className="bg-red-50 rounded-2xl p-3 border border-red-200 max-h-32 overflow-y-auto">
+                                    <p className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-1.5">
+                                        ⚠️ {batchProgress.errors.length} Error
+                                    </p>
+                                    {batchProgress.errors.slice(0, 5).map((err, idx) => (
+                                        <p key={idx} className="text-[11px] text-red-700 font-medium truncate">{err}</p>
+                                    ))}
+                                </div>
+                            )}
+
+                            {/* Close button (only when done) */}
+                            {batchMigrationDone && (
+                                <button
+                                    onClick={() => {
+                                        setShowBatchProgressModal(false);
+                                        setBatchProgress(null);
+                                        setBatchMigrationDone(false);
+                                    }}
+                                    className="w-full h-12 bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-bold rounded-2xl shadow-lg shadow-blue-200 active:scale-[0.97] transition-all"
+                                >
+                                    Tutup
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                </div>
             )}
 
             {toast.isOpen && (
