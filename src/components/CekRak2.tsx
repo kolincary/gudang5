@@ -1480,324 +1480,356 @@ export function CekRak2() {
     </div>
 
     <script>
-        const singleData = ${singleDataJs};
-        const activeUserEmail = "${activeEmail}";
-        const SUPABASE_URL = "${activeSupabaseUrl}";
-        const SUPABASE_ANON_KEY = "${activeSupabaseKey}";
-        const STORAGE_KEY = "thermal_style_pref_" + encodeURIComponent(activeUserEmail);
+        // Global variables safely serialized
+        window.singleData = ${singleDataJs};
+        window.activeUserEmail = ${JSON.stringify(activeEmail)};
+        window.SUPABASE_URL = ${JSON.stringify(activeSupabaseUrl)};
+        window.SUPABASE_ANON_KEY = ${JSON.stringify(activeSupabaseKey)};
+        window.STORAGE_KEY = "thermal_style_pref_" + encodeURIComponent(window.activeUserEmail);
 
-        const defaultSettings = ${JSON.stringify(effective)};
-        let currentSettings = Object.assign({}, defaultSettings);
+        window.defaultSettings = ${JSON.stringify(effective)};
+        window.currentSettings = Object.assign({}, window.defaultSettings);
 
-        function formatToDDMMYYYY(dateInput) {
+        // Core Functions defined globally on window
+        window.formatToDDMMYYYY = function(dateInput) {
             if (!dateInput) {
-                const d = new Date();
-                const dd = String(d.getDate()).padStart(2, '0');
-                const mm = String(d.getMonth() + 1).padStart(2, '0');
-                const yyyy = d.getFullYear();
+                var d = new Date();
+                var dd = String(d.getDate()).padStart(2, '0');
+                var mm = String(d.getMonth() + 1).padStart(2, '0');
+                var yyyy = d.getFullYear();
                 return dd + '-' + mm + '-' + yyyy;
             }
-            const clean = String(dateInput).trim();
+            var clean = String(dateInput).trim();
             if (!clean) {
-                const d = new Date();
-                const dd = String(d.getDate()).padStart(2, '0');
-                const mm = String(d.getMonth() + 1).padStart(2, '0');
-                const yyyy = d.getFullYear();
+                var d = new Date();
+                var dd = String(d.getDate()).padStart(2, '0');
+                var mm = String(d.getMonth() + 1).padStart(2, '0');
+                var yyyy = d.getFullYear();
                 return dd + '-' + mm + '-' + yyyy;
             }
-            const ymdMatch = clean.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+            var ymdMatch = clean.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
             if (ymdMatch) {
-                const year = ymdMatch[1];
-                const month = ymdMatch[2].padStart(2, '0');
-                const day = ymdMatch[3].padStart(2, '0');
-                return day + '-' + month + '-' + year;
+                return ymdMatch[3].padStart(2, '0') + '-' + ymdMatch[2].padStart(2, '0') + '-' + ymdMatch[1];
             }
-            const dmyMatch = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+            var dmyMatch = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
             if (dmyMatch) {
-                const day = dmyMatch[1].padStart(2, '0');
-                const month = dmyMatch[2].padStart(2, '0');
-                const year = dmyMatch[3];
-                return day + '-' + month + '-' + year;
+                return dmyMatch[1].padStart(2, '0') + '-' + dmyMatch[2].padStart(2, '0') + '-' + dmyMatch[3];
             }
-            const parsed = new Date(clean);
+            var parsed = new Date(clean);
             if (!isNaN(parsed.getTime())) {
-                const dd = String(parsed.getDate()).padStart(2, '0');
-                const mm = String(parsed.getMonth() + 1).padStart(2, '0');
-                const yyyy = parsed.getFullYear();
+                var dd = String(parsed.getDate()).padStart(2, '0');
+                var mm = String(parsed.getMonth() + 1).padStart(2, '0');
+                var yyyy = parsed.getFullYear();
                 return dd + '-' + mm + '-' + yyyy;
             }
             return clean;
-        }
+        };
 
-        function toggleCustomizer() {
-            const drawer = document.getElementById('customizer-drawer-right');
-            const btn = document.getElementById('btn-toggle-customizer');
-            if (!drawer) return;
-            const isOpen = drawer.classList.toggle('active');
-            if (btn) btn.classList.toggle('open', isOpen);
-            document.body.classList.toggle('drawer-open', isOpen);
-        }
-
-        function applyStylesToDom(s) {
-            const isLeftSlot = (s.slotPosition || '').includes('left');
-            const isTopSlot = (s.slotPosition || '').includes('top');
-
-            const varsTag = document.getElementById('dynamic-vars-css');
-            if (varsTag) {
-                varsTag.innerHTML = ':root {' +
-                    '--paper-width: ' + (s.paperWidth || 100) + 'mm;' +
-                    '--page-height: ' + (s.pageHeight || 140) + 'mm;' +
-                    '--row-height: ' + (s.rowHeight || 46) + 'mm;' +
-                    '--layout-direction: ' + (s.layoutDirection || 'row') + ';' +
-                    '--qr-size: ' + (s.qrSize || 32) + 'mm;' +
-                    '--qr-offset-x: ' + (s.qrOffsetX || 0) + 'px;' +
-                    '--qr-offset-y: ' + (s.qrOffsetY || 0) + 'px;' +
-                    '--text-offset-x: ' + (s.textOffsetX || 0) + 'px;' +
-                    '--text-offset-y: ' + (s.textOffsetY || 0) + 'px;' +
-                    '--text-align: ' + (s.textAlign || 'left') + ';' +
-                    '--sku-size: ' + (s.skuSize || 22) + 'px;' +
-                    '--sku-weight: ' + (s.skuWeight || '900') + ';' +
-                    '--id-size: ' + (s.idSize || 14) + 'px;' +
-                    '--date-size: ' + (s.dateSize || 12) + 'px;' +
-                    '--date-weight: ' + (s.dateWeight || '800') + ';' +
-                    '--show-date: ' + (s.showDate || 'block') + ';' +
-                    '--slot-size: ' + (s.slotSize || 9) + 'px;' +
-                    '--slot-pos-left: ' + (isLeftSlot ? '8px' : 'auto') + ';' +
-                    '--slot-pos-right: ' + (isLeftSlot ? 'auto' : '8px') + ';' +
-                    '--slot-pos-top: ' + (isTopSlot ? '4px' : 'auto') + ';' +
-                    '--slot-pos-bottom: ' + (isTopSlot ? 'auto' : '4px') + ';' +
-                    '--slot-offset-x: ' + (s.slotOffsetX || 0) + 'px;' +
-                    '--cell-pad-y: ' + (s.cellPadY || 6) + 'px;' +
-                    '--cell-pad-x: ' + (s.cellPadX || 8) + 'px;' +
-                    '--border-style: ' + (s.borderStyle || 'dashed') + ';' +
-                    '--border-width: ' + (s.borderWidth || '2px') + ';' +
-                    '--border-color: ' + (s.borderColor || '#000') + ';' +
-                    '--show-slot: ' + (s.showSlot || 'block') + ';' +
-                '}';
-            }
-
-            const pageTag = document.getElementById('dynamic-page-css');
-            if (pageTag) {
-                if (s.sizePreset === 'auto') {
-                    pageTag.innerHTML = '@page { size: ' + (s.paperWidth || 100) + 'mm auto; margin: 0; }';
-                } else {
-                    pageTag.innerHTML = '@page { size: ' + (s.paperWidth || 100) + 'mm ' + (s.pageHeight || 140) + 'mm; margin: 0; }';
-                }
-            }
-        }
-
-        function updateFormInputs(s) {
-            const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
-            const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.innerText = txt; };
-
-            setVal('input-qr-position', s.layoutDirection === 'row-reverse' ? 'right' : 'left');
-            setVal('input-qr-size', s.qrSize || 32);
-            setText('val-qr-size', (s.qrSize || 32) + ' mm');
-
-            setVal('input-qr-offset-x', s.qrOffsetX || 0);
-            setText('val-qr-offset-x', (s.qrOffsetX || 0) + ' px');
-
-            setVal('input-qr-offset-y', s.qrOffsetY || 0);
-            setText('val-qr-offset-y', (s.qrOffsetY || 0) + ' px');
-
-            setVal('input-text-offset-x', s.textOffsetX || 0);
-            setText('val-text-offset-x', (s.textOffsetX || 0) + ' px');
-
-            setVal('input-text-offset-y', s.textOffsetY || 0);
-            setText('val-text-offset-y', (s.textOffsetY || 0) + ' px');
-
-            setVal('input-sku-size', s.skuSize || 22);
-            setText('val-sku-size', (s.skuSize || 22) + ' px');
-
-            setVal('input-sku-weight', s.skuWeight || '900');
-            setVal('input-text-align', s.textAlign || 'left');
-
-            setVal('input-id-size', s.idSize || 14);
-            setText('val-id-size', (s.idSize || 14) + ' px');
-
-            setVal('input-date-size', s.dateSize || 12);
-            setText('val-date-size', (s.dateSize || 12) + ' px');
-            setVal('input-show-date', s.showDate || 'block');
-
-            setVal('input-show-slot', s.showSlot || 'block');
-            setVal('input-slot-position', s.slotPosition || 'bottom-right');
-
-            setVal('input-slot-size', s.slotSize || 9);
-            setText('val-slot-size', (s.slotSize || 9) + ' px');
-
-            setVal('input-slot-offset-x', s.slotOffsetX || 0);
-            setText('val-slot-offset-x', (s.slotOffsetX || 0) + ' px');
-
-            setVal('input-row-height', s.rowHeight || 46);
-            setText('val-row-height', (s.rowHeight || 46) + ' mm');
-
-            setVal('input-paper-width', s.paperWidth || 100);
-            setText('val-paper-width', (s.paperWidth || 100) + ' mm');
-
-            setVal('input-border-style', s.borderStyle || 'dashed');
-            setVal('input-border-width', s.borderWidth || '2px');
-        }
-
-        function syncSettingsWithStorageAndParent() {
+        window.toggleCustomizer = function() {
             try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(currentSettings));
+                var drawer = document.getElementById('customizer-drawer-right');
+                var btn = document.getElementById('btn-toggle-customizer');
+                if (!drawer) return;
+                var isOpen = drawer.classList.toggle('active');
+                if (btn) btn.classList.toggle('open', isOpen);
+                document.body.classList.toggle('drawer-open', isOpen);
+            } catch (e) {
+                console.error('toggleCustomizer error:', e);
+            }
+        };
+
+        window.applyStylesToDom = function(s) {
+            try {
+                var isLeftSlot = (s.slotPosition || '').indexOf('left') !== -1;
+                var isTopSlot = (s.slotPosition || '').indexOf('top') !== -1;
+
+                var varsTag = document.getElementById('dynamic-vars-css');
+                if (varsTag) {
+                    varsTag.innerHTML = ':root {' +
+                        '--paper-width: ' + (s.paperWidth || 100) + 'mm;' +
+                        '--page-height: ' + (s.pageHeight || 140) + 'mm;' +
+                        '--row-height: ' + (s.rowHeight || 46) + 'mm;' +
+                        '--layout-direction: ' + (s.layoutDirection || 'row') + ';' +
+                        '--qr-size: ' + (s.qrSize || 32) + 'mm;' +
+                        '--qr-offset-x: ' + (s.qrOffsetX || 0) + 'px;' +
+                        '--qr-offset-y: ' + (s.qrOffsetY || 0) + 'px;' +
+                        '--text-offset-x: ' + (s.textOffsetX || 0) + 'px;' +
+                        '--text-offset-y: ' + (s.textOffsetY || 0) + 'px;' +
+                        '--text-align: ' + (s.textAlign || 'left') + ';' +
+                        '--sku-size: ' + (s.skuSize || 22) + 'px;' +
+                        '--sku-weight: ' + (s.skuWeight || '900') + ';' +
+                        '--id-size: ' + (s.idSize || 14) + 'px;' +
+                        '--date-size: ' + (s.dateSize || 12) + 'px;' +
+                        '--date-weight: ' + (s.dateWeight || '800') + ';' +
+                        '--show-date: ' + (s.showDate || 'block') + ';' +
+                        '--slot-size: ' + (s.slotSize || 9) + 'px;' +
+                        '--slot-pos-left: ' + (isLeftSlot ? '8px' : 'auto') + ';' +
+                        '--slot-pos-right: ' + (isLeftSlot ? 'auto' : '8px') + ';' +
+                        '--slot-pos-top: ' + (isTopSlot ? '4px' : 'auto') + ';' +
+                        '--slot-pos-bottom: ' + (isTopSlot ? 'auto' : '4px') + ';' +
+                        '--slot-offset-x: ' + (s.slotOffsetX || 0) + 'px;' +
+                        '--cell-pad-y: ' + (s.cellPadY || 6) + 'px;' +
+                        '--cell-pad-x: ' + (s.cellPadX || 8) + 'px;' +
+                        '--border-style: ' + (s.borderStyle || 'dashed') + ';' +
+                        '--border-width: ' + (s.borderWidth || '2px') + ';' +
+                        '--border-color: ' + (s.borderColor || '#000') + ';' +
+                        '--show-slot: ' + (s.showSlot || 'block') + ';' +
+                    '}';
+                }
+
+                var pageTag = document.getElementById('dynamic-page-css');
+                if (pageTag) {
+                    if (s.sizePreset === 'auto') {
+                        pageTag.innerHTML = '@page { size: ' + (s.paperWidth || 100) + 'mm auto; margin: 0; }';
+                    } else {
+                        pageTag.innerHTML = '@page { size: ' + (s.paperWidth || 100) + 'mm ' + (s.pageHeight || 140) + 'mm; margin: 0; }';
+                    }
+                }
+            } catch (e) {
+                console.error('applyStylesToDom error:', e);
+            }
+        };
+
+        window.updateFormInputs = function(s) {
+            try {
+                var setVal = function(id, val) { var el = document.getElementById(id); if (el) el.value = val; };
+                var setText = function(id, txt) { var el = document.getElementById(id); if (el) el.innerText = txt; };
+
+                setVal('input-qr-position', s.layoutDirection === 'row-reverse' ? 'right' : 'left');
+                setVal('input-qr-size', s.qrSize || 32);
+                setText('val-qr-size', (s.qrSize || 32) + ' mm');
+
+                setVal('input-qr-offset-x', s.qrOffsetX || 0);
+                setText('val-qr-offset-x', (s.qrOffsetX || 0) + ' px');
+
+                setVal('input-qr-offset-y', s.qrOffsetY || 0);
+                setText('val-qr-offset-y', (s.qrOffsetY || 0) + ' px');
+
+                setVal('input-text-offset-x', s.textOffsetX || 0);
+                setText('val-text-offset-x', (s.textOffsetX || 0) + ' px');
+
+                setVal('input-text-offset-y', s.textOffsetY || 0);
+                setText('val-text-offset-y', (s.textOffsetY || 0) + ' px');
+
+                setVal('input-sku-size', s.skuSize || 22);
+                setText('val-sku-size', (s.skuSize || 22) + ' px');
+
+                setVal('input-sku-weight', s.skuWeight || '900');
+                setVal('input-text-align', s.textAlign || 'left');
+
+                setVal('input-id-size', s.idSize || 14);
+                setText('val-id-size', (s.idSize || 14) + ' px');
+
+                setVal('input-date-size', s.dateSize || 12);
+                setText('val-date-size', (s.dateSize || 12) + ' px');
+                setVal('input-show-date', s.showDate || 'block');
+
+                setVal('input-show-slot', s.showSlot || 'block');
+                setVal('input-slot-position', s.slotPosition || 'bottom-right');
+
+                setVal('input-slot-size', s.slotSize || 9);
+                setText('val-slot-size', (s.slotSize || 9) + ' px');
+
+                setVal('input-slot-offset-x', s.slotOffsetX || 0);
+                setText('val-slot-offset-x', (s.slotOffsetX || 0) + ' px');
+
+                setVal('input-row-height', s.rowHeight || 46);
+                setText('val-row-height', (s.rowHeight || 46) + ' mm');
+
+                setVal('input-paper-width', s.paperWidth || 100);
+                setText('val-paper-width', (s.paperWidth || 100) + ' mm');
+
+                setVal('input-border-style', s.borderStyle || 'dashed');
+                setVal('input-border-width', s.borderWidth || '2px');
+            } catch (e) {
+                console.error('updateFormInputs error:', e);
+            }
+        };
+
+        window.syncSettingsWithStorageAndParent = function() {
+            try {
+                localStorage.setItem(window.STORAGE_KEY, JSON.stringify(window.currentSettings));
             } catch (e) {}
             if (window.opener && !window.opener.closed) {
                 try {
                     window.opener.postMessage({
                         type: 'SAVE_THERMAL_PRINT_SETTINGS',
-                        email: activeUserEmail,
-                        settings: currentSettings
+                        email: window.activeUserEmail,
+                        settings: window.currentSettings
                     }, '*');
                 } catch (e) {}
             }
-        }
+        };
 
-        function onCustomChange() {
-            const getVal = (id, def) => {
-                const el = document.getElementById(id);
-                return el ? el.value : def;
-            };
-            const getNum = (id, def) => {
-                const val = getVal(id, def);
-                const num = Number(val);
-                return isNaN(num) ? def : num;
-            };
-            
-            currentSettings.layoutDirection = getVal('input-qr-position', 'left') === 'right' ? 'row-reverse' : 'row';
-            currentSettings.qrSize = getNum('input-qr-size', 32);
-            currentSettings.qrOffsetX = getNum('input-qr-offset-x', 0);
-            currentSettings.qrOffsetY = getNum('input-qr-offset-y', 0);
-            currentSettings.textOffsetX = getNum('input-text-offset-x', 0);
-            currentSettings.textOffsetY = getNum('input-text-offset-y', 0);
-            currentSettings.textAlign = getVal('input-text-align', 'left');
-            currentSettings.skuSize = getNum('input-sku-size', 22);
-            currentSettings.skuWeight = getVal('input-sku-weight', '900');
-            currentSettings.idSize = getNum('input-id-size', 14);
-            currentSettings.dateSize = getNum('input-date-size', 12);
-            currentSettings.showDate = getVal('input-show-date', 'block');
-            currentSettings.showSlot = getVal('input-show-slot', 'block');
-            currentSettings.slotPosition = getVal('input-slot-position', 'bottom-right');
-            currentSettings.slotSize = getNum('input-slot-size', 9);
-            currentSettings.slotOffsetX = getNum('input-slot-offset-x', 0);
-            currentSettings.rowHeight = getNum('input-row-height', 46);
-            currentSettings.paperWidth = getNum('input-paper-width', 100);
-            currentSettings.borderStyle = getVal('input-border-style', 'dashed');
-            currentSettings.borderWidth = getVal('input-border-width', '2px');
+        window.onCustomChange = function() {
+            try {
+                var getVal = function(id, def) {
+                    var el = document.getElementById(id);
+                    return el ? el.value : def;
+                };
+                var getNum = function(id, def) {
+                    var val = getVal(id, def);
+                    var num = Number(val);
+                    return isNaN(num) ? def : num;
+                };
+                
+                window.currentSettings.layoutDirection = getVal('input-qr-position', 'left') === 'right' ? 'row-reverse' : 'row';
+                window.currentSettings.qrSize = getNum('input-qr-size', 32);
+                window.currentSettings.qrOffsetX = getNum('input-qr-offset-x', 0);
+                window.currentSettings.qrOffsetY = getNum('input-qr-offset-y', 0);
+                window.currentSettings.textOffsetX = getNum('input-text-offset-x', 0);
+                window.currentSettings.textOffsetY = getNum('input-text-offset-y', 0);
+                window.currentSettings.textAlign = getVal('input-text-align', 'left');
+                window.currentSettings.skuSize = getNum('input-sku-size', 22);
+                window.currentSettings.skuWeight = getVal('input-sku-weight', '900');
+                window.currentSettings.idSize = getNum('input-id-size', 14);
+                window.currentSettings.dateSize = getNum('input-date-size', 12);
+                window.currentSettings.showDate = getVal('input-show-date', 'block');
+                window.currentSettings.showSlot = getVal('input-show-slot', 'block');
+                window.currentSettings.slotPosition = getVal('input-slot-position', 'bottom-right');
+                window.currentSettings.slotSize = getNum('input-slot-size', 9);
+                window.currentSettings.slotOffsetX = getNum('input-slot-offset-x', 0);
+                window.currentSettings.rowHeight = getNum('input-row-height', 46);
+                window.currentSettings.paperWidth = getNum('input-paper-width', 100);
+                window.currentSettings.borderStyle = getVal('input-border-style', 'dashed');
+                window.currentSettings.borderWidth = getVal('input-border-width', '2px');
 
-            updateFormInputs(currentSettings);
-            applyStylesToDom(currentSettings);
-            syncSettingsWithStorageAndParent();
-        }
-
-        function switchSize(size) {
-            document.body.classList.remove('size-140', 'size-150', 'size-auto');
-            document.body.classList.add('size-' + size);
-            
-            document.querySelectorAll('#btn-140, #btn-150, #btn-auto').forEach(function(btn) { btn.classList.remove('active'); });
-            const activeBtn = document.getElementById('btn-' + size);
-            if (activeBtn) activeBtn.classList.add('active');
-
-            currentSettings.sizePreset = size;
-            if (size === '140') {
-                currentSettings.pageHeight = 140;
-                currentSettings.rowHeight = 46;
-            } else if (size === '150') {
-                currentSettings.pageHeight = 150;
-                currentSettings.rowHeight = 49.3;
-            } else {
-                currentSettings.pageHeight = 140;
+                window.updateFormInputs(window.currentSettings);
+                window.applyStylesToDom(window.currentSettings);
+                window.syncSettingsWithStorageAndParent();
+            } catch (e) {
+                console.error('onCustomChange error:', e);
             }
+        };
 
-            updateFormInputs(currentSettings);
-            applyStylesToDom(currentSettings);
-            syncSettingsWithStorageAndParent();
-        }
+        window.switchSize = function(size) {
+            try {
+                document.body.classList.remove('size-140', 'size-150', 'size-auto');
+                document.body.classList.add('size-' + size);
+                
+                document.querySelectorAll('#btn-140, #btn-150, #btn-auto').forEach(function(btn) { btn.classList.remove('active'); });
+                var activeBtn = document.getElementById('btn-' + size);
+                if (activeBtn) activeBtn.classList.add('active');
 
-        function switchPresetPaper(widthMm) {
-            document.querySelectorAll('#btn-100, #btn-80, #btn-58').forEach(function(btn) { btn.classList.remove('active'); });
-            const activeBtn = document.getElementById('btn-' + widthMm);
-            if (activeBtn) activeBtn.classList.add('active');
+                window.currentSettings.sizePreset = size;
+                if (size === '140') {
+                    window.currentSettings.pageHeight = 140;
+                    window.currentSettings.rowHeight = 46;
+                } else if (size === '150') {
+                    window.currentSettings.pageHeight = 150;
+                    window.currentSettings.rowHeight = 49.3;
+                } else {
+                    window.currentSettings.pageHeight = 140;
+                }
 
-            currentSettings.paperWidth = widthMm;
-            updateFormInputs(currentSettings);
-            applyStylesToDom(currentSettings);
-            syncSettingsWithStorageAndParent();
-        }
-
-        function setCopies(num) {
-            if (!singleData) return;
-            document.querySelectorAll('.btn-copy-opt').forEach(function(b) { b.classList.remove('active'); });
-            const activeBtn = document.getElementById('btn-copy-' + num);
-            if (activeBtn) activeBtn.classList.add('active');
-
-            const wrapper = document.getElementById('pages-container');
-            if (!wrapper) return;
-
-            const formattedDate = formatToDDMMYYYY(singleData.tgl_scan || singleData.waktu);
-            const sns = [singleData.sn1, singleData.sn2, singleData.sn3];
-            const dateDisplay = formattedDate ? '<div class="scan-date">' + formattedDate + '</div>' : '';
-            let html = '<div class="thermal-sheet">';
-            for (let i = 0; i < num; i++) {
-                const sn = sns[i] || singleData.sn1;
-                const qrPayload = formattedDate + '\t' + singleData.sku + '\t' + sn;
-                const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
-                const slotText = 'No.' + (i + 1);
-                html += '<div class="label-cell" data-qr="' + encodeURIComponent(qrPayload) + '" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID">' +
-                    '<div class="qr-wrapper">' +
-                        '<img src="' + qrUrl + '" alt="QR" />' +
-                    '</div>' +
-                    '<div class="details-wrapper">' +
-                        dateDisplay +
-                        '<div class="product-sku">' + singleData.sku + '</div>' +
-                        '<div class="serial-id">ID: ' + sn + '</div>' +
-                    '</div>' +
-                    '<div class="slot-indicator">' + slotText + '</div>' +
-                '</div>';
+                window.updateFormInputs(window.currentSettings);
+                window.applyStylesToDom(window.currentSettings);
+                window.syncSettingsWithStorageAndParent();
+            } catch (e) {
+                console.error('switchSize error:', e);
             }
-            html += '</div>';
-            wrapper.innerHTML = html;
+        };
 
-            const badge = document.getElementById('page-summary-badge');
-            if (badge) {
-                badge.innerText = '1 Halaman (' + num + ' Label)';
+        window.switchPresetPaper = function(widthMm) {
+            try {
+                document.querySelectorAll('#btn-100, #btn-80, #btn-58').forEach(function(btn) { btn.classList.remove('active'); });
+                var activeBtn = document.getElementById('btn-' + widthMm);
+                if (activeBtn) activeBtn.classList.add('active');
+
+                window.currentSettings.paperWidth = Number(widthMm);
+                window.updateFormInputs(window.currentSettings);
+                window.applyStylesToDom(window.currentSettings);
+                window.syncSettingsWithStorageAndParent();
+            } catch (e) {
+                console.error('switchPresetPaper error:', e);
             }
-        }
+        };
 
-        function copyLabelData(el) {
-            const raw = el ? el.getAttribute('data-qr') : '';
-            if (!raw) return;
-            const text = decodeURIComponent(raw);
-            copyTextToClipboard(text, '📋 Data QR Tersalin (3 Kolom Excel):\n' + text.replace(/\t/g, '   |   '));
-        }
+        window.setCopies = function(num) {
+            try {
+                if (!window.singleData) return;
+                document.querySelectorAll('.btn-copy-opt').forEach(function(b) { b.classList.remove('active'); });
+                var activeBtn = document.getElementById('btn-copy-' + num);
+                if (activeBtn) activeBtn.classList.add('active');
 
-        function copyAllDataTSV() {
-            const cells = document.querySelectorAll('.label-cell');
-            if (!cells || cells.length === 0) return;
-            const rows = [];
-            cells.forEach(function(c) {
-                const raw = c.getAttribute('data-qr');
-                if (raw) rows.push(decodeURIComponent(raw));
-            });
-            if (rows.length === 0) return;
-            const allTsv = rows.join('\n');
-            copyTextToClipboard(allTsv, '📋 ' + rows.length + ' Baris Data QR Tersalin ke Clipboard (3 Kolom Excel)');
-        }
+                var wrapper = document.getElementById('pages-container');
+                if (!wrapper) return;
 
-        function copyTextToClipboard(text, successMsg) {
+                var formattedDate = window.formatToDDMMYYYY(window.singleData.tgl_scan || window.singleData.waktu);
+                var sns = [window.singleData.sn1, window.singleData.sn2, window.singleData.sn3];
+                var dateDisplay = formattedDate ? '<div class="scan-date">' + formattedDate + '</div>' : '';
+                var html = '<div class="thermal-sheet">';
+                for (var i = 0; i < num; i++) {
+                    var sn = sns[i] || window.singleData.sn1;
+                    var qrPayload = formattedDate + '\t' + window.singleData.sku + '\t' + sn;
+                    var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
+                    var slotText = 'No.' + (i + 1);
+                    html += '<div class="label-cell" data-qr="' + encodeURIComponent(qrPayload) + '" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom Excel: Tgl [TAB] SKU [TAB] ID">' +
+                        '<div class="qr-wrapper">' +
+                            '<img src="' + qrUrl + '" alt="QR" />' +
+                        '</div>' +
+                        '<div class="details-wrapper">' +
+                            dateDisplay +
+                            '<div class="product-sku">' + window.singleData.sku + '</div>' +
+                            '<div class="serial-id">ID: ' + sn + '</div>' +
+                        '</div>' +
+                        '<div class="slot-indicator">' + slotText + '</div>' +
+                    '</div>';
+                }
+                html += '</div>';
+                wrapper.innerHTML = html;
+
+                var badge = document.getElementById('page-summary-badge');
+                if (badge) {
+                    badge.innerText = '1 Halaman (' + num + ' Label)';
+                }
+            } catch (e) {
+                console.error('setCopies error:', e);
+            }
+        };
+
+        window.copyLabelData = function(el) {
+            try {
+                var raw = el ? el.getAttribute('data-qr') : '';
+                if (!raw) return;
+                var text = decodeURIComponent(raw);
+                window.copyTextToClipboard(text, '📋 Data QR Tersalin (3 Kolom Excel):\n' + text.replace(/\t/g, '   |   '));
+            } catch (e) {
+                console.error('copyLabelData error:', e);
+            }
+        };
+
+        window.copyAllDataTSV = function() {
+            try {
+                var cells = document.querySelectorAll('.label-cell');
+                if (!cells || cells.length === 0) return;
+                var rows = [];
+                cells.forEach(function(c) {
+                    var raw = c.getAttribute('data-qr');
+                    if (raw) rows.push(decodeURIComponent(raw));
+                });
+                if (rows.length === 0) return;
+                var allTsv = rows.join('\n');
+                window.copyTextToClipboard(allTsv, '📋 ' + rows.length + ' Baris Data QR Tersalin ke Clipboard (3 Kolom Excel)');
+            } catch (e) {
+                console.error('copyAllDataTSV error:', e);
+            }
+        };
+
+        window.copyTextToClipboard = function(text, successMsg) {
             if (navigator.clipboard && window.isSecureContext) {
                 navigator.clipboard.writeText(text).then(function() {
-                    showToastBanner(successMsg);
+                    window.showToastBanner(successMsg);
                 }).catch(function() {
-                    fallbackCopy(text, successMsg);
+                    window.fallbackCopy(text, successMsg);
                 });
             } else {
-                fallbackCopy(text, successMsg);
+                window.fallbackCopy(text, successMsg);
             }
-        }
+        };
 
-        function fallbackCopy(text, successMsg) {
-            const ta = document.createElement('textarea');
+        window.fallbackCopy = function(text, successMsg) {
+            var ta = document.createElement('textarea');
             ta.value = text;
             ta.style.position = 'fixed';
             ta.style.left = '-9999px';
@@ -1805,15 +1837,15 @@ export function CekRak2() {
             ta.select();
             try {
                 document.execCommand('copy');
-                showToastBanner(successMsg);
+                window.showToastBanner(successMsg);
             } catch (e) {
                 alert('Data:\n' + text);
             }
             document.body.removeChild(ta);
-        }
+        };
 
-        function showToastBanner(msg) {
-            let t = document.getElementById('floating-copy-toast');
+        window.showToastBanner = function(msg) {
+            var t = document.getElementById('floating-copy-toast');
             if (!t) {
                 t = document.createElement('div');
                 t.id = 'floating-copy-toast';
@@ -1823,48 +1855,48 @@ export function CekRak2() {
             t.innerText = msg;
             t.classList.add('show');
             setTimeout(function() { t.classList.remove('show'); }, 3200);
-        }
+        };
 
-        async function saveSettingsToSupabase(showToast) {
-            syncSettingsWithStorageAndParent();
+        window.saveSettingsToSupabase = async function(showToast) {
+            window.syncSettingsWithStorageAndParent();
 
-            const toast = document.getElementById('toast-indicator');
+            var toast = document.getElementById('toast-indicator');
             if (toast && showToast) {
                 toast.innerText = '⏳ Menyimpan style...';
                 toast.classList.add('show');
             }
 
             try {
-                const resp = await fetch(SUPABASE_URL + '/rest/v1/user_print_settings', {
+                var resp = await fetch(window.SUPABASE_URL + '/rest/v1/user_print_settings', {
                     method: 'POST',
                     headers: {
-                        'apikey': SUPABASE_ANON_KEY,
-                        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+                        'apikey': window.SUPABASE_ANON_KEY,
+                        'Authorization': 'Bearer ' + window.SUPABASE_ANON_KEY,
                         'Content-Type': 'application/json',
                         'Prefer': 'resolution=merge-duplicates'
                     },
                     body: JSON.stringify({
-                        user_email: activeUserEmail,
-                        settings: currentSettings,
+                        user_email: window.activeUserEmail,
+                        settings: window.currentSettings,
                         updated_at: new Date().toISOString()
                     })
                 });
 
                 if (toast && showToast) {
                     toast.innerText = '✅ Style tersimpan di Akun & Browser!';
-                    setTimeout(() => toast.classList.remove('show'), 3500);
+                    setTimeout(function() { toast.classList.remove('show'); }, 3500);
                 }
             } catch (err) {
                 if (toast && showToast) {
                     toast.innerText = '✅ Style tersimpan di Akun & Browser!';
-                    setTimeout(() => toast.classList.remove('show'), 3500);
+                    setTimeout(function() { toast.classList.remove('show'); }, 3500);
                 }
             }
-        }
+        };
 
-        function resetToFactoryDefaults() {
+        window.resetToFactoryDefaults = function() {
             if (!confirm('Kembalikan seluruh ukuran & style cetak ke default pabrik?')) return;
-            currentSettings = {
+            window.currentSettings = {
                 paperWidth: 100,
                 pageHeight: 140,
                 rowHeight: 46,
@@ -1892,26 +1924,18 @@ export function CekRak2() {
                 showSlot: "block",
                 sizePreset: "140"
             };
-            updateFormInputs(currentSettings);
-            applyStylesToDom(currentSettings);
-            saveSettingsToSupabase(true);
+            window.updateFormInputs(window.currentSettings);
+            window.applyStylesToDom(window.currentSettings);
+            window.saveSettingsToSupabase(true);
+        };
+
+        // Initialize and apply styles
+        try {
+            window.updateFormInputs(window.currentSettings);
+            window.applyStylesToDom(window.currentSettings);
+        } catch (e) {
+            console.error('Init thermal print style error:', e);
         }
-
-        // Attach explicitly to window object for bulletproof global accessibility
-        window.toggleCustomizer = toggleCustomizer;
-        window.switchSize = switchSize;
-        window.switchPresetPaper = switchPresetPaper;
-        window.setCopies = setCopies;
-        window.onCustomChange = onCustomChange;
-        window.saveSettingsToSupabase = saveSettingsToSupabase;
-        window.resetToFactoryDefaults = resetToFactoryDefaults;
-        window.copyAllDataTSV = copyAllDataTSV;
-        window.copyLabelData = copyLabelData;
-        window.formatToDDMMYYYY = formatToDDMMYYYY;
-
-        // Apply styles and form values immediately
-        updateFormInputs(currentSettings);
-        applyStylesToDom(currentSettings);
     </script>
 </body>
 </html>`;
