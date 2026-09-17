@@ -45,17 +45,14 @@ import { SupabaseConfig } from './components/SupabaseConfig';
 import { DatabaseHotSwapListener } from './components/DatabaseHotSwapListener';
 import { RoleNotificationBlocker } from './components/RoleNotificationBlocker';
 import { ManageRoleNotifications } from './components/ManageRoleNotifications';
-import { startAutoFixTransferScheduler } from './services/autoFixTransferService';
+
 function AuthenticatedApp() {
   const { user, loading } = useAuth();
 
   useEffect(() => {
-    let cleanupScheduler: (() => void) | undefined;
-
     const initializeApp = async () => {
       try {
         await realtimeManager.initialize();
-        cleanupScheduler = startAutoFixTransferScheduler();
       } catch (error) {
         console.error('Failed to initialize realtime manager:', error);
       }
@@ -67,7 +64,6 @@ function AuthenticatedApp() {
 
     return () => {
       realtimeManager.disconnect();
-      if (cleanupScheduler) cleanupScheduler();
     };
   }, [user]);
 

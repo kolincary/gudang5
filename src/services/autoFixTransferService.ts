@@ -191,58 +191,7 @@ export const runAutoFixTransferDates = async (silent = true): Promise<number> =>
   }
 };
 
-/**
- * Initializes the background scheduler.
- * Runs every 1 hour automatically while users are active on the website.
- * Multi-tab & Multi-user safe via timestamp check.
- */
 export const startAutoFixTransferScheduler = () => {
-  const checkAndRun = async () => {
-    if (isExecuting) return;
-
-    try {
-      const lastRunStr = localStorage.getItem(STORAGE_KEY);
-      const lastRun = lastRunStr ? parseInt(lastRunStr, 10) : 0;
-      const now = Date.now();
-
-      // Check if 1 hour (3600000 ms) has passed
-      if (now - lastRun < ONE_HOUR_MS) {
-        return;
-      }
-
-      // Mark timestamp immediately to prevent concurrent runs across tabs
-      localStorage.setItem(STORAGE_KEY, now.toString());
-      isExecuting = true;
-
-      // Run background fix silently
-      await runAutoFixTransferDates(true);
-    } catch (e) {
-      console.warn('Background auto fix transfer encountered error:', e);
-    } finally {
-      isExecuting = false;
-    }
-  };
-
-  // Initial check 10 seconds after app loads
-  const initialTimer = setTimeout(() => {
-    if ('requestIdleCallback' in window) {
-      (window as any).requestIdleCallback(() => checkAndRun());
-    } else {
-      checkAndRun();
-    }
-  }, 10000);
-
-  // Periodic check every 5 minutes
-  const interval = setInterval(() => {
-    if ('requestIdleCallback' in window) {
-      (window as any).requestIdleCallback(() => checkAndRun());
-    } else {
-      checkAndRun();
-    }
-  }, 5 * 60 * 1000);
-
-  return () => {
-    clearTimeout(initialTimer);
-    clearInterval(interval);
-  };
+  // Disabled: Auto-fix transfer dates background scheduler has been deactivated
+  return () => {};
 };
