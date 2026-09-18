@@ -475,16 +475,19 @@ export function CekRak2() {
         }
     };
 
+    const isFetchingFinishedRef = useRef(false);
+
     // Real-Time Finished / Verified Items Fetching
     const fetchAllFinishedItems = async () => {
+        if (isFetchingFinishedRef.current) return;
+        isFetchingFinishedRef.current = true;
         try {
-            // 1. Fetch from Supabase database_log
+            // 1. Fetch from Supabase database_log with fast indexed query
             const { data, error } = await supabase
                 .from('database_log')
-                .select('*')
-                .or('gudang.ilike.VERIFY,gudang.ilike.UNVERIFY,type.ilike.VERIFY,type.ilike.UNVERIFY')
+                .select('id, sku, nama_barang, nama_produk, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah')
+                .in('gudang', ['VERIFY', 'UNVERIFY'])
                 .order('created_at', { ascending: false })
-                .order('id', { ascending: false })
                 .limit(2000);
 
             if (error) {
@@ -566,6 +569,7 @@ export function CekRak2() {
         } catch (err: any) {
             console.error('Error fetching finished stock opname items:', err);
         } finally {
+            isFetchingFinishedRef.current = false;
             setIsLoadingFinished(false);
         }
     };
@@ -592,10 +596,10 @@ export function CekRak2() {
         window.addEventListener('storage', handleSyncEvent);
         window.addEventListener('finished-logs-updated', handleSyncEvent);
 
-        // Periodic live heartbeat polling every 3 seconds
+        // Periodic live heartbeat polling every 10 seconds as safety fallback
         const interval = setInterval(() => {
             fetchAllFinishedItems();
-        }, 3000);
+        }, 10000);
 
         return () => {
             supabase.removeChannel(channel);
