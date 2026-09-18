@@ -38,128 +38,126 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [userPermissions, setUserPermissions] = useState<string[]>([]);
 
     useEffect(() => {
-        let isInitialized = false;
+        let isMounted = true;
+
+        if (typeof window !== 'undefined') {
+            const searchParams = new URLSearchParams(window.location.search);
+            const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+
+            // 1. Detect OAuth redirect errors (e.g. user cancelled or provider error)
+            const errorDesc = searchParams.get('error_description') || searchParams.get('error') || hashParams.get('error_description') || hashParams.get('error');
+            if (errorDesc) {
+                console.error('OAuth Error detected:', errorDesc);
+                const cleanMsg = decodeURIComponent(errorDesc.replace(/\+/g, ' '));
+                alert('Login Google dibatalkan atau bermasalah: ' + cleanMsg);
+                window.history.replaceState(null, '', window.location.pathname);
+                setLoading(false);
+                return;
+            }
+        }
+
+        const hasAuthParamsInUrl = typeof window !== 'undefined' && (
+            window.location.search.includes('code=') || 
+            window.location.hash.includes('access_token=')
+        );
+
+        if (hasAuthParamsInUrl) {
+            console.log('🔑 Supabase OAuth redirect detected, resolving authentication session...');
+        }
+
+        // Safety fallback timeout (longer if resolving OAuth redirect)
         const loadTimeout = setTimeout(() => {
-            if (!isInitialized) {
-                console.warn('Auth session loading timed out, proceeding with current state...');
+            if (isMounted) {
+                console.warn('Auth session loading safety timeout reached, stopping spinner...');
                 setLoading(false);
             }
-        }, 3000);
+        }, hasAuthParamsInUrl ? 8000 : 3000);
 
+        // 2. Register onAuthStateChange FIRST so no auth events are missed
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(
+            async (event, newSession) => {
+                console.log('🔄 Auth state changed:', event, newSession?.user?.email);
+                if (!isMounted) return;
+
+                if (newSession?.user) {
+                    setSession(newSession);
+                    setUser(newSession.user);
+                    if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+                        logUserLogin(newSession.user);
+                    }
+                    if (typeof window !== 'undefined' && (window.location.search.includes('code=') || window.location.hash.includes('access_token='))) {
+                        window.history.replaceState(null, '', window.location.pathname);
+                    }
+                    clearTimeout(loadTimeout);
+                    setLoading(false);
+                } else if (event === 'SIGNED_OUT') {
+                    setSession(null);
+                    setUser(null);
+                    setLoading(false);
+                } else if (event === 'INITIAL_SESSION' && !hasAuthParamsInUrl) {
+                    setLoading(false);
+                }
+            }
+        );
+
+        // 3. Check for existing session or handle implicit tokens
         const initAuth = async () => {
             try {
-                if (typeof window !== 'undefined') {
-                    const searchParams = new URLSearchParams(window.location.search);
+                if (typeof window !== 'undefined' && window.location.hash.includes('access_token=')) {
                     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-
-                    // 1. Detect OAuth redirect errors
-                    const errorDesc = searchParams.get('error_description') || searchParams.get('error') || hashParams.get('error_description') || hashParams.get('error');
-                    if (errorDesc) {
-                        console.error('OAuth Error detected:', errorDesc);
-                        const cleanMsg = decodeURIComponent(errorDesc.replace(/\+/g, ' '));
-                        alert('Login Google dibatalkan atau bermasalah: ' + cleanMsg);
-                        window.history.replaceState(null, '', window.location.pathname);
-                        isInitialized = true;
-                        clearTimeout(loadTimeout);
-                        setLoading(false);
-                        return;
-                    }
-
-                    // 2. PKCE Authorization Code (?code=...)
-                    const code = searchParams.get('code');
-                    if (code) {
-                        window.history.replaceState(null, '', window.location.pathname);
-                        console.log('🔑 Supabase PKCE OAuth code detected, exchanging for session...');
-                        try {
-                            const { data: codeData, error: codeError } = await supabase.auth.exchangeCodeForSession(code);
-                            if (codeError) {
-                                console.warn('PKCE code exchange notice:', codeError.message);
-                            } else if (codeData?.session) {
-                                setSession(codeData.session);
-                                setUser(codeData.session.user ?? null);
-                                if (codeData.session.user) {
-                                    logUserLogin(codeData.session.user);
-                                }
-                                isInitialized = true;
-                                clearTimeout(loadTimeout);
-                                setLoading(false);
-                                return;
-                            }
-                        } catch (codeEx) {
-                            console.warn('PKCE exchange error (may already be handled):', codeEx);
-                        }
-                    }
-
-                    // 3. Implicit token in hash (#access_token=...)
                     const accessToken = hashParams.get('access_token');
                     const refreshToken = hashParams.get('refresh_token');
                     if (accessToken) {
-                        window.history.replaceState(null, '', window.location.pathname);
-                        console.log('🔑 Supabase Implicit OAuth token detected, setting session explicitly...');
-                        try {
-                            const { data: hashData, error: hashError } = await supabase.auth.setSession({
-                                access_token: accessToken,
-                                refresh_token: refreshToken || '',
-                            });
-                            if (hashError) {
-                                console.warn('Hash session notice:', hashError.message);
-                            } else if (hashData?.session) {
-                                setSession(hashData.session);
-                                setUser(hashData.session.user ?? null);
-                                if (hashData.session.user) {
-                                    logUserLogin(hashData.session.user);
-                                }
-                                isInitialized = true;
-                                clearTimeout(loadTimeout);
-                                setLoading(false);
-                                return;
-                            }
-                        } catch (hashEx) {
-                            console.warn('Hash setSession error:', hashEx);
+                        console.log('🔑 Supabase Implicit OAuth token detected, setting session...');
+                        const { data: hashData, error: hashError } = await supabase.auth.setSession({
+                            access_token: accessToken,
+                            refresh_token: refreshToken || '',
+                        });
+                        if (hashData?.session && isMounted) {
+                            setSession(hashData.session);
+                            setUser(hashData.session.user ?? null);
+                            if (hashData.session.user) logUserLogin(hashData.session.user);
+                            window.history.replaceState(null, '', window.location.pathname);
+                            clearTimeout(loadTimeout);
+                            setLoading(false);
+                            return;
+                        }
+                        if (hashError) {
+                            console.warn('Implicit session notice:', hashError.message);
                         }
                     }
                 }
 
-                // 4. Standard session fetch from persistent storage
-                const { data: { session }, error } = await supabase.auth.getSession();
+                // Normal session check from persistent storage
+                const { data: { session: currentSession }, error } = await supabase.auth.getSession();
                 if (error) {
                     console.error('Session fetch error:', error);
                 }
-                if (session?.user) {
-                    setSession(session);
-                    setUser(session.user);
-                    logUserLogin(session.user);
+                if (currentSession?.user && isMounted) {
+                    setSession(currentSession);
+                    setUser(currentSession.user);
+                    logUserLogin(currentSession.user);
+                    if (typeof window !== 'undefined' && (window.location.search.includes('code=') || window.location.hash.includes('access_token='))) {
+                        window.history.replaceState(null, '', window.location.pathname);
+                    }
+                    clearTimeout(loadTimeout);
+                    setLoading(false);
+                } else if (!hasAuthParamsInUrl && isMounted) {
+                    setLoading(false);
                 }
             } catch (err) {
-                console.error('Session fetch exception:', err);
-            } finally {
-                isInitialized = true;
-                clearTimeout(loadTimeout);
-                setLoading(false);
+                console.error('Session init exception:', err);
+                if (isMounted) setLoading(false);
             }
         };
 
         initAuth();
 
-        // Listen for auth changes
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(
-            async (event, session) => {
-                console.log('🔄 Auth state changed:', event, session?.user?.email);
-                if (session?.user) {
-                    setSession(session);
-                    setUser(session.user);
-                    if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
-                        logUserLogin(session.user);
-                    }
-                } else if (event === 'SIGNED_OUT') {
-                    setSession(null);
-                    setUser(null);
-                }
-                setLoading(false);
-            }
-        );
-
-        return () => subscription.unsubscribe();
+        return () => {
+            isMounted = false;
+            clearTimeout(loadTimeout);
+            subscription.unsubscribe();
+        };
     }, []);
 
     // Effect to load role and permissions
