@@ -52,7 +52,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     const searchParams = new URLSearchParams(window.location.search);
                     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
 
-                    // 1. Detect OAuth redirect errors (e.g. access_denied, unauthorized_client, redirect_uri_mismatch)
+                    // Detect OAuth redirect errors (e.g. access_denied, unauthorized_client, redirect_uri_mismatch)
                     const errorDesc = searchParams.get('error_description') || searchParams.get('error') || hashParams.get('error_description') || hashParams.get('error');
                     if (errorDesc) {
                         console.error('OAuth Error detected:', errorDesc);
@@ -63,73 +63,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                         clearTimeout(loadTimeout);
                         return;
                     }
-
-                    // 2. PKCE Authorization Code Flow (?code=...)
-                    const code = searchParams.get('code');
-                    if (code) {
-                        console.log('🔑 Supabase PKCE OAuth code detected, exchanging for session...');
-                        try {
-                            const { data: codeData, error: codeError } = await supabase.auth.exchangeCodeForSession(code);
-                            if (codeError) {
-                                console.error('Error exchanging PKCE code:', codeError);
-                            } else if (codeData?.session) {
-                                setSession(codeData.session);
-                                setUser(codeData.session.user ?? null);
-                                if (codeData.session.user) {
-                                    logUserLogin(codeData.session.user);
-                                }
-                                window.history.replaceState(null, '', window.location.pathname);
-                                setLoading(false);
-                                clearTimeout(loadTimeout);
-                                return;
-                            }
-                        } catch (err) {
-                            console.error('Exception during PKCE code exchange:', err);
-                        }
-                    }
-
-                    // 3. Implicit OAuth Flow (#access_token=...)
-                    const accessToken = hashParams.get('access_token');
-                    const refreshToken = hashParams.get('refresh_token');
-                    if (accessToken) {
-                        console.log('🔑 Supabase Implicit OAuth callback detected, setting session explicitly...');
-                        try {
-                            const { data: hashData, error: hashError } = await supabase.auth.setSession({
-                                access_token: accessToken,
-                                refresh_token: refreshToken || '',
-                            });
-
-                            if (hashError) {
-                                console.error('Error setting session from hash:', hashError);
-                            } else if (hashData?.session) {
-                                setSession(hashData.session);
-                                setUser(hashData.session.user ?? null);
-                                if (hashData.session.user) {
-                                    logUserLogin(hashData.session.user);
-                                }
-                                window.history.replaceState(null, '', window.location.pathname);
-                                setLoading(false);
-                                clearTimeout(loadTimeout);
-                                return;
-                            }
-                        } catch (err) {
-                            console.error('Exception during Implicit hash session setup:', err);
-                        }
-                    }
                 }
 
-                // Standard session fetch
-                const { data: { session } } = await supabase.auth.getSession();
-                setSession(session);
-                setUser(session?.user ?? null);
+                // Standard session fetch (Supabase automatically exchanges code and sets session via detectSessionInUrl: true)
+                const { data: { session }, error } = await supabase.auth.getSession();
+                if (error) {
+                    console.error('Session fetch error:', error);
+                }
                 if (session?.user) {
+                    setSession(session);
+                    setUser(session.user);
                     logUserLogin(session.user);
-                    if (window.location.search.includes('code=') || window.location.hash.includes('access_token=')) {
-                        window.history.replaceState(null, '', window.location.pathname);
-                    }
                 }
             } catch (err) {
-                console.error('Session fetch error:', err);
+                console.error('Session fetch exception:', err);
             } finally {
                 setLoading(false);
                 clearTimeout(loadTimeout);
@@ -140,14 +87,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         // Listen for auth changes
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
-            async (_event, session) => {
-                setSession(session);
-                setUser(session?.user ?? null);
-                if (_event === 'SIGNED_IN' && session?.user) {
-                    logUserLogin(session.user);
-                    if (window.location.search.includes('code=') || window.location.hash.includes('access_token=')) {
-                        window.history.replaceState(null, '', window.location.pathname);
+            async (event, session) => {
+                console.log('🔄 Auth state changed:', event, session?.user?.email);
+                if (session?.user) {
+                    setSession(session);
+                    setUser(session.user);
+                    if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+                        logUserLogin(session.user);
                     }
+                } else if (event === 'SIGNED_OUT') {
+                    setSession(null);
+                    setUser(null);
                 }
                 setLoading(false);
             }
