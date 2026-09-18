@@ -7016,19 +7016,19 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 <div className="bg-gradient-to-br from-amber-500/10 via-orange-500/10 to-amber-500/10 border-2 border-amber-300 rounded-2xl p-4 animate-in fade-in space-y-2.5">
                                     <div className="flex items-center justify-between border-b border-amber-200 pb-2">
                                         <span className="text-xs font-black uppercase text-amber-900">
-                                            Ringkasan Penarikan (Opsi 2):
+                                            Ringkasan Pemulihan Karantina:
                                         </span>
                                         <span className="text-[10px] font-black text-amber-800 bg-amber-200 px-2 py-0.5 rounded uppercase">
-                                            Sub-Rak Tujuan: {lastScanned}
+                                            Wadah Transit: {getTempRackForPrefix(lastScanned) || 'TEMP-A'}
                                         </span>
                                     </div>
                                     <div className="grid grid-cols-3 gap-2 text-center text-xs">
                                         <div className="bg-white/80 p-2 rounded-xl">
-                                            <span className="text-[10px] font-bold text-slate-500 uppercase block">Fisik Ada</span>
+                                            <span className="text-[10px] font-bold text-slate-500 uppercase block">Fisik di {lastScanned}</span>
                                             <strong className="text-sm font-black text-slate-800">{Number(outTracePhysicalQty)} pcs</strong>
                                         </div>
                                         <div className="bg-emerald-50 p-2 rounded-xl border border-emerald-200">
-                                            <span className="text-[10px] font-bold text-emerald-700 uppercase block">Ditarik ke {lastScanned}</span>
+                                            <span className="text-[10px] font-bold text-emerald-700 uppercase block">Pulihkan ke {getTempRackForPrefix(lastScanned) || 'TEMP-A'}</span>
                                             <strong className="text-sm font-black text-emerald-700">{Number(selectedOutLog.jumlah)} pcs</strong>
                                         </div>
                                         <div className="bg-rose-50 p-2 rounded-xl border border-rose-200">
@@ -7039,7 +7039,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         </div>
                                     </div>
                                     <p className="text-[11px] text-amber-900 leading-relaxed font-medium">
-                                        💡 Sebanyak <strong>{Number(selectedOutLog.jumlah)} pcs</strong> akan langsung ditarik ke sub-rak <strong>{lastScanned}</strong> dan auto-terkonfirmasi.
+                                        💡 Sebanyak <strong>{Number(selectedOutLog.jumlah)} pcs</strong> akan dipulihkan ke wadah karantina/rak transit <strong>{getTempRackForPrefix(lastScanned) || 'TEMP-A'}</strong> (akumulasi sub-total jika SKU sama). Setelah itu, Anda dapat menarik stok ini ke sub-rak <strong>{lastScanned}</strong> melalui tombol <strong>&quot;TARIK BARANG&quot;</strong>.
                                         {Number(outTracePhysicalQty) > Number(selectedOutLog.jumlah) && (
                                             <span> Sisa <strong>{Number(outTracePhysicalQty) - Number(selectedOutLog.jumlah)} pcs</strong> akan dicatat dan dibuatkan format pesan laporan WhatsApp untuk tim crosscheck/Accurate.</span>
                                         )}
@@ -7069,12 +7069,12 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 {isExecutingOutTrace ? (
                                     <>
                                         <RefreshCw className="w-4 h-4 animate-spin" />
-                                        <span>Memproses Penarikan...</span>
+                                        <span>Memproses Pemulihan...</span>
                                     </>
                                 ) : (
                                     <>
                                         <CheckCircle2 className="w-4 h-4" />
-                                        <span>Konfirmasi Pulihkan &amp; Tarik ke {lastScanned}</span>
+                                        <span>Konfirmasi Pulihkan ke {getTempRackForPrefix(lastScanned) || 'TEMP-A'}</span>
                                     </>
                                 )}
                             </button>
