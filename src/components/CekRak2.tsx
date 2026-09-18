@@ -103,21 +103,14 @@ export function CekRak2() {
     const [showPullQuantityModal, setShowPullQuantityModal] = useState(false);
     const [pullItem, setPullItem] = useState<any>(null);
     const [pullQuantity, setPullQuantity] = useState<number | ''>('');
-    const [pullBoxCount, setPullBoxCount] = useState<number | ''>(1);
-    const [autoPrintThermalOnPull, setAutoPrintThermalOnPull] = useState<boolean>(() => {
-        try {
-            return localStorage.getItem('stock_opname_auto_print_thermal') !== 'false';
-        } catch {
-            return true;
-        }
-    });
+    const [pullBoxCount, setPullBoxCount] = useState<number | ''>('');
     const [isPulling, setIsPulling] = useState(false);
 
     // Live Barcode Calculation for Tarik Qty Modal (Bagi Rata Barcode)
     const pullBoxBreakdown = useMemo(() => {
         const tot = typeof pullQuantity === 'number' && pullQuantity > 0 ? pullQuantity : 0;
-        const cnt = typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 1;
-        if (tot <= 0) return { boxes: [], totalBoxes: 0, summary: '0 PCS' };
+        const cnt = typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 0;
+        if (tot <= 0 || cnt <= 0) return { boxes: [], totalBoxes: 0, summary: '' };
 
         const base = Math.floor(tot / cnt);
         const rem = tot % cnt;
@@ -3419,20 +3412,14 @@ export function CekRak2() {
                 return x;
             }));
 
-            const defaultCap = detectDefaultPacking(updatedItem.nama_produk, updatedItem.packing, freshTersedia);
-            const calculatedCount = defaultCap > 0 && freshTersedia > defaultCap ? Math.ceil(freshTersedia / defaultCap) : 1;
-            setPullBoxCount(calculatedCount);
-
+            setPullBoxCount('');
             setPullItem(updatedItem);
             setPullQuantity(''); // Default kosong agar pengguna bisa input manual
             setShowPullQuantityModal(true);
             setPullSearchTerm('');
         } catch (error) {
             console.error('Error fetching fresh pull item:', error);
-            const defaultCap = detectDefaultPacking(item.nama_produk, item.packing, item.tersedia);
-            const calculatedCount = defaultCap > 0 && item.tersedia > defaultCap ? Math.ceil(item.tersedia / defaultCap) : 1;
-            setPullBoxCount(calculatedCount);
-
+            setPullBoxCount('');
             setPullItem(item);
             setPullQuantity(''); // Default kosong agar pengguna bisa input manual
             setShowPullQuantityModal(true);
@@ -3589,27 +3576,10 @@ export function CekRak2() {
                 }
             }
 
-            // Auto-Print Thermal Label if enabled
-            if (autoPrintThermalOnPull) {
-                const pullQtyNum = Number(pullQuantity);
-                const cnt = typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 1;
-
-                handlePrintThermalLabel({
-                    nama_produk: pullItem.nama_produk,
-                    sku: pullItem.nama_produk,
-                    rak: lastScanned,
-                    sub_rak: lastScanned,
-                    tgl_scan: todayTgl,
-                    tgl: todayTgl,
-                    waktu: nowWaktu,
-                    tersedia: pullQtyNum,
-                    jumlah: pullQtyNum
-                }, 'count', cnt);
-            }
-
             setShowPullQuantityModal(false);
             setPullItem(null);
             setPullQuantity('');
+            setPullBoxCount('');
 
             // Refresh data rak ini
             fetchItems(lastScanned, false);
@@ -6472,7 +6442,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         Tarik Qty
                                     </h3>
                                     <p className="text-[11px] text-indigo-100 font-medium truncate">
-                                        Pilih jumlah tarik & jumlah barcode yang ingin dicetak
+                                        Pilih jumlah barang yang ditarik ke rak tujuan
                                     </p>
                                 </div>
                             </div>
@@ -6481,6 +6451,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     setShowPullQuantityModal(false);
                                     setPullItem(null);
                                     setPullQuantity('');
+                                    setPullBoxCount('');
                                 }}
                                 className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/25 text-white flex items-center justify-center transition-colors shrink-0 ml-2 cursor-pointer"
                             >
@@ -6597,10 +6568,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                             return;
                                         }
                                         const num = parseInt(val, 10);
-                                        setPullBoxCount(isNaN(num) || num <= 0 ? 1 : num);
+                                        setPullBoxCount(isNaN(num) || num <= 0 ? '' : num);
                                     }}
                                     className="w-full px-4 h-11 rounded-xl border-2 border-slate-200 focus:border-indigo-600 focus:ring-4 focus:ring-indigo-100 font-black text-gray-900 text-base bg-white"
-                                    placeholder="1"
+                                    placeholder="Ketik jumlah barcode (Opsional)..."
                                 />
                                 {/* Quick Presets for Barcode Count */}
                                 <div className="flex items-center gap-1.5">
@@ -6622,7 +6593,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 </div>
 
                                 {/* Summary preview text */}
-                                {typeof pullQuantity === 'number' && pullQuantity > 0 && typeof pullBoxCount === 'number' && pullBoxCount > 0 && (
+                                {typeof pullQuantity === 'number' && pullQuantity > 0 && typeof pullBoxCount === 'number' && pullBoxCount > 0 && pullBoxBreakdown.summary && (
                                     <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 text-xs text-slate-700 flex items-center justify-between">
                                         <span className="font-semibold text-slate-600">Hasil Pembagian:</span>
                                         <span className="font-black text-indigo-700">
@@ -6631,35 +6602,6 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     </div>
                                 )}
                             </div>
-
-                            {/* Section 3: Auto-Print Toggle */}
-                            <label className="flex items-center justify-between p-3 rounded-2xl bg-white border-2 border-indigo-100 hover:border-indigo-200 transition-all cursor-pointer shadow-2xs">
-                                <div className="flex items-center gap-2 min-w-0">
-                                    <div className={cn(
-                                        "w-7 h-7 rounded-lg flex items-center justify-center transition-colors shrink-0",
-                                        autoPrintThermalOnPull ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-400"
-                                    )}>
-                                        <Printer className="w-3.5 h-3.5" />
-                                    </div>
-                                    <div className="min-w-0">
-                                        <p className="text-xs font-black text-gray-900">
-                                            Cetak Label QR Thermal Otomatis
-                                        </p>
-                                    </div>
-                                </div>
-                                <input
-                                    type="checkbox"
-                                    checked={autoPrintThermalOnPull}
-                                    onChange={(e) => {
-                                        const val = e.target.checked;
-                                        setAutoPrintThermalOnPull(val);
-                                        try {
-                                            localStorage.setItem('stock_opname_auto_print_thermal', val ? 'true' : 'false');
-                                        } catch {}
-                                    }}
-                                    className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-gray-300 ml-3 cursor-pointer"
-                                />
-                            </label>
                         </div>
 
                         {/* Modal Footer */}
@@ -6670,6 +6612,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     setShowPullQuantityModal(false);
                                     setPullItem(null);
                                     setPullQuantity('');
+                                    setPullBoxCount('');
                                 }}
                                 className="px-4 py-3 rounded-xl border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 font-bold text-sm transition-colors cursor-pointer"
                             >
@@ -6685,15 +6628,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         <Loader className="animate-spin w-5 h-5 mr-2" />
                                         Menarik...
                                     </>
-                                ) : autoPrintThermalOnPull ? (
-                                    <>
-                                        <Printer className="w-5 h-5 mr-2 shrink-0" />
-                                        <span>TARIK & CETAK {typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 1} BARCODE</span>
-                                    </>
                                 ) : (
                                     <>
-                                        <SearchCode className="w-5 h-5 mr-2 shrink-0" />
-                                        <span>KONFIRMASI TARIK ({pullQuantity || 0} {pullItem.satuan || 'PCS'})</span>
+                                        <ArrowDownToLine className="w-5 h-5 mr-2 shrink-0" />
+                                        <span>TARIK BARANG</span>
                                     </>
                                 )}
                             </Button>
