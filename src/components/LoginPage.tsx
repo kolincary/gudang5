@@ -206,13 +206,7 @@ export function LoginPage() {
                         {/* Google Sign In Button */}
                         <div className="space-y-4">
                             <button
-                                onClick={async () => {
-                                    // Defensive: check if we already have a session but it's not detected
-                                    const { data } = await supabase.auth.getSession();
-                                    if (data?.session) {
-                                        window.location.reload();
-                                        return;
-                                    }
+                                onClick={() => {
                                     signInWithGoogle();
                                 }}
                                 disabled={loading}

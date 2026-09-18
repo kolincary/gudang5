@@ -51,9 +51,12 @@ if (typeof window !== 'undefined') {
   }, true);
 }
 
+import { warmupConnection } from './lib/supabase';
+
 // Start application after ensuring active Supabase config is loaded from Firestore
 const initApp = async () => {
   await syncSupabaseFromFirestore();
+  warmupConnection().catch(console.error);
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <App />

@@ -7,8 +7,8 @@ let internalKey = '';
 export const getActiveSupabaseClient = (): SupabaseClient => {
   const metaEnv = typeof import.meta !== 'undefined' && (import.meta as any).env ? (import.meta as any).env : {};
   const procEnv = typeof process !== 'undefined' && process.env ? process.env : {};
-  const dynamicUrl = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_url') : null) || metaEnv.VITE_SUPABASE_URL || procEnv.VITE_SUPABASE_URL || 'https://ajeohbobmvxtaicmpfgs.supabase.co';
-  const dynamicKey = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_anon_key') : null) || metaEnv.VITE_SUPABASE_ANON_KEY || procEnv.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFqZW9oYm9ibXZ4dGFpY21wZmdzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4NTI3NzgsImV4cCI6MjEwNDQyODc3OH0.N9vDWiCXoS6TQ5uBZkFPNGDgcC95ZWxq5oZLIxTpor0';
+  const dynamicUrl = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_url') : null) || metaEnv.VITE_SUPABASE_URL || procEnv.VITE_SUPABASE_URL || 'https://eojyqaffjqiuxldprwph.supabase.co';
+  const dynamicKey = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_anon_key') : null) || metaEnv.VITE_SUPABASE_ANON_KEY || procEnv.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvanlxYWZmanFpdXhsZHByd3BoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1ODYwNzUsImV4cCI6MjEwNTE2MjA3NX0.pGTbwCdpMOG8X4N-_GZJidulS7KmzZd82ocv6zFUmuA';
 
   if (!internalClient || internalUrl !== dynamicUrl || internalKey !== dynamicKey) {
     internalUrl = dynamicUrl;
@@ -76,9 +76,8 @@ export const warmupConnection = async () => {
   }
 };
 
-if (typeof window !== 'undefined') {
-  warmupConnection();
-}
+// Connection warmup helper (invoked in main.tsx after syncing active config)
+
 
 // Utility function to fetch all products from Supabase (Parallelized)
 export const fetchAllProducts = async (onProgress?: (current: number, total: number) => void, namesOnly: boolean = false) => {

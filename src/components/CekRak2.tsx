@@ -734,8 +734,8 @@ export function CekRak2() {
     const renderThermalPrintWindow = (config: ThermalPrintConfig) => {
         const activeEmail = (user?.email || userEmail || 'staf@gudang').trim();
         const metaEnv = typeof import.meta !== 'undefined' && (import.meta as any).env ? (import.meta as any).env : {};
-        const activeSupabaseUrl = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_url') : null) || metaEnv.VITE_SUPABASE_URL || 'https://ajeohbobmvxtaicmpfgs.supabase.co';
-        const activeSupabaseKey = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_anon_key') : null) || metaEnv.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFqZW9oYm9ibXZ4dGFpY21wZmdzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4NTI3NzgsImV4cCI6MjEwNDQyODc3OH0.N9vDWiCXoS6TQ5uBZkFPNGDgcC95ZWxq5oZLIxTpor0';
+        const activeSupabaseUrl = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_url') : null) || metaEnv.VITE_SUPABASE_URL || 'https://eojyqaffjqiuxldprwph.supabase.co';
+        const activeSupabaseKey = (typeof window !== 'undefined' ? localStorage.getItem('custom_supabase_anon_key') : null) || metaEnv.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvanlxYWZmanFpdXhsZHByd3BoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1ODYwNzUsImV4cCI6MjEwNTE2MjA3NX0.pGTbwCdpMOG8X4N-_GZJidulS7KmzZd82ocv6zFUmuA';
 
         // Read latest saved style preferences from component state or localStorage
         const cacheKey = 'thermal_style_pref_' + encodeURIComponent(activeEmail);

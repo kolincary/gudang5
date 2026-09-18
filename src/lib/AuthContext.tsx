@@ -48,32 +48,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         const initAuth = async () => {
             try {
-                // If URL has OAuth hash with access_token
-                if (typeof window !== 'undefined' && window.location.hash.includes('access_token=')) {
-                    const hashStr = window.location.hash.replace(/^#/, '');
-                    const params = new URLSearchParams(hashStr);
-                    const accessToken = params.get('access_token');
-                    const refreshToken = params.get('refresh_token');
+                if (typeof window !== 'undefined') {
+                    const searchParams = new URLSearchParams(window.location.search);
+                    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
 
-                    if (accessToken && refreshToken) {
-                        console.log('🔑 Supabase OAuth callback detected, setting session explicitly...');
-                        const { data: hashData, error: hashError } = await supabase.auth.setSession({
-                            access_token: accessToken,
-                            refresh_token: refreshToken,
-                        });
+                    // 1. Detect OAuth redirect errors (e.g. access_denied, unauthorized_client, redirect_uri_mismatch)
+                    const errorDesc = searchParams.get('error_description') || searchParams.get('error') || hashParams.get('error_description') || hashParams.get('error');
+                    if (errorDesc) {
+                        console.error('OAuth Error detected:', errorDesc);
+                        const cleanMsg = decodeURIComponent(errorDesc.replace(/\+/g, ' '));
+                        alert('Login Google dibatalkan atau bermasalah: ' + cleanMsg);
+                        window.history.replaceState(null, '', window.location.pathname);
+                        setLoading(false);
+                        clearTimeout(loadTimeout);
+                        return;
+                    }
 
-                        if (hashError) {
-                            console.error('Error setting session from hash:', hashError);
-                        } else if (hashData?.session) {
-                            setSession(hashData.session);
-                            setUser(hashData.session.user ?? null);
-                            if (hashData.session.user) {
-                                logUserLogin(hashData.session.user);
+                    // 2. PKCE Authorization Code Flow (?code=...)
+                    const code = searchParams.get('code');
+                    if (code) {
+                        console.log('🔑 Supabase PKCE OAuth code detected, exchanging for session...');
+                        try {
+                            const { data: codeData, error: codeError } = await supabase.auth.exchangeCodeForSession(code);
+                            if (codeError) {
+                                console.error('Error exchanging PKCE code:', codeError);
+                            } else if (codeData?.session) {
+                                setSession(codeData.session);
+                                setUser(codeData.session.user ?? null);
+                                if (codeData.session.user) {
+                                    logUserLogin(codeData.session.user);
+                                }
+                                window.history.replaceState(null, '', window.location.pathname);
+                                setLoading(false);
+                                clearTimeout(loadTimeout);
+                                return;
                             }
-                            window.history.replaceState(null, '', window.location.pathname + window.location.search);
-                            setLoading(false);
-                            clearTimeout(loadTimeout);
-                            return;
+                        } catch (err) {
+                            console.error('Exception during PKCE code exchange:', err);
+                        }
+                    }
+
+                    // 3. Implicit OAuth Flow (#access_token=...)
+                    const accessToken = hashParams.get('access_token');
+                    const refreshToken = hashParams.get('refresh_token');
+                    if (accessToken) {
+                        console.log('🔑 Supabase Implicit OAuth callback detected, setting session explicitly...');
+                        try {
+                            const { data: hashData, error: hashError } = await supabase.auth.setSession({
+                                access_token: accessToken,
+                                refresh_token: refreshToken || '',
+                            });
+
+                            if (hashError) {
+                                console.error('Error setting session from hash:', hashError);
+                            } else if (hashData?.session) {
+                                setSession(hashData.session);
+                                setUser(hashData.session.user ?? null);
+                                if (hashData.session.user) {
+                                    logUserLogin(hashData.session.user);
+                                }
+                                window.history.replaceState(null, '', window.location.pathname);
+                                setLoading(false);
+                                clearTimeout(loadTimeout);
+                                return;
+                            }
+                        } catch (err) {
+                            console.error('Exception during Implicit hash session setup:', err);
                         }
                     }
                 }
@@ -84,8 +124,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 setUser(session?.user ?? null);
                 if (session?.user) {
                     logUserLogin(session.user);
-                    if (window.location.hash.includes('access_token=')) {
-                        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+                    if (window.location.search.includes('code=') || window.location.hash.includes('access_token=')) {
+                        window.history.replaceState(null, '', window.location.pathname);
                     }
                 }
             } catch (err) {
@@ -105,8 +145,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 setUser(session?.user ?? null);
                 if (_event === 'SIGNED_IN' && session?.user) {
                     logUserLogin(session.user);
-                    if (window.location.hash.includes('access_token=')) {
-                        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+                    if (window.location.search.includes('code=') || window.location.hash.includes('access_token=')) {
+                        window.history.replaceState(null, '', window.location.pathname);
                     }
                 }
                 setLoading(false);
@@ -264,14 +304,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     const signInWithGoogle = async () => {
-        const { error } = await supabase.auth.signInWithOAuth({
-            provider: 'google',
-            options: {
-                redirectTo: window.location.origin,
-            },
-        });
-        if (error) {
-            console.error('Error signing in with Google:', error);
+        try {
+            const redirectUrl = window.location.origin + window.location.pathname;
+            const { error } = await supabase.auth.signInWithOAuth({
+                provider: 'google',
+                options: {
+                    redirectTo: redirectUrl,
+                    queryParams: {
+                        access_type: 'offline',
+                        prompt: 'select_account',
+                    },
+                },
+            });
+            if (error) {
+                console.error('Error signing in with Google:', error);
+                alert('Gagal membuka login Google: ' + error.message);
+            }
+        } catch (err: any) {
+            console.error('Exception in signInWithGoogle:', err);
+            alert('Terjadi kesalahan saat membuka Google Login: ' + (err?.message || err));
         }
     };
 
