@@ -38,13 +38,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [userPermissions, setUserPermissions] = useState<string[]>([]);
 
     useEffect(() => {
-        // Safe timeout for loading state
+        let isInitialized = false;
         const loadTimeout = setTimeout(() => {
-            if (loading) {
+            if (!isInitialized) {
                 console.warn('Auth session loading timed out, proceeding with current state...');
                 setLoading(false);
             }
-        }, 5000);
+        }, 3000);
 
         const initAuth = async () => {
             try {
@@ -59,28 +59,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                         const cleanMsg = decodeURIComponent(errorDesc.replace(/\+/g, ' '));
                         alert('Login Google dibatalkan atau bermasalah: ' + cleanMsg);
                         window.history.replaceState(null, '', window.location.pathname);
-                        setLoading(false);
+                        isInitialized = true;
                         clearTimeout(loadTimeout);
+                        setLoading(false);
                         return;
                     }
 
                     // 2. PKCE Authorization Code (?code=...)
                     const code = searchParams.get('code');
                     if (code) {
+                        window.history.replaceState(null, '', window.location.pathname);
                         console.log('🔑 Supabase PKCE OAuth code detected, exchanging for session...');
-                        const { data: codeData, error: codeError } = await supabase.auth.exchangeCodeForSession(code);
-                        if (codeError) {
-                            console.error('Error exchanging PKCE code:', codeError);
-                        } else if (codeData?.session) {
-                            setSession(codeData.session);
-                            setUser(codeData.session.user ?? null);
-                            if (codeData.session.user) {
-                                await logUserLogin(codeData.session.user);
+                        try {
+                            const { data: codeData, error: codeError } = await supabase.auth.exchangeCodeForSession(code);
+                            if (codeError) {
+                                console.warn('PKCE code exchange notice:', codeError.message);
+                            } else if (codeData?.session) {
+                                setSession(codeData.session);
+                                setUser(codeData.session.user ?? null);
+                                if (codeData.session.user) {
+                                    logUserLogin(codeData.session.user);
+                                }
+                                isInitialized = true;
+                                clearTimeout(loadTimeout);
+                                setLoading(false);
+                                return;
                             }
-                            window.history.replaceState(null, '', window.location.pathname);
-                            setLoading(false);
-                            clearTimeout(loadTimeout);
-                            return;
+                        } catch (codeEx) {
+                            console.warn('PKCE exchange error (may already be handled):', codeEx);
                         }
                     }
 
@@ -88,23 +94,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     const accessToken = hashParams.get('access_token');
                     const refreshToken = hashParams.get('refresh_token');
                     if (accessToken) {
+                        window.history.replaceState(null, '', window.location.pathname);
                         console.log('🔑 Supabase Implicit OAuth token detected, setting session explicitly...');
-                        const { data: hashData, error: hashError } = await supabase.auth.setSession({
-                            access_token: accessToken,
-                            refresh_token: refreshToken || '',
-                        });
-                        if (hashError) {
-                            console.error('Error setting session from hash:', hashError);
-                        } else if (hashData?.session) {
-                            setSession(hashData.session);
-                            setUser(hashData.session.user ?? null);
-                            if (hashData.session.user) {
-                                await logUserLogin(hashData.session.user);
+                        try {
+                            const { data: hashData, error: hashError } = await supabase.auth.setSession({
+                                access_token: accessToken,
+                                refresh_token: refreshToken || '',
+                            });
+                            if (hashError) {
+                                console.warn('Hash session notice:', hashError.message);
+                            } else if (hashData?.session) {
+                                setSession(hashData.session);
+                                setUser(hashData.session.user ?? null);
+                                if (hashData.session.user) {
+                                    logUserLogin(hashData.session.user);
+                                }
+                                isInitialized = true;
+                                clearTimeout(loadTimeout);
+                                setLoading(false);
+                                return;
                             }
-                            window.history.replaceState(null, '', window.location.pathname);
-                            setLoading(false);
-                            clearTimeout(loadTimeout);
-                            return;
+                        } catch (hashEx) {
+                            console.warn('Hash setSession error:', hashEx);
                         }
                     }
                 }
@@ -117,13 +128,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 if (session?.user) {
                     setSession(session);
                     setUser(session.user);
-                    await logUserLogin(session.user);
+                    logUserLogin(session.user);
                 }
             } catch (err) {
                 console.error('Session fetch exception:', err);
             } finally {
-                setLoading(false);
+                isInitialized = true;
                 clearTimeout(loadTimeout);
+                setLoading(false);
             }
         };
 
