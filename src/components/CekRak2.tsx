@@ -99,13 +99,11 @@ export function CekRak2() {
     const [isSearchingPull, setIsSearchingPull] = useState(false);
     const [isCompletingAudit, setIsCompletingAudit] = useState(false);
 
-    // Pull Quantity Modal State & Barcode Split Options
+    // Pull Quantity Modal State & Barcode Count Options
     const [showPullQuantityModal, setShowPullQuantityModal] = useState(false);
     const [pullItem, setPullItem] = useState<any>(null);
     const [pullQuantity, setPullQuantity] = useState<number | ''>('');
-    const [pullSplitMode, setPullSplitMode] = useState<'capacity' | 'count'>('capacity');
-    const [pullBoxCapacity, setPullBoxCapacity] = useState<number | ''>(48);
-    const [pullBoxCount, setPullBoxCount] = useState<number | ''>(2);
+    const [pullBoxCount, setPullBoxCount] = useState<number | ''>(1);
     const [autoPrintThermalOnPull, setAutoPrintThermalOnPull] = useState<boolean>(() => {
         try {
             return localStorage.getItem('stock_opname_auto_print_thermal') !== 'false';
@@ -115,55 +113,28 @@ export function CekRak2() {
     });
     const [isPulling, setIsPulling] = useState(false);
 
-    // Live Box/Koli Split Breakdown for Tarik Qty Modal
+    // Live Barcode Calculation for Tarik Qty Modal (Bagi Rata Barcode)
     const pullBoxBreakdown = useMemo(() => {
         const tot = typeof pullQuantity === 'number' && pullQuantity > 0 ? pullQuantity : 0;
-        if (tot <= 0) return { boxes: [], totalBoxes: 0, summary: '0 Karton', isRemainder: false };
+        const cnt = typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 1;
+        if (tot <= 0) return { boxes: [], totalBoxes: 0, summary: '0 PCS' };
 
-        if (pullSplitMode === 'capacity') {
-            const cap = typeof pullBoxCapacity === 'number' && pullBoxCapacity > 0 ? pullBoxCapacity : tot;
-            const full = Math.floor(tot / cap);
-            const rem = tot % cap;
-            const totalBoxes = full + (rem > 0 ? 1 : 0);
-            const boxes: { boxIndex: number; totalBoxes: number; qty: number; isRemainder: boolean }[] = [];
+        const base = Math.floor(tot / cnt);
+        const rem = tot % cnt;
+        const boxes: { boxIndex: number; totalBoxes: number; qty: number }[] = [];
 
-            for (let i = 0; i < full; i++) {
-                boxes.push({ boxIndex: i + 1, totalBoxes: totalBoxes || 1, qty: cap, isRemainder: false });
-            }
-            if (rem > 0) {
-                boxes.push({ boxIndex: totalBoxes, totalBoxes: totalBoxes, qty: rem, isRemainder: true });
-            }
-            if (boxes.length === 0) {
-                boxes.push({ boxIndex: 1, totalBoxes: 1, qty: tot, isRemainder: false });
-            }
-
-            let summary = `${boxes.length} Karton / Barcode`;
-            if (full > 0 && rem > 0) {
-                summary = `${full} Karton @ ${cap} PCS + 1 Karton Sisa ${rem} PCS`;
-            } else if (full > 0) {
-                summary = `${full} Karton @ ${cap} PCS`;
-            }
-
-            return { boxes, totalBoxes: boxes.length, summary, isRemainder: rem > 0 };
-        } else {
-            const cnt = typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 1;
-            const base = Math.floor(tot / cnt);
-            const rem = tot % cnt;
-            const boxes: { boxIndex: number; totalBoxes: number; qty: number; isRemainder: boolean }[] = [];
-
-            for (let i = 0; i < cnt; i++) {
-                const bQty = base + (i < rem ? 1 : 0);
-                boxes.push({ boxIndex: i + 1, totalBoxes: cnt, qty: bQty, isRemainder: false });
-            }
-
-            return {
-                boxes,
-                totalBoxes: cnt,
-                summary: `Dibagi Rata ${cnt} Karton / Barcode`,
-                isRemainder: false
-            };
+        for (let i = 0; i < cnt; i++) {
+            const bQty = base + (i < rem ? 1 : 0);
+            boxes.push({ boxIndex: i + 1, totalBoxes: cnt, qty: bQty });
         }
-    }, [pullQuantity, pullSplitMode, pullBoxCapacity, pullBoxCount]);
+
+        let summary = `@ ${base} PCS`;
+        if (rem > 0) {
+            summary = `@ ${base} - ${base + 1} PCS`;
+        }
+
+        return { boxes, totalBoxes: cnt, summary };
+    }, [pullQuantity, pullBoxCount]);
 
     // Wadah Karantina Revisi State
     const [showKarantinaModal, setShowKarantinaModal] = useState(false);
@@ -3402,9 +3373,8 @@ export function CekRak2() {
                     setPullItem(item);
                     setPullQuantity(item.tersedia);
                     const defaultCap = detectDefaultPacking(item.nama_produk, item.packing, item.tersedia);
-                    setPullBoxCapacity(defaultCap);
-                    setPullSplitMode('capacity');
-                    setPullBoxCount(Math.max(1, Math.ceil(item.tersedia / defaultCap)));
+                    const calculatedCount = defaultCap > 0 && item.tersedia > defaultCap ? Math.ceil(item.tersedia / defaultCap) : 1;
+                    setPullBoxCount(calculatedCount);
                     setShowPullQuantityModal(true);
                 }
             }
@@ -3450,9 +3420,8 @@ export function CekRak2() {
             }));
 
             const defaultCap = detectDefaultPacking(updatedItem.nama_produk, updatedItem.packing, freshTersedia);
-            setPullBoxCapacity(defaultCap);
-            setPullSplitMode('capacity');
-            setPullBoxCount(Math.max(1, Math.ceil((freshTersedia || 1) / defaultCap)));
+            const calculatedCount = defaultCap > 0 && freshTersedia > defaultCap ? Math.ceil(freshTersedia / defaultCap) : 1;
+            setPullBoxCount(calculatedCount);
 
             setPullItem(updatedItem);
             setPullQuantity(''); // Default kosong agar pengguna bisa input manual
@@ -3461,9 +3430,8 @@ export function CekRak2() {
         } catch (error) {
             console.error('Error fetching fresh pull item:', error);
             const defaultCap = detectDefaultPacking(item.nama_produk, item.packing, item.tersedia);
-            setPullBoxCapacity(defaultCap);
-            setPullSplitMode('capacity');
-            setPullBoxCount(Math.max(1, Math.ceil((item.tersedia || 1) / defaultCap)));
+            const calculatedCount = defaultCap > 0 && item.tersedia > defaultCap ? Math.ceil(item.tersedia / defaultCap) : 1;
+            setPullBoxCount(calculatedCount);
 
             setPullItem(item);
             setPullQuantity(''); // Default kosong agar pengguna bisa input manual
@@ -3635,10 +3603,7 @@ export function CekRak2() {
             // Auto-Print Thermal Label if enabled
             if (autoPrintThermalOnPull) {
                 const pullQtyNum = Number(pullQuantity);
-                const overrideMode = pullSplitMode;
-                const overrideVal = pullSplitMode === 'capacity'
-                    ? (typeof pullBoxCapacity === 'number' && pullBoxCapacity > 0 ? pullBoxCapacity : pullQtyNum)
-                    : (typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 1);
+                const cnt = typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 1;
 
                 handlePrintThermalLabel({
                     nama_produk: pullItem.nama_produk,
@@ -3650,7 +3615,7 @@ export function CekRak2() {
                     waktu: waktuAsli,
                     tersedia: pullQtyNum,
                     jumlah: pullQtyNum
-                }, overrideMode, overrideVal);
+                }, 'count', cnt);
             }
 
             setShowPullQuantityModal(false);
@@ -6516,7 +6481,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
             )}
             {showPullQuantityModal && pullItem && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[110] flex items-center justify-center p-3 sm:p-4 animate-in fade-in overflow-y-auto">
-                    <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[92vh] overflow-hidden my-auto border border-gray-100">
+                    <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[92vh] overflow-hidden my-auto border border-gray-100">
                         {/* Header */}
                         <div className="bg-gradient-to-r from-indigo-600 via-indigo-700 to-purple-600 p-4 sm:p-5 flex justify-between items-center text-white shrink-0 shadow-md">
                             <div className="flex items-center gap-2.5 min-w-0">
@@ -6525,10 +6490,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 </div>
                                 <div className="min-w-0">
                                     <h3 className="text-base sm:text-lg font-black uppercase tracking-tight truncate">
-                                        Tarik Qty & Label Barcode
+                                        Tarik Qty
                                     </h3>
                                     <p className="text-[11px] text-indigo-100 font-medium truncate">
-                                        Tarik barang & otomatis atur barcode dus/koli
+                                        Pilih jumlah tarik & jumlah barcode yang ingin dicetak
                                     </p>
                                 </div>
                             </div>
@@ -6548,7 +6513,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         <div className="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1 custom-scrollbar text-left">
                             {/* Product Info Card */}
                             <div className="bg-gradient-to-br from-indigo-50/80 via-purple-50/40 to-slate-50 border border-indigo-100/80 rounded-2xl p-3.5 shadow-sm">
-                                <div className="flex items-center justify-between gap-2 mb-1.5">
+                                <div className="flex items-center justify-between gap-2 mb-1">
                                     <span className="text-[10px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-100/70 px-2 py-0.5 rounded-full">
                                         Barang Terpilih
                                     </span>
@@ -6568,7 +6533,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         </p>
                                     </div>
                                     <div className="text-right">
-                                        <p className="text-[10px] text-gray-500 font-semibold uppercase">Stok Asal Tersedia</p>
+                                        <p className="text-[10px] text-gray-500 font-semibold uppercase">Stok Asal</p>
                                         <p className="font-black text-indigo-700 text-sm mt-0.5">
                                             {pullItem.tersedia} <span className="text-xs font-semibold text-gray-600">{pullItem.satuan || 'PCS'}</span>
                                         </p>
@@ -6576,14 +6541,13 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 </div>
                             </div>
 
-                            {/* Section 1: Jumlah Tarik (Qty Input) */}
+                            {/* 1. Jumlah Tarik */}
                             <div className="space-y-2">
                                 <div className="flex justify-between items-center">
-                                    <label className="text-xs font-black text-gray-700 uppercase tracking-wider flex items-center gap-1.5">
-                                        <span>1. Jumlah Tarik</span>
-                                        <span className="text-red-500">*</span>
+                                    <label className="text-xs font-black text-gray-700 uppercase tracking-wider">
+                                        1. Jumlah Tarik <span className="text-red-500">*</span>
                                     </label>
-                                    <span className="text-[11px] font-black text-indigo-600">
+                                    <span className="text-[11px] font-bold text-indigo-600">
                                         Maks: {pullItem.tersedia} {pullItem.satuan || 'PCS'}
                                     </span>
                                 </div>
@@ -6612,259 +6576,95 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                             }
                                         }}
                                         className="w-full px-4 h-12 rounded-xl border-2 border-indigo-100 focus:border-indigo-600 focus:ring-4 focus:ring-indigo-100 transition-all font-black text-gray-900 text-lg bg-white"
-                                        placeholder="0"
+                                        placeholder={`Ketik jumlah tarik (Maks: ${pullItem.tersedia})`}
                                     />
                                     <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-black text-gray-400 uppercase pointer-events-none">
                                         {pullItem.satuan || 'PCS'}
                                     </div>
                                 </div>
-
-                                {/* Quick Presets for QTY */}
-                                <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                                    <button
-                                        type="button"
-                                        onClick={() => setPullQuantity(pullItem.tersedia)}
-                                        className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[11px] font-black uppercase tracking-tight transition-all active:scale-95 cursor-pointer"
-                                    >
-                                        Semua ({pullItem.tersedia})
-                                    </button>
-                                    {pullItem.tersedia >= 2 && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setPullQuantity(Math.floor(pullItem.tersedia / 2))}
-                                            className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold transition-all active:scale-95 cursor-pointer"
-                                        >
-                                            50% ({Math.floor(pullItem.tersedia / 2)})
-                                        </button>
-                                    )}
-                                    {pullBoxCapacity && typeof pullBoxCapacity === 'number' && pullBoxCapacity < pullItem.tersedia && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setPullQuantity(pullBoxCapacity)}
-                                            className="px-2 py-1 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-[11px] font-bold transition-all active:scale-95 cursor-pointer"
-                                        >
-                                            1 Dus ({pullBoxCapacity})
-                                        </button>
-                                    )}
-                                    {pullBoxCapacity && typeof pullBoxCapacity === 'number' && (pullBoxCapacity * 2) <= pullItem.tersedia && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setPullQuantity(pullBoxCapacity * 2)}
-                                            className="px-2 py-1 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-[11px] font-bold transition-all active:scale-95 cursor-pointer"
-                                        >
-                                            2 Dus ({pullBoxCapacity * 2})
-                                        </button>
-                                    )}
-                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setPullQuantity(pullItem.tersedia)}
+                                    className="w-full py-2.5 rounded-xl border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 text-xs font-black uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 cursor-pointer active:scale-98"
+                                >
+                                    Isi Otomatis Maksimal ({pullItem.tersedia} {pullItem.satuan || 'PCS'})
+                                </button>
                             </div>
 
-                            {/* Section 2: Barcode / Box Splitting Configuration */}
-                            <div className="bg-slate-50/90 border border-slate-200/80 rounded-2xl p-3.5 sm:p-4 space-y-3">
-                                <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-1.5">
-                                        <Box className="w-4 h-4 text-indigo-600" />
-                                        <label className="text-xs font-black text-gray-800 uppercase tracking-wider">
-                                            2. Atur Pecah Karton / Barcode
-                                        </label>
-                                    </div>
-                                    <span className="text-[10px] font-bold text-slate-500 bg-white px-2 py-0.5 rounded-full border border-slate-200">
-                                        Thermal 100x140mm
+                            {/* 2. Jumlah Barcode */}
+                            <div className="space-y-2 pt-1 border-t border-slate-100">
+                                <div className="flex justify-between items-center">
+                                    <label className="text-xs font-black text-gray-700 uppercase tracking-wider flex items-center gap-1.5">
+                                        <Printer className="w-3.5 h-3.5 text-indigo-600" />
+                                        <span>2. Jumlah Barcode</span>
+                                    </label>
+                                    <span className="text-[11px] font-bold text-slate-500">
+                                        {typeof pullQuantity === 'number' && pullQuantity > 0 && typeof pullBoxCount === 'number' && pullBoxCount > 0 ? (
+                                            <span className="text-indigo-600 font-bold">
+                                                ~{Math.round(pullQuantity / pullBoxCount)} PCS / label
+                                            </span>
+                                        ) : null}
                                     </span>
                                 </div>
-
-                                {/* Mode Switcher Tabs */}
-                                <div className="grid grid-cols-2 gap-1.5 bg-slate-200/70 p-1 rounded-xl">
-                                    <button
-                                        type="button"
-                                        onClick={() => setPullSplitMode('capacity')}
-                                        className={cn(
-                                            "py-2 px-2.5 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer",
-                                            pullSplitMode === 'capacity' 
-                                                ? "bg-white text-indigo-700 shadow-sm" 
-                                                : "text-slate-600 hover:text-slate-900"
-                                        )}
-                                    >
-                                        <Layers className="w-3.5 h-3.5" />
-                                        <span>Per Isi Dus (Pcs)</span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setPullSplitMode('count')}
-                                        className={cn(
-                                            "py-2 px-2.5 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer",
-                                            pullSplitMode === 'count' 
-                                                ? "bg-white text-indigo-700 shadow-sm" 
-                                                : "text-slate-600 hover:text-slate-900"
-                                        )}
-                                    >
-                                        <Printer className="w-3.5 h-3.5" />
-                                        <span>Bagi Jumlah Dus</span>
-                                    </button>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="50"
+                                    value={pullBoxCount}
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (val === '') {
+                                            setPullBoxCount('');
+                                            return;
+                                        }
+                                        const num = parseInt(val, 10);
+                                        setPullBoxCount(isNaN(num) || num <= 0 ? 1 : num);
+                                    }}
+                                    className="w-full px-4 h-11 rounded-xl border-2 border-slate-200 focus:border-indigo-600 focus:ring-4 focus:ring-indigo-100 font-black text-gray-900 text-base bg-white"
+                                    placeholder="1"
+                                />
+                                {/* Quick Presets for Barcode Count */}
+                                <div className="flex items-center gap-1.5">
+                                    {[1, 2, 3, 4, 5, 6].map(cnt => (
+                                        <button
+                                            key={cnt}
+                                            type="button"
+                                            onClick={() => setPullBoxCount(cnt)}
+                                            className={cn(
+                                                "flex-1 py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer",
+                                                pullBoxCount === cnt 
+                                                    ? "bg-indigo-600 text-white shadow-sm" 
+                                                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                                            )}
+                                        >
+                                            {cnt}
+                                        </button>
+                                    ))}
                                 </div>
 
-                                {/* Mode A: Capacity Setting */}
-                                {pullSplitMode === 'capacity' ? (
-                                    <div className="space-y-2 pt-1">
-                                        <div className="flex items-center justify-between text-xs">
-                                            <span className="font-bold text-gray-700">Kapasitas Pcs per Dus:</span>
-                                            <span className="text-indigo-600 font-black text-[11px]">
-                                                {pullBoxCapacity ? `${pullBoxCapacity} PCS / Karton` : 'Belum diatur'}
-                                            </span>
-                                        </div>
-                                        <div className="flex gap-2">
-                                            <input
-                                                type="number"
-                                                min="1"
-                                                value={pullBoxCapacity}
-                                                onChange={(e) => {
-                                                    const val = e.target.value;
-                                                    if (val === '') {
-                                                        setPullBoxCapacity('');
-                                                        return;
-                                                    }
-                                                    const num = parseInt(val, 10);
-                                                    setPullBoxCapacity(isNaN(num) || num <= 0 ? '' : num);
-                                                }}
-                                                className="w-full px-3 h-10 rounded-xl border border-gray-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-100 font-black text-gray-900 text-sm bg-white"
-                                                placeholder="Contoh: 48"
-                                            />
-                                        </div>
-                                        {/* Preset Chips */}
-                                        <div className="flex flex-wrap items-center gap-1.5">
-                                            {[48, 24, 12, 6].map(cap => (
-                                                <button
-                                                    key={cap}
-                                                    type="button"
-                                                    onClick={() => setPullBoxCapacity(cap)}
-                                                    className={cn(
-                                                        "px-2.5 py-1 rounded-lg text-[11px] font-black transition-all cursor-pointer",
-                                                        pullBoxCapacity === cap 
-                                                            ? "bg-indigo-600 text-white shadow-sm" 
-                                                            : "bg-white text-slate-700 border border-slate-200 hover:bg-slate-100"
-                                                    )}
-                                                >
-                                                    {cap} / Dus
-                                                </button>
-                                            ))}
-                                            {typeof pullQuantity === 'number' && pullQuantity > 0 && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setPullBoxCapacity(pullQuantity)}
-                                                    className={cn(
-                                                        "px-2.5 py-1 rounded-lg text-[11px] font-black transition-all cursor-pointer",
-                                                        pullBoxCapacity === pullQuantity 
-                                                            ? "bg-indigo-600 text-white shadow-sm" 
-                                                            : "bg-white text-slate-700 border border-slate-200 hover:bg-slate-100"
-                                                    )}
-                                                >
-                                                    1 Dus Utuh ({pullQuantity})
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                ) : (
-                                    /* Mode B: Box Count Setting */
-                                    <div className="space-y-2 pt-1">
-                                        <div className="flex items-center justify-between text-xs">
-                                            <span className="font-bold text-gray-700">Jumlah Total Dus / Barcode:</span>
-                                            <span className="text-indigo-600 font-black text-[11px]">
-                                                {pullBoxCount ? `${pullBoxCount} Barcode` : 'Belum diatur'}
-                                            </span>
-                                        </div>
-                                        <input
-                                            type="number"
-                                            min="1"
-                                            max="20"
-                                            value={pullBoxCount}
-                                            onChange={(e) => {
-                                                const val = e.target.value;
-                                                if (val === '') {
-                                                    setPullBoxCount('');
-                                                    return;
-                                                }
-                                                const num = parseInt(val, 10);
-                                                setPullBoxCount(isNaN(num) || num <= 0 ? '' : num);
-                                            }}
-                                            className="w-full px-3 h-10 rounded-xl border border-gray-300 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-100 font-black text-gray-900 text-sm bg-white"
-                                            placeholder="Contoh: 2"
-                                        />
-                                        {/* Preset Chips */}
-                                        <div className="flex flex-wrap items-center gap-1.5">
-                                            {[1, 2, 3, 4, 5, 6].map(cnt => (
-                                                <button
-                                                    key={cnt}
-                                                    type="button"
-                                                    onClick={() => setPullBoxCount(cnt)}
-                                                    className={cn(
-                                                        "px-2.5 py-1 rounded-lg text-[11px] font-black transition-all cursor-pointer",
-                                                        pullBoxCount === cnt 
-                                                            ? "bg-indigo-600 text-white shadow-sm" 
-                                                            : "bg-white text-slate-700 border border-slate-200 hover:bg-slate-100"
-                                                    )}
-                                                >
-                                                    {cnt} Barcode
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-
-                                {/* Live Breakdown Visual Preview */}
-                                {pullBoxBreakdown.boxes.length > 0 && typeof pullQuantity === 'number' && pullQuantity > 0 && (
-                                    <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-3 space-y-2 mt-2">
-                                        <div className="flex items-center justify-between text-xs">
-                                            <span className="font-black text-indigo-900 flex items-center gap-1">
-                                                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                                                Hasil Pecahan ({pullBoxBreakdown.totalBoxes} Barcode):
-                                            </span>
-                                            <span className="text-[11px] font-bold text-indigo-700">
-                                                {pullBoxBreakdown.summary}
-                                            </span>
-                                        </div>
-                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-32 overflow-y-auto pr-1">
-                                            {pullBoxBreakdown.boxes.map((b, idx) => (
-                                                <div 
-                                                    key={idx} 
-                                                    className={cn(
-                                                        "p-2 rounded-lg border text-left flex flex-col justify-between transition-all",
-                                                        b.isRemainder 
-                                                            ? "bg-amber-50 border-amber-200 text-amber-900" 
-                                                            : "bg-white border-indigo-200 text-indigo-950 shadow-2xs"
-                                                    )}
-                                                >
-                                                    <div className="flex justify-between items-center text-[10px] font-black opacity-80">
-                                                        <span>KOLI {b.boxIndex}/{b.totalBoxes}</span>
-                                                        {b.isRemainder && (
-                                                            <span className="bg-amber-200 text-amber-800 text-[9px] px-1 rounded font-black">
-                                                                SISA
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <div className="text-sm font-black mt-1">
-                                                        {b.qty} <span className="text-[10px] font-medium text-gray-500">{pullItem.satuan || 'PCS'}</span>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
+                                {/* Summary preview text */}
+                                {typeof pullQuantity === 'number' && pullQuantity > 0 && typeof pullBoxCount === 'number' && pullBoxCount > 0 && (
+                                    <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 text-xs text-slate-700 flex items-center justify-between">
+                                        <span className="font-semibold text-slate-600">Hasil Pembagian:</span>
+                                        <span className="font-black text-indigo-700">
+                                            {pullBoxCount} Barcode ({pullBoxBreakdown.summary})
+                                        </span>
                                     </div>
                                 )}
                             </div>
 
                             {/* Section 3: Auto-Print Toggle */}
-                            <label className="flex items-center justify-between p-3.5 rounded-2xl bg-white border-2 border-indigo-100 hover:border-indigo-200 transition-all cursor-pointer shadow-xs">
-                                <div className="flex items-center gap-2.5 min-w-0">
+                            <label className="flex items-center justify-between p-3 rounded-2xl bg-white border-2 border-indigo-100 hover:border-indigo-200 transition-all cursor-pointer shadow-2xs">
+                                <div className="flex items-center gap-2 min-w-0">
                                     <div className={cn(
-                                        "w-8 h-8 rounded-xl flex items-center justify-center transition-colors shrink-0",
+                                        "w-7 h-7 rounded-lg flex items-center justify-center transition-colors shrink-0",
                                         autoPrintThermalOnPull ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-400"
                                     )}>
-                                        <Printer className="w-4 h-4" />
+                                        <Printer className="w-3.5 h-3.5" />
                                     </div>
                                     <div className="min-w-0">
                                         <p className="text-xs font-black text-gray-900">
                                             Cetak Label QR Thermal Otomatis
-                                        </p>
-                                        <p className="text-[11px] text-gray-500">
-                                            Langsung buka jendela cetak thermal sesuai pecahan di atas
                                         </p>
                                     </div>
                                 </div>
@@ -6878,7 +6678,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                             localStorage.setItem('stock_opname_auto_print_thermal', val ? 'true' : 'false');
                                         } catch {}
                                     }}
-                                    className="w-5 h-5 rounded text-indigo-600 focus:ring-indigo-500 border-gray-300 ml-3 cursor-pointer"
+                                    className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-gray-300 ml-3 cursor-pointer"
                                 />
                             </label>
                         </div>
@@ -6909,7 +6709,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 ) : autoPrintThermalOnPull ? (
                                     <>
                                         <Printer className="w-5 h-5 mr-2 shrink-0" />
-                                        <span>TARIK & CETAK {pullBoxBreakdown.totalBoxes || 1} BARCODE</span>
+                                        <span>TARIK & CETAK {typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 1} BARCODE</span>
                                     </>
                                 ) : (
                                     <>
