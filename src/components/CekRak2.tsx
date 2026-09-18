@@ -485,7 +485,7 @@ export function CekRak2() {
             // 1. Fetch from Supabase database_log with fast indexed query
             const { data, error } = await supabase
                 .from('database_log')
-                .select('id, sku, nama_barang, nama_produk, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah')
+                .select('id, sku, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah')
                 .in('gudang', ['VERIFY', 'UNVERIFY'])
                 .order('created_at', { ascending: false })
                 .limit(2000);
