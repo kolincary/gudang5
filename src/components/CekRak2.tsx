@@ -811,33 +811,55 @@ export function CekRak2() {
         const isTopSlot = effective.slotPosition.includes('top');
 
         const isSingle = config.mode === 'single';
+        const effectiveSplitMode = isSingle && config.singleItem?.splitMode ? config.singleItem.splitMode : 'capacity';
         let initialPagesHtml = '';
         let initialSummaryBadge = '';
 
         if (isSingle && config.singleItem) {
             const item = config.singleItem;
             const totalQty = Math.max(1, Number(item.totalQty || 1));
-            const boxCapacity = Math.max(1, Number(item.boxQty || (totalQty >= 48 ? 48 : (totalQty >= 24 ? 24 : totalQty))));
+            const splitMode = item.splitMode || 'capacity';
             const formattedDate = formatToDDMMYYYY(item.tgl_scan || item.waktu);
             
-            const fullBoxes = boxCapacity > 0 ? Math.floor(totalQty / boxCapacity) : 1;
-            const rem = boxCapacity > 0 ? totalQty % boxCapacity : 0;
-            const totalBoxes = fullBoxes + (rem > 0 ? 1 : 0);
-            
             const boxes: Array<{ boxIndex: number; totalBoxes: number; qty: number; totalQty: number; isRemainder: boolean }> = [];
-            for (let i = 0; i < fullBoxes; i++) {
-                boxes.push({ boxIndex: i + 1, totalBoxes, qty: boxCapacity, totalQty, isRemainder: false });
-            }
-            if (rem > 0) {
-                boxes.push({ boxIndex: totalBoxes, totalBoxes, qty: rem, totalQty, isRemainder: true });
-            }
-            if (boxes.length === 0) {
-                boxes.push({ boxIndex: 1, totalBoxes: 1, qty: totalQty, totalQty, isRemainder: false });
+            let totalBoxes = 1;
+            let boxCapacity = item.boxQty || 0;
+
+            if (splitMode === 'count' && item.boxCount && item.boxCount > 0) {
+                totalBoxes = item.boxCount;
+                const base = Math.floor(totalQty / totalBoxes);
+                const rem = totalQty % totalBoxes;
+                for (let i = 0; i < totalBoxes; i++) {
+                    const bQty = base + (i < rem ? 1 : 0);
+                    boxes.push({ boxIndex: i + 1, totalBoxes, qty: bQty, totalQty, isRemainder: false });
+                }
+            } else if (splitMode === 'copies' && item.boxCount && item.boxCount > 0) {
+                totalBoxes = item.boxCount;
+                for (let i = 0; i < totalBoxes; i++) {
+                    boxes.push({ boxIndex: i + 1, totalBoxes, qty: totalQty, totalQty, isRemainder: false });
+                }
+            } else {
+                boxCapacity = Math.max(1, Number(item.boxQty || (totalQty >= 48 ? 48 : (totalQty >= 24 ? 24 : totalQty))));
+                const fullBoxes = boxCapacity > 0 ? Math.floor(totalQty / boxCapacity) : 1;
+                const rem = boxCapacity > 0 ? totalQty % boxCapacity : 0;
+                totalBoxes = fullBoxes + (rem > 0 ? 1 : 0);
+                
+                for (let i = 0; i < fullBoxes; i++) {
+                    boxes.push({ boxIndex: i + 1, totalBoxes, qty: boxCapacity, totalQty, isRemainder: false });
+                }
+                if (rem > 0) {
+                    boxes.push({ boxIndex: totalBoxes, totalBoxes, qty: rem, totalQty, isRemainder: true });
+                }
+                if (boxes.length === 0) {
+                    boxes.push({ boxIndex: 1, totalBoxes: 1, qty: totalQty, totalQty, isRemainder: false });
+                }
             }
 
             const numSheets = Math.ceil(boxes.length / 3);
             initialSummaryBadge = totalBoxes > 1 
-                ? `${numSheets} Halaman (${boxes.length} Karton @ ${boxCapacity} PCS - Total ${totalQty} PCS)`
+                ? (splitMode === 'capacity' && boxCapacity > 0 
+                    ? `${numSheets} Halaman (${boxes.length} Karton @ ${boxCapacity} PCS - Total ${totalQty} PCS)`
+                    : `${numSheets} Halaman (${boxes.length} Karton - Total ${totalQty} PCS)`)
                 : `1 Halaman (1 Label - ${totalQty} PCS)`;
 
             for (let p = 0; p < boxes.length; p += 3) {
@@ -1717,9 +1739,9 @@ export function CekRak2() {
                 <div class="drawer-section-title" style="color: #38bdf8;">📦 Pembagian Karton & QTY</div>
                 
                 <div class="split-mode-selector">
-                    <button id="btn-mode-capacity" class="btn-mode active" onclick="switchSplitMode('capacity')">Isi / Dus</button>
-                    <button id="btn-mode-count" class="btn-mode" onclick="switchSplitMode('count')">Bagi Dus</button>
-                    <button id="btn-mode-copies" class="btn-mode" onclick="switchSplitMode('copies')">Salin</button>
+                    <button id="btn-mode-capacity" class="btn-mode ${effectiveSplitMode === 'capacity' ? 'active' : ''}" onclick="switchSplitMode('capacity')">Isi / Dus</button>
+                    <button id="btn-mode-count" class="btn-mode ${effectiveSplitMode === 'count' ? 'active' : ''}" onclick="switchSplitMode('count')">Bagi Dus</button>
+                    <button id="btn-mode-copies" class="btn-mode ${effectiveSplitMode === 'copies' ? 'active' : ''}" onclick="switchSplitMode('copies')">Salin</button>
                 </div>
 
                 <div class="form-group" style="margin-top: 6px;">
@@ -1728,7 +1750,7 @@ export function CekRak2() {
                 </div>
 
                 <!-- Mode Capacity Input -->
-                <div id="group-mode-capacity" class="form-group">
+                <div id="group-mode-capacity" class="form-group" style="display:${effectiveSplitMode === 'capacity' ? 'flex' : 'none'};">
                     <label>Isi per Dus / Kapasitas Karton:</label>
                     <div style="display:flex; gap:6px;">
                         <input id="input-box-capacity" type="number" class="custom-number-input" min="1" max="99999" oninput="onBoxSplitParamsChange()" />
@@ -1740,7 +1762,7 @@ export function CekRak2() {
                 </div>
 
                 <!-- Mode Count Input -->
-                <div id="group-mode-count" class="form-group" style="display:none;">
+                <div id="group-mode-count" class="form-group" style="display:${effectiveSplitMode === 'count' ? 'flex' : 'none'};">
                     <label>Bagi Rata Berapa Dus / Karton:</label>
                     <div style="display:flex; gap:6px;">
                         <input id="input-box-count" type="number" class="custom-number-input" min="1" max="100" oninput="onBoxSplitParamsChange()" />
@@ -1752,7 +1774,7 @@ export function CekRak2() {
                 </div>
 
                 <!-- Mode Copies Input -->
-                <div id="group-mode-copies" class="form-group" style="display:none;">
+                <div id="group-mode-copies" class="form-group" style="display:${effectiveSplitMode === 'copies' ? 'flex' : 'none'};">
                     <label>Jumlah Lembar Salinan (Copies):</label>
                     <div style="display:flex; gap:6px;">
                         <input id="input-copies-count" type="number" class="custom-number-input" min="1" max="50" oninput="onBoxSplitParamsChange()" />
@@ -1965,15 +1987,18 @@ export function CekRak2() {
 
         // Splitting Parameters for Single Item Mode
         var initialTot = window.singleData ? Math.max(1, Number(window.singleData.totalQty || 1)) : 1;
-        var initialCap = window.singleData && window.singleData.boxQty ? Math.max(1, Number(window.singleData.boxQty)) : (initialTot >= 48 ? 48 : (initialTot >= 24 ? 24 : initialTot));
         var initialMode = window.singleData && window.singleData.splitMode ? window.singleData.splitMode : (initialTot > 1 ? 'capacity' : 'copies');
-        var initialCount = window.singleData && window.singleData.boxCount ? Math.max(1, Number(window.singleData.boxCount)) : Math.max(1, Math.ceil(initialTot / initialCap));
+        var initialCount = window.singleData && window.singleData.boxCount ? Math.max(1, Number(window.singleData.boxCount)) : 1;
+        var initialCap = window.singleData && window.singleData.boxQty ? Math.max(1, Number(window.singleData.boxQty)) : (initialTot >= 48 ? 48 : (initialTot >= 24 ? 24 : initialTot));
+        if (initialMode === 'capacity' && !window.singleData?.boxCount) {
+            initialCount = Math.max(1, Math.ceil(initialTot / initialCap));
+        }
         window.splitParams = {
             mode: initialMode,
             totalQty: initialTot,
             boxCapacity: initialCap,
             boxCount: initialCount,
-            numCopies: 1
+            numCopies: initialCount
         };
 
         // Core Date Formatting
@@ -2177,6 +2202,7 @@ export function CekRak2() {
                         var sn = box.totalBoxes > 1 ? window.singleData.sn1 + '-B' + box.boxIndex : window.singleData.sn1;
                         var qrPayload = formattedDate + tabChar + window.singleData.sku + tabChar + sn;
                         var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
+                        var slotText = 'No.' + (bIdx + 1);
                         html += '<div class="label-cell" data-qr="' + encodeURIComponent(qrPayload) + '" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom: Tgl [TAB] SKU [TAB] ID">' +
                             '<div class="qr-wrapper">' +
                                 '<img src="' + qrUrl + '" alt="QR" />' +
@@ -2662,6 +2688,22 @@ export function CekRak2() {
         let boxCount = 1;
         let splitMode: 'capacity' | 'count' | 'copies' = overrideMode || 'capacity';
 
+        // Check if item has explicit box count stored in keterangan or property
+        let storedBoxCount: number | undefined;
+        if (typeof item.boxCount === 'number' && item.boxCount > 0) {
+            storedBoxCount = item.boxCount;
+        } else if (typeof item.box_count === 'number' && item.box_count > 0) {
+            storedBoxCount = item.box_count;
+        } else if (typeof item.keterangan === 'string') {
+            const match = item.keterangan.match(/BOX_COUNT:(\d+)/i);
+            if (match && match[1]) {
+                const parsed = parseInt(match[1], 10);
+                if (!isNaN(parsed) && parsed > 0) {
+                    storedBoxCount = parsed;
+                }
+            }
+        }
+
         if (overrideMode === 'capacity' && overrideVal && overrideVal > 0) {
             boxQty = overrideVal;
             boxCount = Math.ceil(totalQty / boxQty);
@@ -2674,6 +2716,10 @@ export function CekRak2() {
             splitMode = 'copies';
             boxQty = totalQty;
             boxCount = overrideVal && overrideVal > 0 ? overrideVal : 1;
+        } else if (storedBoxCount && storedBoxCount > 0) {
+            boxCount = storedBoxCount;
+            boxQty = Math.ceil(totalQty / boxCount);
+            splitMode = 'count';
         } else {
             // Auto-detect box packaging size from SKU conversions cache
             try {
@@ -3444,6 +3490,7 @@ export function CekRak2() {
             const createdAtOut = new Date(now.getTime() + 1000).toISOString();
             const createdAtIn = new Date(now.getTime() + 2000).toISOString();
 
+            const countNum = typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : undefined;
             const logEntries = [
                 {
                     tgl: todayTgl,
@@ -3456,7 +3503,8 @@ export function CekRak2() {
                     tgl_scan: todayTgl,
                     user_name: 'System (Tarik Fisik)',
                     sub_rak: pullItem.sub_rak || pullItem.rak,
-                    created_at: createdAtOut
+                    created_at: createdAtOut,
+                    keterangan: countNum ? `BOX_COUNT:${countNum}` : undefined
                 },
                 {
                     tgl: todayTgl,
@@ -3469,7 +3517,8 @@ export function CekRak2() {
                     tgl_scan: todayTgl,
                     user_name: 'System (Tarik Fisik)',
                     sub_rak: lastScanned,
-                    created_at: createdAtIn
+                    created_at: createdAtIn,
+                    keterangan: countNum ? `BOX_COUNT:${countNum}` : undefined
                 }
             ];
 
@@ -3548,7 +3597,8 @@ export function CekRak2() {
                     rak: cleanRak,
                     tgl_scan: todayTgl,
                     user_name: user?.email || 'System (Tarik Fisik)',
-                    sub_rak: cleanRak
+                    sub_rak: cleanRak,
+                    keterangan: countNum ? `BOX_COUNT:${countNum}` : undefined
                 }], writeMode);
 
                 // Ensure it gets marked visually right away
