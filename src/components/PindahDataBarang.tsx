@@ -7,7 +7,7 @@ import { supabase, fetchAllStockItems } from '../lib/supabase';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
-import { getOriginalReceiptDate, getRealtimeDateTime } from '../lib/transferDateHelper';
+import { getRealtimeDateTime } from '../lib/transferDateHelper';
 import { AutoKlopMinusModal, getRackBatchKey, getRackBatchLabel } from './AutoKlopMinusModal';
 import { toggleOpnameZoneSession } from '../services/opnameZoneBridgeService';
 
@@ -764,11 +764,8 @@ export function PindahDataBarang() {
 
       updateProgress(operationSteps[1], 1);
 
-      // Fetch original supplier receipt date and time (pure without adding minutes)
-      const originalInfo = await getOriginalReceiptDate(selectedItem.nama_produk, selectedItem.rak);
-      const tglAsli = originalInfo.tgl;
-      const tglScanAsli = originalInfo.tgl_scan;
-      const waktuAsli = originalInfo.waktu;
+      // Realtime timestamp for transfer log
+      const { todayTgl, nowWaktu } = getRealtimeDateTime();
 
       // Use current timestamp for created_at so transaction logs sort properly to the top
       const createdAtOut = new Date(now.getTime() + 1000).toISOString();
@@ -776,27 +773,27 @@ export function PindahDataBarang() {
 
       const logEntries = [
         {
-          tgl: tglAsli,
-          waktu: waktuAsli,
+          tgl: todayTgl,
+          waktu: nowWaktu,
           sku: selectedItem.nama_produk,
           jumlah: moveData.jumlah_pindah,
           type: 'OUT',
           gudang: 'TRANSFER',
           rak: selectedItem.rak,
-          tgl_scan: tglScanAsli,
+          tgl_scan: todayTgl,
           user_name: user?.user_metadata?.full_name || user?.email || userRole || 'System (Pindah Standar)',
           sub_rak: selectedItem.sub_rak || selectedItem.rak,
           created_at: createdAtOut
         },
         {
-          tgl: tglAsli,
-          waktu: waktuAsli,
+          tgl: todayTgl,
+          waktu: nowWaktu,
           sku: selectedItem.nama_produk,
           jumlah: moveData.jumlah_pindah,
           type: 'IN',
           gudang: 'TRANSFER',
           rak: rakTujuanFinal,
-          tgl_scan: tglScanAsli,
+          tgl_scan: todayTgl,
           user_name: user?.user_metadata?.full_name || user?.email || userRole || 'System (Pindah Standar)',
           sub_rak: rakTujuanFinal,
           created_at: createdAtIn

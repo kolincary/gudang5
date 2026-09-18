@@ -17,8 +17,7 @@ import { BarcodeScanner } from './ui/BarcodeScanner';
 import { cn } from '../lib/utils';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
-import { useAuth } from '../lib/AuthContext';
-import { getOriginalReceiptDate, getTransitOrOriginalReceiptDate, getRealtimeDateTime } from '../lib/transferDateHelper';
+import { getRealtimeDateTime } from '../lib/transferDateHelper';
 import { KarantinaRevisiOutModal } from './KarantinaRevisiOutModal';
 import { 
     initOpnameZoneBridgeService, 
@@ -3461,11 +3460,8 @@ export function CekRak2() {
                 return;
             }
 
-            // Fetch receipt date (preserves latest transit date if pulled from TEMP rack)
-            const originalInfo = await getTransitOrOriginalReceiptDate(pullItem.nama_produk, pullItem.rak);
-            const tglAsli = originalInfo.tgl;
-            const tglScanAsli = originalInfo.tgl_scan;
-            const waktuAsli = originalInfo.waktu;
+            // Realtime timestamp for transfer log
+            const { todayTgl, nowWaktu } = getRealtimeDateTime();
             
             const now = new Date();
             // Use current timestamp for created_at so transaction logs sort properly to the top
@@ -3474,27 +3470,27 @@ export function CekRak2() {
 
             const logEntries = [
                 {
-                    tgl: tglAsli,
-                    waktu: waktuAsli,
+                    tgl: todayTgl,
+                    waktu: nowWaktu,
                     sku: pullItem.nama_produk,
                     jumlah: pullQuantity,
                     type: 'OUT',
                     gudang: 'TRANSFER',
                     rak: pullItem.rak,
-                    tgl_scan: tglScanAsli,
+                    tgl_scan: todayTgl,
                     user_name: 'System (Tarik Fisik)',
                     sub_rak: pullItem.sub_rak || pullItem.rak,
                     created_at: createdAtOut
                 },
                 {
-                    tgl: tglAsli,
-                    waktu: waktuAsli,
+                    tgl: todayTgl,
+                    waktu: nowWaktu,
                     sku: pullItem.nama_produk,
                     jumlah: pullQuantity,
                     type: 'IN',
                     gudang: 'TRANSFER',
                     rak: lastScanned,
-                    tgl_scan: tglScanAsli,
+                    tgl_scan: todayTgl,
                     user_name: 'System (Tarik Fisik)',
                     sub_rak: lastScanned,
                     created_at: createdAtIn
@@ -3543,14 +3539,7 @@ export function CekRak2() {
             }, writeMode);
 
             // Insert log entries
-            const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
-            if (insertedData && insertedData.length > 0) {
-                for (const l of insertedData) {
-                    if (l.id && (l.tgl_scan !== tglScanAsli || l.tgl !== tglAsli)) {
-                        await DatabaseService.updateLog(l.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
-                    }
-                }
-            }
+            const { error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
             if (logError) throw logError;
 
             setToast({ isOpen: true, message: `Berhasil menarik ${pullQuantity} ${pullItem.satuan} ${pullItem.nama_produk} dari Rak ${pullItem.rak}`, type: 'success' });
@@ -4593,11 +4582,8 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
             const tglHariIni = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             const waktu = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 
-            // Fetch receipt date (preserves latest transit date if moved from TEMP rack)
-            const originalInfo = await getTransitOrOriginalReceiptDate(selectedMoveItem.nama_produk, selectedMoveItem.rak);
-            const tglAsli = originalInfo.tgl;
-            const tglScanAsli = originalInfo.tgl_scan;
-            const waktuAsli = originalInfo.waktu;
+            // Realtime timestamp for transfer log
+            const { todayTgl, nowWaktu } = getRealtimeDateTime();
 
             // Use current timestamp for created_at so transaction logs sort properly to the top of active transactions
             const createdAtOut = new Date(now.getTime() + 1000).toISOString();
@@ -4605,41 +4591,34 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
 
             const logEntries = [
                 {
-                    tgl: tglAsli,
-                    waktu: waktuAsli,
+                    tgl: todayTgl,
+                    waktu: nowWaktu,
                     sku: selectedMoveItem.nama_produk,
                     jumlah: moveData.jumlah_pindah,
                     type: 'OUT',
                     gudang: 'TRANSFER',
                     rak: selectedMoveItem.rak,
-                    tgl_scan: tglScanAsli,
+                    tgl_scan: todayTgl,
                     user_name: 'System (Cek Rak)',
                     sub_rak: selectedMoveItem.sub_rak || selectedMoveItem.rak,
                     created_at: createdAtOut
                 },
                 {
-                    tgl: tglAsli,
-                    waktu: waktuAsli,
+                    tgl: todayTgl,
+                    waktu: nowWaktu,
                     sku: selectedMoveItem.nama_produk,
                     jumlah: moveData.jumlah_pindah,
                     type: 'IN',
                     gudang: 'TRANSFER',
                     rak: rakTujuanUpper,
-                    tgl_scan: tglScanAsli,
+                    tgl_scan: todayTgl,
                     user_name: 'System (Cek Rak)',
                     sub_rak: rakTujuanUpper,
                     created_at: createdAtIn
                 }
             ];
 
-            const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
-            if (insertedData && insertedData.length > 0) {
-                for (const l of insertedData) {
-                    if (l.id && (l.tgl_scan !== tglScanAsli || l.tgl !== tglAsli)) {
-                        await DatabaseService.updateLog(l.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
-                    }
-                }
-            }
+            const { error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
             if (logError) throw logError;
 
             // Check existing target stock item and update stock numbers
