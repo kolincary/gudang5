@@ -33,14 +33,22 @@ export const notifyAppSettingsChange = async (payload?: any) => {
         console.warn('BroadcastChannel postMessage error:', e);
     }
 
-    // 4. Supabase Realtime WebSocket broadcast (cross-device & cross-network)
+    // 4. Supabase Realtime WebSocket/REST broadcast (cross-device & cross-network)
     try {
         const channel = supabase.channel(SETTINGS_CHANNEL_NAME);
-        await channel.send({
-            type: 'broadcast',
-            event: 'app_settings_changed',
-            payload: { timestamp: Date.now(), ...payload }
-        });
+        if (typeof (channel as any).httpSend === 'function') {
+            await (channel as any).httpSend({
+                type: 'broadcast',
+                event: 'app_settings_changed',
+                payload: { timestamp: Date.now(), ...payload }
+            });
+        } else {
+            await channel.send({
+                type: 'broadcast',
+                event: 'app_settings_changed',
+                payload: { timestamp: Date.now(), ...payload }
+            });
+        }
     } catch (e) {
         console.warn('Supabase broadcast send error:', e);
     }
