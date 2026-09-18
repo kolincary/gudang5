@@ -72,11 +72,12 @@ export const getRackBatchKey = (rakName: string): string => {
     if (clean.startsWith('LANTAI 2') || clean.startsWith('LT2') || clean.startsWith('LANTAI2')) return 'LANTAI 2';
     if (clean.startsWith('ECER')) return 'ECER';
     if (clean.startsWith('BLOK-I') || clean.startsWith('BLOK I')) return 'BLOK-I';
+    if (clean.startsWith('UTAMA') || clean === 'MAIN') return 'UTAMA';
     
-    // Check for single letter prefixes (e.g. A1, A2, B1, C12, D05, etc.)
-    const match = clean.match(/^([A-Z])/);
+    // Check for single letter prefixes followed by numbers (e.g. A1, A2, B1, C12, D05, J21, etc.)
+    const match = clean.match(/^([A-Z])\s*[-_.]?\s*\d+/);
     if (match) {
-        return match[1]; // e.g. 'A', 'B', 'C', 'D', etc.
+        return match[1]; // e.g. 'A', 'B', 'C', 'D', 'J', etc.
     }
     return 'LAINNYA';
 };
@@ -85,6 +86,7 @@ export const getRackBatchLabel = (batchKey: string): string => {
     if (batchKey.length === 1 && batchKey >= 'A' && batchKey <= 'Z') {
         return `Batch Rak ${batchKey} (${batchKey}1 - ${batchKey}999)`;
     }
+    if (batchKey === 'UTAMA') return 'Rak UTAMA';
     if (batchKey === 'TEMP') return 'Batch Rak TEMP';
     if (batchKey === 'LANTAI 4') return 'Batch Rak Lantai 4';
     if (batchKey === 'LANTAI 2') return 'Batch Rak Lantai 2';
@@ -133,145 +135,83 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
         setTimeout(() => setToastMessage(null), 3500);
     };
 
-    // Calculate reconcilable SKUs from stockItems
-    const reconcilableItems = useMemo<SkuReconcileItem[]>(() => {
-        if (!stockItems || stockItems.length === 0) return [];
-
-        // Group by SKU
-        const skuMap = new Map<string, {
+    // 1. Group all stockItems by SKU and then by Batch
+    const skuBatchMap = useMemo(() => {
+        if (!stockItems || stockItems.length === 0) return new Map<string, {
             sku: string;
             packing: string;
             satuan: string;
-            minusLocations: MinusLocation[];
-            plusLocations: PlusLocation[];
+            batches: Map<string, { minusLocations: MinusLocation[]; plusLocations: PlusLocation[] }>;
+        }>();
+
+        const map = new Map<string, {
+            sku: string;
+            packing: string;
+            satuan: string;
+            batches: Map<string, { minusLocations: MinusLocation[]; plusLocations: PlusLocation[] }>;
         }>();
 
         stockItems.forEach(item => {
             const sku = (item.nama_produk || '').trim();
             if (!sku) return;
 
-            if (!skuMap.has(sku)) {
-                skuMap.set(sku, {
+            if (!map.has(sku)) {
+                map.set(sku, {
                     sku,
                     packing: item.packing || '',
                     satuan: item.satuan || 'PCS',
-                    minusLocations: [],
-                    plusLocations: []
+                    batches: new Map()
                 });
             }
 
-            const record = skuMap.get(sku)!;
+            const skuRecord = map.get(sku)!;
+            const rakName = item.rak || '';
+            const batchKey = getRackBatchKey(rakName);
             const qty = Number(item.tersedia) || 0;
 
+            if (!skuRecord.batches.has(batchKey)) {
+                skuRecord.batches.set(batchKey, { minusLocations: [], plusLocations: [] });
+            }
+
+            const batchLocs = skuRecord.batches.get(batchKey)!;
             if (qty < 0) {
-                record.minusLocations.push({
-                    rak: item.rak || '',
-                    sub_rak: item.sub_rak || item.rak || '',
+                batchLocs.minusLocations.push({
+                    rak: rakName,
+                    sub_rak: item.sub_rak || rakName,
                     tersedia: qty,
                     id: item.id
                 });
             } else if (qty > 0) {
-                record.plusLocations.push({
-                    rak: item.rak || '',
-                    sub_rak: item.sub_rak || item.rak || '',
+                batchLocs.plusLocations.push({
+                    rak: rakName,
+                    sub_rak: item.sub_rak || rakName,
                     tersedia: qty,
                     id: item.id
                 });
             }
         });
 
-        const list: SkuReconcileItem[] = [];
-
-        skuMap.forEach(record => {
-            // Only consider items that have AT LEAST one minus rack AND at least one plus rack
-            if (record.minusLocations.length > 0 && record.plusLocations.length > 0) {
-                const totalMinus = record.minusLocations.reduce((sum, loc) => sum + Math.abs(loc.tersedia), 0);
-                const totalPlus = record.plusLocations.reduce((sum, loc) => sum + loc.tersedia, 0);
-                const reconcilableQty = Math.min(totalMinus, totalPlus);
-                const netSurplus = totalPlus - totalMinus;
-
-                // Build pairing plan (Greedy matching)
-                const minusList = record.minusLocations.map(m => ({
-                    rak: m.rak,
-                    sub_rak: m.sub_rak,
-                    needed: Math.abs(m.tersedia)
-                }));
-
-                const plusList = [...record.plusLocations]
-                    .sort((a, b) => b.tersedia - a.tersedia)
-                    .map(p => ({
-                        rak: p.rak,
-                        sub_rak: p.sub_rak,
-                        available: p.tersedia
-                    }));
-
-                const pairPlans: ReconcilePairPlan[] = [];
-
-                for (const m of minusList) {
-                    if (m.needed <= 0) continue;
-
-                    for (const p of plusList) {
-                        if (p.available <= 0) continue;
-
-                        const transferQty = Math.min(m.needed, p.available);
-                        if (transferQty > 0) {
-                            pairPlans.push({
-                                sourceRak: p.rak,
-                                sourceSubRak: p.sub_rak || p.rak,
-                                targetRak: m.rak,
-                                targetSubRak: m.sub_rak || m.rak,
-                                qty: transferQty
-                            });
-
-                            m.needed -= transferQty;
-                            p.available -= transferQty;
-                        }
-
-                        if (m.needed <= 0) break;
-                    }
-                }
-
-                // Extract all associated batches for this SKU
-                const batchSet = new Set<string>();
-                record.minusLocations.forEach(m => batchSet.add(getRackBatchKey(m.rak)));
-                record.plusLocations.forEach(p => batchSet.add(getRackBatchKey(p.rak)));
-
-                list.push({
-                    sku: record.sku,
-                    packing: record.packing,
-                    satuan: record.satuan,
-                    minusLocations: record.minusLocations,
-                    plusLocations: record.plusLocations,
-                    totalMinus,
-                    totalPlus,
-                    reconcilableQty,
-                    netSurplus,
-                    pairPlans,
-                    batches: Array.from(batchSet),
-                    status: 'READY'
-                });
-            }
-        });
-
-        return list.sort((a, b) => b.reconcilableQty - a.reconcilableQty);
+        return map;
     }, [stockItems]);
 
-    // Extract all distinct batches present in the reconcilable data
+    // 2. Extract all distinct batches that have intra-batch reconcilable items (minus > 0 AND plus > 0 within same batch)
     const detectedBatches = useMemo(() => {
-        const batchMap = new Map<string, { count: number; totalMinusUnits: number }>();
+        const batchStats = new Map<string, { count: number; totalMinusUnits: number }>();
 
-        reconcilableItems.forEach(item => {
-            item.batches.forEach(b => {
-                if (!batchMap.has(b)) {
-                    batchMap.set(b, { count: 0, totalMinusUnits: 0 });
+        skuBatchMap.forEach((skuRecord) => {
+            skuRecord.batches.forEach((bData, batchKey) => {
+                if (bData.minusLocations.length > 0 && bData.plusLocations.length > 0) {
+                    if (!batchStats.has(batchKey)) {
+                        batchStats.set(batchKey, { count: 0, totalMinusUnits: 0 });
+                    }
+                    const stat = batchStats.get(batchKey)!;
+                    stat.count += 1;
+                    stat.totalMinusUnits += bData.minusLocations.reduce((s, m) => s + Math.abs(m.tersedia), 0);
                 }
-                const bStat = batchMap.get(b)!;
-                bStat.count += 1;
-                bStat.totalMinusUnits += item.totalMinus;
             });
         });
 
-        const list = Array.from(batchMap.entries()).map(([key, stat]) => ({
+        const list = Array.from(batchStats.entries()).map(([key, stat]) => ({
             key,
             label: getRackBatchLabel(key),
             count: stat.count,
@@ -287,9 +227,133 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
             if (isSingleB) return 1;
             return a.key.localeCompare(b.key);
         });
-    }, [reconcilableItems]);
+    }, [skuBatchMap]);
 
-    // Filter items based on search, category, and selected batch
+    // Total distinct SKUs that have at least one reconcilable batch
+    const totalAllReconcilableSkusCount = useMemo(() => {
+        let count = 0;
+        skuBatchMap.forEach(skuRecord => {
+            let hasValidBatch = false;
+            skuRecord.batches.forEach(bData => {
+                if (bData.minusLocations.length > 0 && bData.plusLocations.length > 0) {
+                    hasValidBatch = true;
+                }
+            });
+            if (hasValidBatch) count++;
+        });
+        return count;
+    }, [skuBatchMap]);
+
+    // 3. Compute reconcilable items strictly isolated by selectedBatch
+    const reconcilableItems = useMemo<SkuReconcileItem[]>(() => {
+        const list: SkuReconcileItem[] = [];
+
+        skuBatchMap.forEach((skuRecord) => {
+            const validBatches: {
+                batchKey: string;
+                minusLocations: MinusLocation[];
+                plusLocations: PlusLocation[];
+                pairPlans: ReconcilePairPlan[];
+                totalMinus: number;
+                totalPlus: number;
+                reconcilableQty: number;
+                netSurplus: number;
+            }[] = [];
+
+            skuRecord.batches.forEach((bData, batchKey) => {
+                // If a specific batch is chosen, strictly ignore all other batches!
+                if (selectedBatch !== 'ALL' && batchKey !== selectedBatch) {
+                    return;
+                }
+
+                // Only consider if BOTH minus and plus exist strictly in this batch
+                if (bData.minusLocations.length > 0 && bData.plusLocations.length > 0) {
+                    const totalMinus = bData.minusLocations.reduce((sum, loc) => sum + Math.abs(loc.tersedia), 0);
+                    const totalPlus = bData.plusLocations.reduce((sum, loc) => sum + loc.tersedia, 0);
+                    const reconcilableQty = Math.min(totalMinus, totalPlus);
+                    const netSurplus = totalPlus - totalMinus;
+
+                    // Greedy pairing strictly within this batch (donor batch -> minus batch)
+                    const minusList = bData.minusLocations.map(m => ({
+                        rak: m.rak,
+                        sub_rak: m.sub_rak,
+                        needed: Math.abs(m.tersedia)
+                    }));
+
+                    const plusList = [...bData.plusLocations]
+                        .sort((a, b) => b.tersedia - a.tersedia)
+                        .map(p => ({
+                            rak: p.rak,
+                            sub_rak: p.sub_rak,
+                            available: p.tersedia
+                        }));
+
+                    const pairPlans: ReconcilePairPlan[] = [];
+
+                    for (const m of minusList) {
+                        if (m.needed <= 0) continue;
+                        for (const p of plusList) {
+                            if (p.available <= 0) continue;
+                            const transferQty = Math.min(m.needed, p.available);
+                            if (transferQty > 0) {
+                                pairPlans.push({
+                                    sourceRak: p.rak,
+                                    sourceSubRak: p.sub_rak || p.rak,
+                                    targetRak: m.rak,
+                                    targetSubRak: m.sub_rak || m.rak,
+                                    qty: transferQty
+                                });
+                                m.needed -= transferQty;
+                                p.available -= transferQty;
+                            }
+                            if (m.needed <= 0) break;
+                        }
+                    }
+
+                    validBatches.push({
+                        batchKey,
+                        minusLocations: bData.minusLocations,
+                        plusLocations: bData.plusLocations,
+                        pairPlans,
+                        totalMinus,
+                        totalPlus,
+                        reconcilableQty,
+                        netSurplus
+                    });
+                }
+            });
+
+            if (validBatches.length > 0) {
+                const minusLocations = validBatches.flatMap(b => b.minusLocations);
+                const plusLocations = validBatches.flatMap(b => b.plusLocations);
+                const pairPlans = validBatches.flatMap(b => b.pairPlans);
+                const totalMinus = validBatches.reduce((s, b) => s + b.totalMinus, 0);
+                const totalPlus = validBatches.reduce((s, b) => s + b.totalPlus, 0);
+                const reconcilableQty = validBatches.reduce((s, b) => s + b.reconcilableQty, 0);
+                const netSurplus = totalPlus - totalMinus;
+                const batches = validBatches.map(b => b.batchKey);
+
+                list.push({
+                    sku: skuRecord.sku,
+                    packing: skuRecord.packing,
+                    satuan: skuRecord.satuan,
+                    minusLocations,
+                    plusLocations,
+                    totalMinus,
+                    totalPlus,
+                    reconcilableQty,
+                    netSurplus,
+                    pairPlans,
+                    batches,
+                    status: 'READY'
+                });
+            }
+        });
+
+        return list.sort((a, b) => b.reconcilableQty - a.reconcilableQty);
+    }, [skuBatchMap, selectedBatch]);
+
+    // Filter items based on search & category
     const filteredItems = useMemo(() => {
         return reconcilableItems.filter(item => {
             const matchesSearch = item.sku.toLowerCase().includes(searchTerm.toLowerCase().trim()) ||
@@ -298,17 +362,13 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
 
             if (!matchesSearch) return false;
 
-            if (selectedBatch !== 'ALL' && !item.batches.includes(selectedBatch)) {
-                return false;
-            }
-
             if (filterCategory === 'NET_ZERO') return item.netSurplus === 0;
             if (filterCategory === 'NET_SURPLUS') return item.netSurplus > 0;
             return true;
         });
-    }, [reconcilableItems, searchTerm, filterCategory, selectedBatch]);
+    }, [reconcilableItems, searchTerm, filterCategory]);
 
-    // Aggregate statistics
+    // Aggregate statistics for the currently active batch / view
     const stats = useMemo(() => {
         const totalSkus = reconcilableItems.length;
         const totalUnitsKlop = reconcilableItems.reduce((sum, item) => sum + item.reconcilableQty, 0);
@@ -612,20 +672,20 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                     </span>
                     <button
                         type="button"
-                        onClick={() => setSelectedBatch('ALL')}
+                        onClick={() => { setSelectedBatch('ALL'); setSelectedSkuSet(new Set()); }}
                         className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
                             selectedBatch === 'ALL'
                                 ? 'bg-indigo-600 text-white shadow-sm'
                                 : 'bg-white hover:bg-indigo-100/70 text-slate-700 border border-indigo-200/60'
                         }`}
                     >
-                        Semua Batch ({reconcilableItems.length} SKU)
+                        Semua Batch ({totalAllReconcilableSkusCount} SKU)
                     </button>
                     {detectedBatches.map(b => (
                         <button
                             key={b.key}
                             type="button"
-                            onClick={() => setSelectedBatch(b.key)}
+                            onClick={() => { setSelectedBatch(b.key); setSelectedSkuSet(new Set()); }}
                             className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
                                 selectedBatch === b.key
                                     ? 'bg-indigo-600 text-white shadow-sm'
