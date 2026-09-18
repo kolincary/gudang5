@@ -509,7 +509,7 @@ export function CekRak2() {
             // 1. Fetch from Supabase database_log with fast indexed query
             const { data, error } = await supabase
                 .from('database_log')
-                .select('id, sku, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah, keterangan')
+                .select('id, sku, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah, log_update_user')
                 .in('gudang', ['VERIFY', 'UNVERIFY'])
                 .order('created_at', { ascending: false })
                 .limit(2000);
@@ -543,7 +543,7 @@ export function CekRak2() {
                         sku: log.sku || log.nama_barang || log.nama_produk,
                         rak: rak,
                         sub_rak: rak,
-                        keterangan: log.keterangan || undefined
+                        log_update_user: log.log_update_user || undefined
                     });
                 }
             });
@@ -2689,18 +2689,29 @@ export function CekRak2() {
         let boxCount = 1;
         let splitMode: 'capacity' | 'count' | 'copies' = overrideMode || 'capacity';
 
-        // Check if item has explicit box count stored in keterangan or property
+        // Check if item has explicit box count stored in log_update_user, status, localStorage, or property
         let storedBoxCount: number | undefined;
         if (typeof item.boxCount === 'number' && item.boxCount > 0) {
             storedBoxCount = item.boxCount;
         } else if (typeof item.box_count === 'number' && item.box_count > 0) {
             storedBoxCount = item.box_count;
-        } else if (typeof item.keterangan === 'string') {
-            const match = item.keterangan.match(/BOX_COUNT:(\d+)/i);
+        } else {
+            const rawNote = String(item.log_update_user || item.status || item.keterangan || '');
+            const match = rawNote.match(/BOX_COUNT:(\d+)/i);
             if (match && match[1]) {
                 const parsed = parseInt(match[1], 10);
                 if (!isNaN(parsed) && parsed > 0) {
                     storedBoxCount = parsed;
+                }
+            }
+            if (!storedBoxCount && typeof window !== 'undefined') {
+                const cleanR = (rak || item.sub_rak || item.rak || '').trim().toUpperCase();
+                const cleanS = (sku || item.sku || item.nama_barang || item.nama_produk || '').trim().toLowerCase();
+                const localKey = `box_count_${cleanR}_${cleanS}`;
+                const cached = localStorage.getItem(localKey);
+                if (cached) {
+                    const parsed = parseInt(cached, 10);
+                    if (!isNaN(parsed) && parsed > 0) storedBoxCount = parsed;
                 }
             }
         }
@@ -3505,7 +3516,7 @@ export function CekRak2() {
                     user_name: 'System (Tarik Fisik)',
                     sub_rak: pullItem.sub_rak || pullItem.rak,
                     created_at: createdAtOut,
-                    keterangan: countNum ? `BOX_COUNT:${countNum}` : undefined
+                    log_update_user: countNum ? `BOX_COUNT:${countNum}` : undefined
                 },
                 {
                     tgl: todayTgl,
@@ -3519,7 +3530,7 @@ export function CekRak2() {
                     user_name: 'System (Tarik Fisik)',
                     sub_rak: lastScanned,
                     created_at: createdAtIn,
-                    keterangan: countNum ? `BOX_COUNT:${countNum}` : undefined
+                    log_update_user: countNum ? `BOX_COUNT:${countNum}` : undefined
                 }
             ];
 
@@ -3587,6 +3598,10 @@ export function CekRak2() {
                 const filteredUnverified = existingUnverified.filter((name: string) => name.trim().toLowerCase() !== prodName);
                 localStorage.setItem(unverifiedKey, JSON.stringify(filteredUnverified));
                 
+                if (countNum && typeof window !== 'undefined') {
+                    localStorage.setItem(`box_count_${cleanRak}_${prodName}`, String(countNum));
+                }
+
                 // Clean up any old UNVERIFY records for this item in this rack so VERIFY is cleanly recorded
                 try {
                     await supabase
@@ -3611,7 +3626,7 @@ export function CekRak2() {
                     tgl_scan: todayTgl,
                     user_name: user?.email || userName || 'System (Tarik Fisik)',
                     sub_rak: cleanRak,
-                    keterangan: countNum ? `BOX_COUNT:${countNum}` : undefined
+                    log_update_user: countNum ? `BOX_COUNT:${countNum}` : undefined
                 }], writeMode);
 
                 // Ensure it gets marked visually right away
