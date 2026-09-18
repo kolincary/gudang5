@@ -789,8 +789,8 @@ export function CekRak2() {
             dateWeight: savedPref?.dateWeight ?? '800',
             showDate: savedPref?.showDate ?? 'block',
             showRak: savedPref?.showRak ?? 'inline-block',
-            showKoli: savedPref?.showKoli ?? 'inline-block',
-            showQty: savedPref?.showQty ?? 'block',
+            showKoli: savedPref?.showKoli ?? 'none',
+            showQty: savedPref?.showQty ?? 'none',
             rakSize: Number(savedPref?.rakSize ?? 11),
             koliSize: Number(savedPref?.koliSize ?? 11),
             qtySize: Number(savedPref?.qtySize ?? 13),
@@ -848,8 +848,6 @@ export function CekRak2() {
                     const qrPayload = `${formattedDate}\t${item.sku}\t${sn}`;
                     const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
                     const slotText = 'No.' + (bIdx + 1);
-                    const koliText = box.totalBoxes > 1 ? `KOLI ${box.boxIndex}/${box.totalBoxes}` : '';
-                    const qtyText = `QTY: ${box.qty} PCS${box.totalBoxes > 1 ? ` (TOTAL: ${box.totalQty} PCS)` : ''}`;
                     const rakText = item.rak && item.rak !== '-' ? `RAK: ${item.rak}` : '';
 
                     initialPagesHtml += `<div class="label-cell" data-qr="${encodeURIComponent(qrPayload)}" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom: Tgl [TAB] SKU [TAB] ID">` +
@@ -860,11 +858,9 @@ export function CekRak2() {
                             `<div class="meta-row">` +
                                 `<span class="scan-date">${formattedDate}</span>` +
                                 (rakText ? `<span class="rack-badge">${rakText}</span>` : '') +
-                                (koliText ? `<span class="koli-badge">${koliText}</span>` : '') +
                             `</div>` +
                             `<div class="product-sku">${item.sku}</div>` +
                             `<div class="serial-id">ID: ${sn}</div>` +
-                            `<div class="qty-info">${qtyText}</div>` +
                         `</div>` +
                         `<div class="slot-indicator">${slotText}</div>` +
                     `</div>`;
@@ -887,7 +883,6 @@ export function CekRak2() {
                     const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
                     const slotText = 'No.' + (rIdx + 1);
                     const rakText = row.rak && row.rak !== '-' ? `RAK: ${row.rak}` : '';
-                    const qtyText = row.qty ? `QTY: ${row.qty} PCS` : '';
 
                     initialPagesHtml += `<div class="label-cell" data-qr="${encodeURIComponent(qrPayload)}" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom: Tgl [TAB] SKU [TAB] ID">` +
                         `<div class="qr-wrapper">` +
@@ -900,7 +895,6 @@ export function CekRak2() {
                             `</div>` +
                             `<div class="product-sku">${row.sku}</div>` +
                             `<div class="serial-id">ID: ${row.sn}</div>` +
-                            (qtyText ? `<div class="qty-info">${qtyText}</div>` : '') +
                         `</div>` +
                         `<div class="slot-indicator">${slotText}</div>` +
                     `</div>`;
@@ -1559,7 +1553,7 @@ export function CekRak2() {
             line-height: 1.1;
         }
         .koli-badge {
-            display: var(--show-koli, inline-block);
+            display: var(--show-koli, none);
             font-family: 'Arial Black', -apple-system, sans-serif;
             font-size: var(--koli-size, 11px);
             font-weight: 900;
@@ -1592,7 +1586,7 @@ export function CekRak2() {
             letter-spacing: 0.2px;
         }
         .qty-info {
-            display: var(--show-qty, block);
+            display: var(--show-qty, none);
             font-family: 'Arial Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             font-size: var(--qty-size, 13px);
             font-weight: var(--qty-weight, 900);
@@ -2183,10 +2177,6 @@ export function CekRak2() {
                         var sn = box.totalBoxes > 1 ? window.singleData.sn1 + '-B' + box.boxIndex : window.singleData.sn1;
                         var qrPayload = formattedDate + tabChar + window.singleData.sku + tabChar + sn;
                         var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrPayload);
-                        var slotText = 'No.' + (bIdx + 1);
-                        var koliText = box.totalBoxes > 1 ? (box.isCopy ? 'COPY ' + box.boxIndex + '/' + box.totalBoxes : 'KOLI ' + box.boxIndex + '/' + box.totalBoxes) : '';
-                        var qtyText = 'QTY: ' + box.qty + ' PCS' + (box.totalBoxes > 1 && !box.isCopy ? ' (TOTAL: ' + box.totalQty + ' PCS)' : '');
-
                         html += '<div class="label-cell" data-qr="' + encodeURIComponent(qrPayload) + '" onclick="copyLabelData(this)" title="Klik untuk salin 3 Kolom: Tgl [TAB] SKU [TAB] ID">' +
                             '<div class="qr-wrapper">' +
                                 '<img src="' + qrUrl + '" alt="QR" />' +
@@ -2195,11 +2185,9 @@ export function CekRak2() {
                                 '<div class="meta-row">' +
                                     '<span class="scan-date">' + formattedDate + '</span>' +
                                     (rakText ? '<span class="rack-badge">' + rakText + '</span>' : '') +
-                                    (koliText ? '<span class="koli-badge">' + koliText + '</span>' : '') +
                                 '</div>' +
                                 '<div class="product-sku">' + window.singleData.sku + '</div>' +
                                 '<div class="serial-id">ID: ' + sn + '</div>' +
-                                '<div class="qty-info">' + qtyText + '</div>' +
                             '</div>' +
                             '<div class="slot-indicator">' + slotText + '</div>' +
                         '</div>';
@@ -2608,8 +2596,8 @@ export function CekRak2() {
                 dateWeight: "800",
                 showDate: "block",
                 showRak: "inline-block",
-                showKoli: "inline-block",
-                showQty: "block",
+                showKoli: "none",
+                showQty: "none",
                 rakSize: 11,
                 koliSize: 11,
                 qtySize: 13,
