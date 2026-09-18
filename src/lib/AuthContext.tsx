@@ -52,7 +52,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     const searchParams = new URLSearchParams(window.location.search);
                     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
 
-                    // Detect OAuth redirect errors (e.g. access_denied, unauthorized_client, redirect_uri_mismatch)
+                    // 1. Detect OAuth redirect errors
                     const errorDesc = searchParams.get('error_description') || searchParams.get('error') || hashParams.get('error_description') || hashParams.get('error');
                     if (errorDesc) {
                         console.error('OAuth Error detected:', errorDesc);
@@ -63,9 +63,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                         clearTimeout(loadTimeout);
                         return;
                     }
+
+                    // 2. PKCE Authorization Code (?code=...)
+                    const code = searchParams.get('code');
+                    if (code) {
+                        console.log('🔑 Supabase PKCE OAuth code detected, exchanging for session...');
+                        const { data: codeData, error: codeError } = await supabase.auth.exchangeCodeForSession(code);
+                        if (codeError) {
+                            console.error('Error exchanging PKCE code:', codeError);
+                        } else if (codeData?.session) {
+                            setSession(codeData.session);
+                            setUser(codeData.session.user ?? null);
+                            if (codeData.session.user) {
+                                await logUserLogin(codeData.session.user);
+                            }
+                            window.history.replaceState(null, '', window.location.pathname);
+                            setLoading(false);
+                            clearTimeout(loadTimeout);
+                            return;
+                        }
+                    }
+
+                    // 3. Implicit token in hash (#access_token=...)
+                    const accessToken = hashParams.get('access_token');
+                    const refreshToken = hashParams.get('refresh_token');
+                    if (accessToken) {
+                        console.log('🔑 Supabase Implicit OAuth token detected, setting session explicitly...');
+                        const { data: hashData, error: hashError } = await supabase.auth.setSession({
+                            access_token: accessToken,
+                            refresh_token: refreshToken || '',
+                        });
+                        if (hashError) {
+                            console.error('Error setting session from hash:', hashError);
+                        } else if (hashData?.session) {
+                            setSession(hashData.session);
+                            setUser(hashData.session.user ?? null);
+                            if (hashData.session.user) {
+                                await logUserLogin(hashData.session.user);
+                            }
+                            window.history.replaceState(null, '', window.location.pathname);
+                            setLoading(false);
+                            clearTimeout(loadTimeout);
+                            return;
+                        }
+                    }
                 }
 
-                // Standard session fetch (Supabase automatically exchanges code and sets session via detectSessionInUrl: true)
+                // 4. Standard session fetch from persistent storage
                 const { data: { session }, error } = await supabase.auth.getSession();
                 if (error) {
                     console.error('Session fetch error:', error);
@@ -73,7 +117,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 if (session?.user) {
                     setSession(session);
                     setUser(session.user);
-                    logUserLogin(session.user);
+                    await logUserLogin(session.user);
                 }
             } catch (err) {
                 console.error('Session fetch exception:', err);

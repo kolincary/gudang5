@@ -28,7 +28,7 @@ export const getActiveSupabaseClient = (): SupabaseClient => {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: true,
+        detectSessionInUrl: false,
         storageKey: `sb-${refId}-auth-token`
       },
       global: {
