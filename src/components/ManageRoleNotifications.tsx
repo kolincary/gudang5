@@ -23,8 +23,9 @@ export function ManageRoleNotifications() {
     const [isSubmitting, setIsSubmitting] = useState(false);
 
     const availableRoles = [
-        { id: 'all', label: 'Semua Role (All)' },
+        { id: 'all', label: 'Semua Role (All Users)' },
         { id: 'staf_gudang', label: 'Staf Gudang' },
+        { id: 'staf_admin', label: 'Staf Admin' },
         { id: 'leader', label: 'Leader' },
         { id: 'admin', label: 'Admin' },
         { id: 'developer', label: 'Developer' }
@@ -238,9 +239,11 @@ export function ManageRoleNotifications() {
                                                     <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${
                                                         notif.target_role === 'all' ? 'bg-purple-100 text-purple-700' :
                                                         notif.target_role === 'staf_gudang' ? 'bg-blue-100 text-blue-700' :
+                                                        notif.target_role === 'staf_admin' || notif.target_role === 'admin' ? 'bg-amber-100 text-amber-700' :
+                                                        notif.target_role === 'developer' ? 'bg-rose-100 text-rose-700' :
                                                         'bg-gray-100 text-gray-700'
                                                     }`}>
-                                                        Target: {notif.target_role.toUpperCase()}
+                                                        Target: {notif.target_role === 'all' ? 'SEMUA ROLE' : notif.target_role === 'staf_gudang' ? 'STAF GUDANG' : notif.target_role === 'staf_admin' ? 'STAF ADMIN' : notif.target_role.toUpperCase()}
                                                     </span>
                                                     <span className="text-xs text-gray-500">
                                                         Oleh: {notif.created_by}

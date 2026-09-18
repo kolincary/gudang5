@@ -79,10 +79,12 @@ export function RoleNotificationBlocker() {
                 return;
             }
 
-            // Filter in JS: only match if target_role is 'all' or matches user's exact role
+            // Filter in JS: only match if target_role is 'all' or matches user's exact role (including staf_admin/admin alias)
             const matchingNotif = data.find(notif => {
                 const target = (notif.target_role || '').trim().toLowerCase();
-                return target === 'all' || target === currentRole;
+                if (target === 'all') return true;
+                if ((target === 'admin' || target === 'staf_admin') && (currentRole === 'admin' || currentRole === 'staf_admin')) return true;
+                return target === currentRole;
             });
 
             if (matchingNotif) {
