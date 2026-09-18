@@ -803,15 +803,7 @@ export function PindahDataBarang() {
         }
       ];
 
-      const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
-
-      if (insertedData && insertedData.length > 0) {
-        for (const l of insertedData) {
-          if (l.id && (l.tgl_scan !== tglScanAsli || l.tgl !== tglAsli)) {
-            await DatabaseService.updateLog(l.id, { tgl_scan: tglScanAsli, tgl: tglAsli }, writeMode);
-          }
-        }
-      }
+      const { error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
 
       if (logError) {
         console.error('Error creating log entries:', logError);
@@ -822,21 +814,42 @@ export function PindahDataBarang() {
 
       updateProgress(operationSteps[3], 3);
 
+      // 1. Update origin stock item
+      if (selectedItem.id) {
+        await DatabaseService.updateStockItem(
+          selectedItem.id,
+          {
+            keluar: (selectedItem.keluar || 0) + moveData.jumlah_pindah,
+            tersedia: Math.max(0, (selectedItem.tersedia || 0) - moveData.jumlah_pindah)
+          },
+          writeMode
+        );
+      }
+
+      // 2. Query and update/create destination stock item
       const { data: existingStock, error: checkError } = await supabase
         .from('stock_items')
-        .select('id')
+        .select('id, tersedia, masuk')
         .eq('nama_produk', selectedItem.nama_produk)
         .eq('rak', rakTujuanFinal)
         .maybeSingle();
 
       if (checkError) {
         console.error('Error checking existing stock:', checkError);
-        showToast('Gagal memeriksa stok tujuan', 'warning');
       }
 
       let stockItemCreated = false;
 
-      if (!existingStock) {
+      if (existingStock && existingStock.id) {
+        await DatabaseService.updateStockItem(
+          existingStock.id,
+          {
+            masuk: (existingStock.masuk || 0) + moveData.jumlah_pindah,
+            tersedia: (existingStock.tersedia || 0) + moveData.jumlah_pindah
+          },
+          writeMode
+        );
+      } else {
         updateProgress(operationSteps[4], 4);
 
         const { error: insertError } = await DatabaseService.insertStockItems([{
@@ -846,6 +859,9 @@ export function PindahDataBarang() {
           sub_rak: rakTujuanFinal,
           satuan: selectedItem.satuan,
           stok_awal: 0,
+          masuk: moveData.jumlah_pindah,
+          keluar: 0,
+          tersedia: moveData.jumlah_pindah,
           status: 'Aktif'
         }], writeMode);
 
@@ -888,25 +904,25 @@ export function PindahDataBarang() {
       return;
     }
 
-    if (!selectedSkuAggregate || !modalRakTujuan || modalJumlahPindah === '' || Number(modalJumlahPindah) <= 0) {
-      showToast('Mohon lengkapi SKU, rak tujuan, dan jumlah pindah yang valid', 'warning');
+    if (!selectedSkuAggregate) {
+      showToast('Pilih SKU barang yang akan dipindahkan', 'warning');
       return;
     }
 
     const rakTujuanUpper = modalRakTujuan.toUpperCase().trim();
-    if (RESTRICTED_RACKS.includes(rakTujuanUpper)) {
-      showToast(`Tidak diperbolehkan memindahkan barang ke Rak ${rakTujuanUpper}`, 'error');
+    if (!rakTujuanUpper || !isModalRakValidated || !rakTujuanUpper.startsWith('TEMP')) {
+      showToast('Pilih rak tujuan TEMP yang valid (contoh: TEMP-A, TEMP-B, dst)', 'warning');
       return;
     }
 
-    if (!isModalRakValidated) {
-      showToast('Mohon pilih rak tujuan dari daftar dropdown yang tersedia', 'warning');
+    const transferQty = parseInt(modalJumlahPindah, 10);
+    if (isNaN(transferQty) || transferQty <= 0) {
+      showToast('Jumlah pindah harus lebih besar dari 0', 'warning');
       return;
     }
 
-    const transferQty = Number(modalJumlahPindah);
-    if (transferQty > selectedSkuAggregate.totalTersedia) {
-      showToast(`Jumlah pindah (${transferQty}) melebihi total sisa stok (${selectedSkuAggregate.totalTersedia})`, 'error');
+    if (transferQty > selectedSkuAggregate.totalPlus) {
+      showToast(`Jumlah pindah (${transferQty}) melebihi total stok fisik (${selectedSkuAggregate.totalPlus} ${selectedSkuAggregate.satuan})`, 'error');
       return;
     }
 
@@ -989,6 +1005,8 @@ export function PindahDataBarang() {
         .filter(loc => loc.tersediaSetelahKlop > 0)
         .sort((a, b) => b.tersediaSetelahKlop - a.tersediaSetelahKlop);
 
+      const deductedLocations: { id: string; rak: string; qty: number; currentTersedia: number }[] = [];
+
       for (const loc of availableLocations) {
         if (remainingToDeduct <= 0) break;
         const deductQty = Math.min(loc.tersediaSetelahKlop, remainingToDeduct);
@@ -1007,6 +1025,12 @@ export function PindahDataBarang() {
             tgl_normalized: todayTgl,
             user_name: userName,
             created_at: new Date(baseTime).toISOString()
+          });
+          deductedLocations.push({
+            id: loc.id,
+            rak: loc.rak,
+            qty: deductQty,
+            currentTersedia: loc.tersedia
           });
           remainingToDeduct -= deductQty;
         }
@@ -1033,29 +1057,60 @@ export function PindahDataBarang() {
 
       updateProgress(operationSteps[3], 3);
 
-      const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
-
-      if (insertedData && insertedData.length > 0) {
-        for (const l of insertedData) {
-          if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
-            await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
-          }
+      // Chunk log insertion (50 per batch)
+      const LOG_CHUNK_SIZE = 50;
+      for (let i = 0; i < logEntries.length; i += LOG_CHUNK_SIZE) {
+        const chunk = logEntries.slice(i, i + LOG_CHUNK_SIZE);
+        const { error: logError } = await DatabaseService.insertLogs(chunk, writeMode);
+        if (logError) {
+          console.error('Error creating realtime log entries:', logError);
+          showToast(`Gagal mencatat perpindahan real-time: ${logError.message}`, 'error');
+          setOperationProgress(prev => ({ ...prev, isVisible: false }));
+          return;
         }
-      }
-
-      if (logError) {
-        console.error('Error creating realtime log entries:', logError);
-        showToast(`Gagal mencatat perpindahan real-time: ${logError.message}`, 'error');
-        setOperationProgress(prev => ({ ...prev, isVisible: false }));
-        return;
       }
 
       updateProgress(operationSteps[4], 4);
 
-      // Pastikan stock item ada di rak tujuan
+      // 3. Update stock_items for auto-klopped locations
+      if (selectedSkuAggregate.pairPlans && selectedSkuAggregate.pairPlans.length > 0) {
+        for (const plan of selectedSkuAggregate.pairPlans) {
+          const donorLoc = selectedSkuAggregate.plusLocations.find(p => p.rak === plan.sourceRak && (p.sub_rak || p.rak) === plan.sourceSubRak);
+          if (donorLoc && donorLoc.id) {
+            await DatabaseService.updateStockItem(
+              donorLoc.id,
+              { tersedia: Math.max(0, donorLoc.tersedia - plan.qty) },
+              writeMode
+            );
+            donorLoc.tersedia = Math.max(0, donorLoc.tersedia - plan.qty);
+          }
+          const minusLoc = selectedSkuAggregate.minusLocations.find(m => m.rak === plan.targetRak && (m.sub_rak || m.rak) === plan.targetSubRak);
+          if (minusLoc && minusLoc.id) {
+            await DatabaseService.updateStockItem(
+              minusLoc.id,
+              { tersedia: minusLoc.tersedia + plan.qty },
+              writeMode
+            );
+            minusLoc.tersedia = minusLoc.tersedia + plan.qty;
+          }
+        }
+      }
+
+      // 4. Update stock_items for deducted origin locations
+      for (const d of deductedLocations) {
+        if (d.id) {
+          await DatabaseService.updateStockItem(
+            d.id,
+            { tersedia: Math.max(0, d.currentTersedia - d.qty) },
+            writeMode
+          );
+        }
+      }
+
+      // 5. Query and update/create destination stock item in TEMP-*
       const { data: existingStock, error: checkError } = await supabase
         .from('stock_items')
-        .select('id')
+        .select('id, tersedia, masuk')
         .eq('nama_produk', selectedSkuAggregate.nama_produk)
         .eq('rak', rakTujuanUpper)
         .maybeSingle();
@@ -1066,9 +1121,16 @@ export function PindahDataBarang() {
 
       let stockItemCreated = false;
 
-      if (!existingStock) {
-        updateProgress(operationSteps[4], 4);
-
+      if (existingStock && existingStock.id) {
+        await DatabaseService.updateStockItem(
+          existingStock.id,
+          {
+            masuk: (existingStock.masuk || 0) + transferQty,
+            tersedia: (existingStock.tersedia || 0) + transferQty
+          },
+          writeMode
+        );
+      } else {
         const { error: insertError } = await DatabaseService.insertStockItems([{
           nama_produk: selectedSkuAggregate.nama_produk,
           packing: selectedSkuAggregate.packing,
@@ -1076,6 +1138,9 @@ export function PindahDataBarang() {
           sub_rak: rakTujuanUpper,
           satuan: selectedSkuAggregate.satuan,
           stok_awal: 0,
+          masuk: transferQty,
+          keluar: 0,
+          tersedia: transferQty,
           status: 'Aktif'
         }], writeMode);
 
@@ -1113,7 +1178,7 @@ export function PindahDataBarang() {
         setModalJumlahPindah('');
         setIsModalRakValidated(false);
         loadInitialData();
-      }, 1000);
+      }, 500);
 
     } catch (error) {
       console.error('Error executing real-time transfer:', error);
@@ -1176,7 +1241,7 @@ export function PindahDataBarang() {
         });
       }
 
-      const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
+      const { error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
 
       if (logError) {
         console.error('Error in Auto-Klop single:', logError);
@@ -1184,11 +1249,23 @@ export function PindahDataBarang() {
         return;
       }
 
-      if (insertedData && insertedData.length > 0) {
-        for (const l of insertedData) {
-          if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
-            await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
-          }
+      // Sync stock_items for pair plans
+      for (const plan of target.pairPlans) {
+        const donorLoc = target.plusLocations.find(p => p.rak === plan.sourceRak && (p.sub_rak || p.rak) === plan.sourceSubRak);
+        if (donorLoc && donorLoc.id) {
+          await DatabaseService.updateStockItem(
+            donorLoc.id,
+            { tersedia: Math.max(0, donorLoc.tersedia - plan.qty) },
+            writeMode
+          );
+        }
+        const minusLoc = target.minusLocations.find(m => m.rak === plan.targetRak && (m.sub_rak || m.rak) === plan.targetSubRak);
+        if (minusLoc && minusLoc.id) {
+          await DatabaseService.updateStockItem(
+            minusLoc.id,
+            { tersedia: minusLoc.tersedia + plan.qty },
+            writeMode
+          );
         }
       }
 
@@ -1229,6 +1306,7 @@ export function PindahDataBarang() {
       const userName = user?.user_metadata?.full_name || user?.email || userRole || 'Auto-Klop Admin';
       let baseTime = now.getTime();
       const logEntries: any[] = [];
+      const plansToExecute: { donorId?: string; minusId?: string; donorCurrent: number; minusCurrent: number; qty: number }[] = [];
 
       for (const skuItem of batchMinusStats.reconcilableSkus) {
         for (const plan of skuItem.pairPlans) {
@@ -1263,23 +1341,61 @@ export function PindahDataBarang() {
             user_name: userName,
             created_at: new Date(baseTime).toISOString()
           });
-        }
-      }
 
-      const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
-
-      if (logError) {
-        console.error('Error in Auto-Klop batch:', logError);
-        showToast(`Gagal auto-klop batch: ${logError.message}`, 'error');
-        return;
-      }
-
-      if (insertedData && insertedData.length > 0) {
-        for (const l of insertedData) {
-          if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
-            await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
+          const donorLoc = skuItem.plusLocations.find(p => p.rak === plan.sourceRak && (p.sub_rak || p.rak) === plan.sourceSubRak);
+          const minusLoc = skuItem.minusLocations.find(m => m.rak === plan.targetRak && (m.sub_rak || m.rak) === plan.targetSubRak);
+          if (donorLoc || minusLoc) {
+            plansToExecute.push({
+              donorId: donorLoc?.id,
+              minusId: minusLoc?.id,
+              donorCurrent: donorLoc?.tersedia || 0,
+              minusCurrent: minusLoc?.tersedia || 0,
+              qty: plan.qty
+            });
           }
         }
+      }
+
+      // Chunk log insertion (50 per batch)
+      const LOG_CHUNK_SIZE = 50;
+      for (let i = 0; i < logEntries.length; i += LOG_CHUNK_SIZE) {
+        const chunk = logEntries.slice(i, i + LOG_CHUNK_SIZE);
+        const { error: logError } = await DatabaseService.insertLogs(chunk, writeMode);
+        if (logError) {
+          console.error('Error in Auto-Klop batch:', logError);
+          showToast(`Gagal auto-klop batch: ${logError.message}`, 'error');
+          return;
+        }
+      }
+
+      // Sync stock_items in concurrent chunks
+      const SYNC_CONCURRENCY = 20;
+      for (let i = 0; i < plansToExecute.length; i += SYNC_CONCURRENCY) {
+        const chunk = plansToExecute.slice(i, i + SYNC_CONCURRENCY);
+        await Promise.all(
+          chunk.flatMap(p => {
+            const promises: Promise<any>[] = [];
+            if (p.donorId) {
+              promises.push(
+                DatabaseService.updateStockItem(
+                  p.donorId,
+                  { tersedia: Math.max(0, p.donorCurrent - p.qty) },
+                  writeMode
+                )
+              );
+            }
+            if (p.minusId) {
+              promises.push(
+                DatabaseService.updateStockItem(
+                  p.minusId,
+                  { tersedia: p.minusCurrent + p.qty },
+                  writeMode
+                )
+              );
+            }
+            return promises;
+          })
+        );
       }
 
       showToast(
@@ -1422,49 +1538,109 @@ export function PindahDataBarang() {
         });
       });
 
-      const { data: insertedLogs, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
-
-      if (insertedLogs && insertedLogs.length > 0) {
-        for (const l of insertedLogs) {
-          if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
-            await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
-          }
+      // 1. Insert logs in chunks of 50 to avoid request payload limits or timeouts
+      const LOG_CHUNK_SIZE = 50;
+      for (let i = 0; i < logEntries.length; i += LOG_CHUNK_SIZE) {
+        const chunk = logEntries.slice(i, i + LOG_CHUNK_SIZE);
+        const { error: logError } = await DatabaseService.insertLogs(chunk, writeMode);
+        if (logError) {
+          console.error('Error in mass batch realtime transfer log insert:', logError);
+          showToast(`Gagal transfer massal: ${logError.message}`, 'error');
+          return;
         }
       }
 
-      if (logError) {
-        console.error('Error in mass batch realtime transfer:', logError);
-        showToast(`Gagal transfer massal: ${logError.message}`, 'error');
-        return;
+      // 2. Batch update origin stock_items to set tersedia = 0
+      const UPDATE_CONCURRENCY = 20;
+      for (let i = 0; i < itemsToMove.length; i += UPDATE_CONCURRENCY) {
+        const chunk = itemsToMove.slice(i, i + UPDATE_CONCURRENCY);
+        await Promise.all(
+          chunk.map(item =>
+            DatabaseService.updateStockItem(
+              item.id,
+              {
+                tersedia: 0,
+                keluar: (item.keluar || 0) + item.tersedia
+              },
+              writeMode
+            )
+          )
+        );
       }
 
-      // Ensure destination stock items exist
-      const uniqueSkus = Array.from(new Set(itemsToMove.map(i => i.nama_produk)));
-      const { data: existingDestStocks } = await supabase
-        .from('stock_items')
-        .select('nama_produk')
-        .eq('rak', destRak)
-        .in('nama_produk', uniqueSkus);
+      // 3. Group moved items by SKU for destination updates/inserts
+      const movedBySku = new Map<string, { totalQty: number; sample: StockItem }>();
+      itemsToMove.forEach(item => {
+        const existing = movedBySku.get(item.nama_produk);
+        if (existing) {
+          existing.totalQty += item.tersedia;
+        } else {
+          movedBySku.set(item.nama_produk, { totalQty: item.tersedia, sample: item });
+        }
+      });
 
-      const existingSkuSet = new Set((existingDestStocks || []).map(s => s.nama_produk));
-      const missingItems = itemsToMove.filter(i => !existingSkuSet.has(i.nama_produk));
+      const uniqueSkus = Array.from(movedBySku.keys());
 
-      if (missingItems.length > 0) {
-        const toInsertMap = new Map<string, any>();
-        missingItems.forEach(i => {
-          if (!toInsertMap.has(i.nama_produk)) {
-            toInsertMap.set(i.nama_produk, {
-              nama_produk: i.nama_produk,
-              packing: i.packing,
-              rak: destRak,
-              sub_rak: destRak,
-              satuan: i.satuan,
-              stok_awal: 0,
-              status: 'Aktif'
-            });
-          }
-        });
-        await DatabaseService.insertStockItems(Array.from(toInsertMap.values()), writeMode);
+      // Query existing stock_items in destRak for these SKUs in chunks of 50
+      const existingDestStocks: { id: string; nama_produk: string; tersedia: number; masuk: number }[] = [];
+      const SKU_CHUNK = 50;
+      for (let i = 0; i < uniqueSkus.length; i += SKU_CHUNK) {
+        const skuBatch = uniqueSkus.slice(i, i + SKU_CHUNK);
+        const { data: destData } = await supabase
+          .from('stock_items')
+          .select('id, nama_produk, tersedia, masuk')
+          .eq('rak', destRak)
+          .in('nama_produk', skuBatch);
+        if (destData) existingDestStocks.push(...destData);
+      }
+
+      const existingDestMap = new Map<string, { id: string; nama_produk: string; tersedia: number; masuk: number }>();
+      existingDestStocks.forEach(d => existingDestMap.set(d.nama_produk, d));
+
+      const newDestItemsToInsert: any[] = [];
+      const existingDestUpdates: Promise<any>[] = [];
+
+      movedBySku.forEach(({ totalQty, sample }, sku) => {
+        const existing = existingDestMap.get(sku);
+        if (existing) {
+          existingDestUpdates.push(
+            DatabaseService.updateStockItem(
+              existing.id,
+              {
+                masuk: (existing.masuk || 0) + totalQty,
+                tersedia: (existing.tersedia || 0) + totalQty
+              },
+              writeMode
+            )
+          );
+        } else {
+          newDestItemsToInsert.push({
+            nama_produk: sku,
+            packing: sample.packing,
+            rak: destRak,
+            sub_rak: destRak,
+            satuan: sample.satuan,
+            stok_awal: 0,
+            masuk: totalQty,
+            keluar: 0,
+            tersedia: totalQty,
+            status: 'Aktif'
+          });
+        }
+      });
+
+      // Execute existing destination updates in concurrent chunks
+      for (let i = 0; i < existingDestUpdates.length; i += UPDATE_CONCURRENCY) {
+        const chunk = existingDestUpdates.slice(i, i + UPDATE_CONCURRENCY);
+        await Promise.all(chunk);
+      }
+
+      // Insert new destination items in chunks
+      if (newDestItemsToInsert.length > 0) {
+        for (let i = 0; i < newDestItemsToInsert.length; i += LOG_CHUNK_SIZE) {
+          const chunk = newDestItemsToInsert.slice(i, i + LOG_CHUNK_SIZE);
+          await DatabaseService.insertStockItems(chunk, writeMode);
+        }
       }
 
       const totalQty = itemsToMove.reduce((s, i) => s + i.tersedia, 0);
@@ -1477,7 +1653,22 @@ export function PindahDataBarang() {
         }
       }
 
-      showToast(`[Real-Time Massal Berhasil] Berhasil memindahkan ${itemsToMove.length} item (${totalQty} pcs) ke ${destRak}!`, 'success');
+      showToast(`[Real-Time Massal Berhasil] Berhasil memindahkan ${itemsToMove.length} item (${totalQty.toLocaleString()} pcs) ke ${destRak}!`, 'success');
+
+      // 4. Update local state immediately so UI refreshes without stale items
+      const originIdSet = new Set(itemsToMove.map(i => i.id));
+      setStockItems(prev => {
+        return prev.map(item => {
+          if (originIdSet.has(item.id)) {
+            return {
+              ...item,
+              tersedia: 0,
+              keluar: (item.keluar || 0) + item.tersedia
+            };
+          }
+          return item;
+        });
+      });
 
       setBatchSelectedItems(new Set());
       setShowRealtimeModal(false);

@@ -153,21 +153,21 @@ export const fetchAllStockItems = async () => {
     const startTime = performance.now();
     const batchSize = 1000;
 
-    // 1. Get count using fast estimated count (150ms instead of 10s)
+    // 1. Get exact count using head query (very fast metadata query)
     const { count, error: countError } = await supabase
       .from('stock_items')
-      .select('id', { count: 'estimated', head: true })
+      .select('id', { count: 'exact', head: true })
       .eq('status', 'Aktif');
 
-    if (countError) console.warn('Estimated count warning, proceeding:', countError);
-    const totalCount = count || 25000;
+    if (countError) console.warn('Exact count warning, proceeding:', countError);
+    const totalCount = count || 30000;
 
     if (totalCount === 0) return { data: [], totalCount: 0, success: true };
 
-    // 2. Prepare batches with concurrency limit of 5 to avoid connection starvation
+    // 2. Prepare batches with concurrency limit of 6 to avoid connection starvation
     const numBatches = Math.ceil(totalCount / batchSize);
     const allData: any[] = [];
-    const concurrency = 5;
+    const concurrency = 6;
 
     // Fetch only needed columns to drastically cut down network payload & egress
     const selectColumns = 'id, nama_produk, packing, rak, sub_rak, satuan, stok_awal, masuk, keluar, tersedia, status';
@@ -184,11 +184,13 @@ export const fetchAllStockItems = async () => {
             .eq('status', 'Aktif')
             .range(from, to)
             .order('nama_produk', { ascending: true })
+            .order('id', { ascending: true })
         );
       }
 
       const results = await Promise.all(chunkPromises);
       for (const res of results) {
+        if (res.error) console.warn('Batch stock load warning:', res.error);
         if (res.data && res.data.length > 0) {
           allData.push(...res.data);
         }

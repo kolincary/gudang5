@@ -460,18 +460,32 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
             });
         }
 
-        const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
+        const { error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
 
         if (logError) {
             console.error(`Error reconciling SKU ${item.sku}:`, logError);
             return false;
         }
 
-        if (insertedData && insertedData.length > 0) {
-            for (const l of insertedData) {
-                if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
-                    await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
-                }
+        // Sync stock_items for the affected donor and minus locations of this SKU
+        for (const plan of item.pairPlans) {
+            const donorLoc = item.plusLocations.find(p => p.rak === plan.sourceRak && (p.sub_rak || p.rak) === plan.sourceSubRak);
+            if (donorLoc && donorLoc.id) {
+                await DatabaseService.updateStockItem(
+                    donorLoc.id,
+                    { tersedia: Math.max(0, donorLoc.tersedia - plan.qty) },
+                    writeMode
+                );
+                donorLoc.tersedia = Math.max(0, donorLoc.tersedia - plan.qty);
+            }
+            const minusLoc = item.minusLocations.find(m => m.rak === plan.targetRak && (m.sub_rak || m.rak) === plan.targetSubRak);
+            if (minusLoc && minusLoc.id) {
+                await DatabaseService.updateStockItem(
+                    minusLoc.id,
+                    { tersedia: minusLoc.tersedia + plan.qty },
+                    writeMode
+                );
+                minusLoc.tersedia = minusLoc.tersedia + plan.qty;
             }
         }
 
