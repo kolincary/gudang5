@@ -3053,13 +3053,16 @@ export function CekRak2() {
 
             if (error) throw error;
 
-            // Filter out items already confirmed in the current rack OR confirmed in their source rack
-            // AND filter strictly to TEMP-* racks for staff (or when pullSourceFilter is TEMP)
+            // Filter out items already confirmed in their source physical rack
+            // (Barang dari wadah penampung TEMP-* SELALU BISA ditarik ke rak tujuan untuk menambah/akumulasi stok)
             const filteredData = data?.filter((item: any) => {
                 const prodName = item.nama_produk?.trim().toLowerCase();
                 const itemRak = (item.rak || '').trim().toUpperCase();
-                if (confirmedProductNames.has(prodName)) return false;
-                if (confirmedPairs.has(`${prodName}|||${item.rak?.trim().toLowerCase()}`)) return false;
+
+                if (!itemRak.startsWith('TEMP')) {
+                    if (confirmedProductNames.has(prodName)) return false;
+                    if (confirmedPairs.has(`${prodName}|||${item.rak?.trim().toLowerCase()}`)) return false;
+                }
 
                 // Khusus staf gudang / admin atau mode filter TEMP: HANYA tampilkan stok dari wadah penampung TEMP
                 if (pullSourceFilter === 'TEMP' || !isDeveloper) {
@@ -3134,13 +3137,16 @@ export function CekRak2() {
 
             if (error) throw error;
 
-            // Filter out items already confirmed in the current rack OR confirmed in their source rack
-            // AND filter strictly to TEMP-* racks for staff (or when pullSourceFilter is TEMP)
+            // Filter out items already confirmed in their source physical rack
+            // (Barang dari wadah penampung TEMP-* SELALU BISA ditarik ke rak tujuan untuk menambah/akumulasi stok)
             const filteredData = data?.filter((item: any) => {
                 const prodName = item.nama_produk?.trim().toLowerCase();
                 const itemRak = (item.rak || '').trim().toUpperCase();
-                if (confirmedProductNames.has(prodName)) return false;
-                if (confirmedPairs.has(`${prodName}|||${item.rak?.trim().toLowerCase()}`)) return false;
+
+                if (!itemRak.startsWith('TEMP')) {
+                    if (confirmedProductNames.has(prodName)) return false;
+                    if (confirmedPairs.has(`${prodName}|||${item.rak?.trim().toLowerCase()}`)) return false;
+                }
 
                 // Khusus staf gudang / admin atau mode filter TEMP: HANYA tampilkan stok dari wadah penampung TEMP
                 if (pullSourceFilter === 'TEMP' || !isDeveloper) {

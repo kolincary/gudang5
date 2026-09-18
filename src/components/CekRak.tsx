@@ -611,12 +611,14 @@ export function CekRak() {
 
             if (error) throw error;
 
-            // Filter out items already confirmed in the current rack OR confirmed in their source rack
+            // Filter out items already confirmed in their source physical rack
             const filteredData = data?.filter((item: any) => {
                 const prodName = item.nama_produk?.trim().toLowerCase();
-                const itemRak = item.rak?.trim().toLowerCase();
-                if (confirmedProductNames.has(prodName)) return false;
-                if (confirmedPairs.has(`${prodName}|||${itemRak}`)) return false;
+                const itemRak = (item.rak || '').trim().toUpperCase();
+                if (!itemRak.startsWith('TEMP')) {
+                    if (confirmedProductNames.has(prodName)) return false;
+                    if (confirmedPairs.has(`${prodName}|||${item.rak?.trim().toLowerCase()}`)) return false;
+                }
                 return true;
             });
 
@@ -686,12 +688,14 @@ export function CekRak() {
 
             if (error) throw error;
 
-            // Filter out items already confirmed in the current rack OR confirmed in their source rack
+            // Filter out items already confirmed in their source physical rack
             const filteredData = data?.filter((item: any) => {
                 const prodName = item.nama_produk?.trim().toLowerCase();
-                const itemRak = item.rak?.trim().toLowerCase();
-                if (confirmedProductNames.has(prodName)) return false;
-                if (confirmedPairs.has(`${prodName}|||${itemRak}`)) return false;
+                const itemRak = (item.rak || '').trim().toUpperCase();
+                if (!itemRak.startsWith('TEMP')) {
+                    if (confirmedProductNames.has(prodName)) return false;
+                    if (confirmedPairs.has(`${prodName}|||${item.rak?.trim().toLowerCase()}`)) return false;
+                }
                 return true;
             });
 
