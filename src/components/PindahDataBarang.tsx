@@ -360,6 +360,194 @@ export function PindahDataBarang() {
     return items;
   }, [batchSummaries, batchSelectedKey, batchSearchQuery]);
 
+  // Calculate reconcilable minus racks for the currently selected batch in Mass Batch mode
+  const batchMinusStats = useMemo(() => {
+    if (!stockItems || stockItems.length === 0) return {
+      reconcilableSkus: [] as {
+        sku: string;
+        satuan: string;
+        packing: string;
+        minusLocations: { rak: string; sub_rak: string; tersedia: number }[];
+        plusLocations: { rak: string; sub_rak: string; tersedia: number }[];
+        pairPlans: { sourceRak: string; sourceSubRak: string; targetRak: string; targetSubRak: string; qty: number }[];
+        totalMinus: number;
+        totalPlus: number;
+        reconcilableQty: number;
+      }[],
+      totalMinusLocations: 0,
+      totalMinusQty: 0,
+      totalReconcilableQty: 0,
+      totalPairPlans: 0
+    };
+
+    // Group stock items by SKU -> batchKey -> { minusLocations, plusLocations }
+    const map = new Map<string, {
+      sku: string;
+      packing: string;
+      satuan: string;
+      batches: Map<string, {
+        minusLocations: { rak: string; sub_rak: string; tersedia: number; id?: string }[];
+        plusLocations: { rak: string; sub_rak: string; tersedia: number; id?: string }[];
+      }>;
+    }>();
+
+    stockItems.forEach(item => {
+      const sku = (item.nama_produk || '').trim();
+      if (!sku) return;
+
+      if (!map.has(sku)) {
+        map.set(sku, {
+          sku,
+          packing: item.packing || '',
+          satuan: item.satuan || 'PCS',
+          batches: new Map()
+        });
+      }
+
+      const skuRecord = map.get(sku)!;
+      const rakName = item.rak || '';
+      const batchKey = getRackBatchKey(rakName);
+      const qty = Number(item.tersedia) || 0;
+
+      if (!skuRecord.batches.has(batchKey)) {
+        skuRecord.batches.set(batchKey, { minusLocations: [], plusLocations: [] });
+      }
+
+      const batchLocs = skuRecord.batches.get(batchKey)!;
+      if (qty < 0) {
+        batchLocs.minusLocations.push({
+          rak: rakName,
+          sub_rak: item.sub_rak || rakName,
+          tersedia: qty,
+          id: item.id
+        });
+      } else if (qty > 0) {
+        batchLocs.plusLocations.push({
+          rak: rakName,
+          sub_rak: item.sub_rak || rakName,
+          tersedia: qty,
+          id: item.id
+        });
+      }
+    });
+
+    const reconcilableSkus: {
+      sku: string;
+      satuan: string;
+      packing: string;
+      minusLocations: { rak: string; sub_rak: string; tersedia: number }[];
+      plusLocations: { rak: string; sub_rak: string; tersedia: number }[];
+      pairPlans: { sourceRak: string; sourceSubRak: string; targetRak: string; targetSubRak: string; qty: number }[];
+      totalMinus: number;
+      totalPlus: number;
+      reconcilableQty: number;
+    }[] = [];
+
+    map.forEach(skuRecord => {
+      const validBatches: {
+        batchKey: string;
+        minusLocations: { rak: string; sub_rak: string; tersedia: number }[];
+        plusLocations: { rak: string; sub_rak: string; tersedia: number }[];
+        pairPlans: { sourceRak: string; sourceSubRak: string; targetRak: string; targetSubRak: string; qty: number }[];
+        totalMinus: number;
+        totalPlus: number;
+        reconcilableQty: number;
+      }[] = [];
+
+      skuRecord.batches.forEach((bData, batchKey) => {
+        if (batchSelectedKey !== 'ALL' && batchKey !== batchSelectedKey) {
+          return;
+        }
+
+        if (bData.minusLocations.length > 0 && bData.plusLocations.length > 0) {
+          const totalMinus = bData.minusLocations.reduce((sum, loc) => sum + Math.abs(loc.tersedia), 0);
+          const totalPlus = bData.plusLocations.reduce((sum, loc) => sum + loc.tersedia, 0);
+          const reconcilableQty = Math.min(totalMinus, totalPlus);
+
+          const minusList = bData.minusLocations.map(m => ({
+            rak: m.rak,
+            sub_rak: m.sub_rak,
+            needed: Math.abs(m.tersedia)
+          }));
+
+          const plusList = [...bData.plusLocations]
+            .sort((a, b) => b.tersedia - a.tersedia)
+            .map(p => ({
+              rak: p.rak,
+              sub_rak: p.sub_rak,
+              available: p.tersedia
+            }));
+
+          const pairPlans: { sourceRak: string; sourceSubRak: string; targetRak: string; targetSubRak: string; qty: number }[] = [];
+
+          for (const m of minusList) {
+            if (m.needed <= 0) continue;
+            for (const p of plusList) {
+              if (p.available <= 0) continue;
+              const transferQty = Math.min(m.needed, p.available);
+              if (transferQty > 0) {
+                pairPlans.push({
+                  sourceRak: p.rak,
+                  sourceSubRak: p.sub_rak || p.rak,
+                  targetRak: m.rak,
+                  targetSubRak: m.sub_rak || m.rak,
+                  qty: transferQty
+                });
+                m.needed -= transferQty;
+                p.available -= transferQty;
+              }
+              if (m.needed <= 0) break;
+            }
+          }
+
+          validBatches.push({
+            batchKey,
+            minusLocations: bData.minusLocations,
+            plusLocations: bData.plusLocations,
+            pairPlans,
+            totalMinus,
+            totalPlus,
+            reconcilableQty
+          });
+        }
+      });
+
+      if (validBatches.length > 0) {
+        const minusLocations = validBatches.flatMap(b => b.minusLocations);
+        const plusLocations = validBatches.flatMap(b => b.plusLocations);
+        const pairPlans = validBatches.flatMap(b => b.pairPlans);
+        const totalMinus = validBatches.reduce((s, b) => s + b.totalMinus, 0);
+        const totalPlus = validBatches.reduce((s, b) => s + b.totalPlus, 0);
+        const reconcilableQty = validBatches.reduce((s, b) => s + b.reconcilableQty, 0);
+
+        reconcilableSkus.push({
+          sku: skuRecord.sku,
+          satuan: skuRecord.satuan,
+          packing: skuRecord.packing,
+          minusLocations,
+          plusLocations,
+          pairPlans,
+          totalMinus,
+          totalPlus,
+          reconcilableQty
+        });
+      }
+    });
+
+    const totalMinusLocations = reconcilableSkus.reduce((sum, item) => sum + item.minusLocations.length, 0);
+    const totalMinusQty = reconcilableSkus.reduce((sum, item) => sum + item.totalMinus, 0);
+    const totalReconcilableQty = reconcilableSkus.reduce((sum, item) => sum + item.reconcilableQty, 0);
+    const totalPairPlans = reconcilableSkus.reduce((sum, item) => sum + item.pairPlans.length, 0);
+
+    return {
+      reconcilableSkus,
+      totalMinusLocations,
+      totalMinusQty,
+      totalReconcilableQty,
+      totalPairPlans
+    };
+  }, [stockItems, batchSelectedKey]);
+
   const [operationProgress, setOperationProgress] = useState<{
     isVisible: boolean;
     currentStep: string;
@@ -1016,6 +1204,93 @@ export function PindahDataBarang() {
 
     } catch (err: any) {
       console.error('Auto-Klop single error:', err);
+      showToast(`Terjadi kesalahan: ${err.message || 'Error'}`, 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Batch Auto-Klop Execution from Mass Batch Tab
+  const handleExecuteBatchKlop = async () => {
+    if (batchMinusStats.reconcilableSkus.length === 0) {
+      showToast('Tidak ada rak minus yang dapat di-klop pada batch ini', 'info');
+      return;
+    }
+
+    const batchLabel = batchSelectedKey === 'ALL' ? 'Semua Batch' : getRackBatchLabel(batchSelectedKey);
+    if (!confirm(`Apakah Anda yakin ingin mengeksekusi Auto-Klop untuk ${batchMinusStats.reconcilableSkus.length} SKU (${batchMinusStats.totalMinusLocations} rak minus) pada ${batchLabel}?\n\nSistem akan membuat log transfer penyeimbang untuk menetralkan rak-rak minus di batch ini.`)) {
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      const now = new Date();
+      const { todayTgl, nowWaktu } = getRealtimeDateTime(now);
+      const userName = user?.user_metadata?.full_name || user?.email || userRole || 'Auto-Klop Admin';
+      let baseTime = now.getTime();
+      const logEntries: any[] = [];
+
+      for (const skuItem of batchMinusStats.reconcilableSkus) {
+        for (const plan of skuItem.pairPlans) {
+          baseTime += 300;
+          logEntries.push({
+            tgl: todayTgl,
+            waktu: nowWaktu,
+            sku: skuItem.sku,
+            jumlah: plan.qty,
+            type: 'OUT',
+            gudang: 'TRANSFER',
+            rak: plan.sourceRak,
+            sub_rak: plan.sourceSubRak,
+            tgl_scan: todayTgl,
+            tgl_normalized: todayTgl,
+            user_name: userName,
+            created_at: new Date(baseTime).toISOString()
+          });
+
+          baseTime += 300;
+          logEntries.push({
+            tgl: todayTgl,
+            waktu: nowWaktu,
+            sku: skuItem.sku,
+            jumlah: plan.qty,
+            type: 'IN',
+            gudang: 'TRANSFER',
+            rak: plan.targetRak,
+            sub_rak: plan.targetSubRak,
+            tgl_scan: todayTgl,
+            tgl_normalized: todayTgl,
+            user_name: userName,
+            created_at: new Date(baseTime).toISOString()
+          });
+        }
+      }
+
+      const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
+
+      if (logError) {
+        console.error('Error in Auto-Klop batch:', logError);
+        showToast(`Gagal auto-klop batch: ${logError.message}`, 'error');
+        return;
+      }
+
+      if (insertedData && insertedData.length > 0) {
+        for (const l of insertedData) {
+          if (l.id && (l.tgl_scan !== todayTgl || l.tgl !== todayTgl)) {
+            await DatabaseService.updateLog(l.id, { tgl_scan: todayTgl, tgl: todayTgl }, writeMode);
+          }
+        }
+      }
+
+      showToast(
+        `[Auto-Klop Batch Berhasil] Berhasil menyeimbangkan ${batchMinusStats.totalReconcilableQty.toLocaleString()} PCS pada ${batchMinusStats.reconcilableSkus.length} SKU (${batchLabel})! Rak minus kini bersih.`,
+        'success'
+      );
+
+      loadInitialData();
+
+    } catch (err: any) {
+      console.error('Auto-Klop batch error:', err);
       showToast(`Terjadi kesalahan: ${err.message || 'Error'}`, 'error');
     } finally {
       setSubmitting(false);
@@ -1934,6 +2209,48 @@ export function PindahDataBarang() {
                       ))}
                     </div>
                   </div>
+
+                  {/* Auto-Klop Alert & Quick Action for Selected Batch */}
+                  {batchMinusStats.totalMinusLocations > 0 && (
+                    <div className="p-3.5 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs animate-fade-in">
+                      <div className="flex items-start sm:items-center gap-2.5">
+                        <div className="p-2 bg-amber-500/10 rounded-xl text-amber-700 shrink-0">
+                          <AlertTriangle className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="text-xs font-black text-amber-950">
+                            Terdeteksi {batchMinusStats.totalMinusLocations} Rak Minus ({batchMinusStats.totalMinusQty.toLocaleString()} PCS) pada {batchSelectedKey === 'ALL' ? 'Semua Batch' : getRackBatchLabel(batchSelectedKey)}
+                          </div>
+                          <p className="text-[11px] text-amber-800 mt-0.5">
+                            {batchMinusStats.totalReconcilableQty.toLocaleString()} PCS pada {batchMinusStats.reconcilableSkus.length} SKU dapat diseimbangkan otomatis (self-balancing intra-batch).
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {batchMinusStats.totalPairPlans > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleExecuteBatchKlop}
+                            disabled={submitting}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white rounded-xl text-xs font-black shadow-sm transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                            title={`Klopkan seluruh ${batchMinusStats.totalMinusLocations} rak minus pada ${batchSelectedKey === 'ALL' ? 'Semua Batch' : getRackBatchLabel(batchSelectedKey)}`}
+                          >
+                            <Scale className="w-3.5 h-3.5" />
+                            <span>Auto-Klop Batch Ini Saja</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setShowAutoKlopModal(true)}
+                          className="px-2.5 py-2 bg-white hover:bg-amber-100/60 border border-amber-200 text-amber-900 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                          title="Buka detail modal rekonsiliasi"
+                        >
+                          Lihat Detail
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Batch Items Controls & List */}
                   <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
