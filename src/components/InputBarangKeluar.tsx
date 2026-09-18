@@ -1400,30 +1400,36 @@ export function InputBarangKeluar() {
         if (!sku || !rak || !tglScan) return { sisa: 0, hasIn: false };
 
         try {
-            // Normalisasi format tanggal untuk pencarian yang lebih fleksibel
-            const variations = [tglScan.trim()];
+            // Normalisasi format tanggal untuk pencarian yang lebih fleksibel (semua format: YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, YYYY/MM/DD)
+            const cleanDate = tglScan.trim();
+            const variations = new Set<string>([cleanDate]);
 
-            // Jika dd-mm-yyyy -> yyyy-mm-dd
-            if (tglScan.includes('-')) {
-                const parts = tglScan.split('-');
-                if (parts[0].length === 2 && parts[2].length === 4) {
-                    variations.push(`${parts[2]}-${parts[1]}-${parts[0]}`);
-                } else if (parts[0].length === 4 && parts[2].length === 2) {
-                    variations.push(`${parts[2]}-${parts[1]}-${parts[0]}`);
+            const parts = cleanDate.split(/[-/]/);
+            if (parts.length === 3) {
+                let y = '', m = '', d = '';
+                if (parts[0].length === 4) {
+                    y = parts[0];
+                    m = parts[1].padStart(2, '0');
+                    d = parts[2].padStart(2, '0');
+                } else if (parts[2].length === 4) {
+                    d = parts[0].padStart(2, '0');
+                    m = parts[1].padStart(2, '0');
+                    y = parts[2];
+                }
+                if (y && m && d) {
+                    variations.add(`${y}-${m}-${d}`);
+                    variations.add(`${d}-${m}-${y}`);
+                    variations.add(`${d}/${m}/${y}`);
+                    variations.add(`${y}/${m}/${d}`);
+                    const dn = parseInt(d, 10).toString();
+                    const mn = parseInt(m, 10).toString();
+                    variations.add(`${y}-${mn}-${dn}`);
+                    variations.add(`${dn}-${mn}-${y}`);
+                    variations.add(`${dn}/${mn}/${y}`);
                 }
             }
 
-            // Jika dd/mm/yyyy -> dd-mm-yyyy & yyyy-mm-dd
-            if (tglScan.includes('/')) {
-                const parts = tglScan.split('/');
-                if (parts[0].length === 2 && parts[2].length === 4) {
-                    variations.push(`${parts[0]}-${parts[1]}-${parts[2]}`);
-                    variations.push(`${parts[2]}-${parts[1]}-${parts[0]}`);
-                }
-            }
-
-            // Hapus duplikat
-            const uniqueVariations = [...new Set(variations)];
+            const uniqueVariations = Array.from(variations);
             console.log(`🔍 Checking batch stock with date variations:`, uniqueVariations);
 
             // Special check for TEMP rack: stock_items direct check
@@ -1442,14 +1448,13 @@ export function InputBarangKeluar() {
 
             const { data: logs, error } = await supabase
                 .from('database_log')
-                .select('jumlah, type, tgl_scan, rak_tujuan, rak_asal')
+                .select('jumlah, type, tgl_scan, rak, rak_tujuan, rak_asal')
                 .ilike('sku', sku.trim())
                 .or(`rak.ilike.${rak.trim()},rak_tujuan.ilike.${rak.trim()}`)
                 .in('tgl_scan', uniqueVariations);
 
             if (error) {
                 console.error('Error fetching batch logs:', error);
-                return { sisa: 0, hasIn: false };
             }
 
             let totalIn = (logs || [])
@@ -1462,8 +1467,28 @@ export function InputBarangKeluar() {
 
             let sisa = totalIn - totalOut;
 
-            // Auto-Bridge SO Fallback for Batch Stock: If no valid batch in origin rak, check the TEMP rack
-            if ((!logs || logs.length === 0 || sisa <= 0) && !rak.toUpperCase().startsWith('TEMP') && isOpnameZoneActive(rak)) {
+            if (totalIn > 0) {
+                return {
+                    sisa: Math.max(0, sisa),
+                    hasIn: true
+                };
+            }
+
+            // Fallback 1: Cek stok fisik yang tersedia langsung di stock_items untuk rak tersebut
+            const { data: currentStock } = await supabase
+                .from('stock_items')
+                .select('tersedia')
+                .ilike('nama_produk', sku.trim())
+                .ilike('rak', rak.trim())
+                .limit(1);
+
+            if (currentStock && currentStock.length > 0 && (currentStock[0].tersedia || 0) > 0) {
+                console.log(`📦 Fallback to available rack stock in stock_items for ${sku} in ${rak}: ${currentStock[0].tersedia}`);
+                return { sisa: currentStock[0].tersedia, hasIn: true };
+            }
+
+            // Fallback 2: Auto-Bridge SO Fallback for Batch Stock: If no valid batch in origin rak, check the TEMP rack
+            if (!rak.toUpperCase().startsWith('TEMP') && isOpnameZoneActive(rak)) {
                 const tempRak = getTempRackForPrefix(rak);
                 if (tempRak) {
                     const { data: tempStock } = await supabase
@@ -1480,13 +1505,9 @@ export function InputBarangKeluar() {
                 }
             }
 
-            if (!logs || logs.length === 0) {
-                return { sisa: 0, hasIn: false };
-            }
-
             return {
-                sisa: sisa,
-                hasIn: totalIn > 0
+                sisa: 0,
+                hasIn: false
             };
         } catch (err) {
             console.error('Unexpected error in checkBatchStock:', err);

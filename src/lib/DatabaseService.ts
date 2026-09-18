@@ -178,20 +178,24 @@ export const DatabaseService = {
   },
 
   async insertLogs(items: any[], mode: DatabaseWriteMode) {
-    if (mode === 'supabase' || mode === 'both') {
+    try {
+      // Always insert into Supabase database_log
       const { data, error } = await supabase.from('database_log').insert(items).select();
-      if (error) throw error;
+      if (error && mode === 'supabase') throw error;
       
-      if (mode === 'both' && data) {
+      // Dual-write to Firebase if mode is 'both' or 'firebase'
+      if ((mode === 'both' || mode === 'firebase') && (data || items)) {
+        const itemsToWrite = (data && data.length > 0) ? data : items;
         (async () => {
           try {
             const chunkSize = 50;
-            for (let i = 0; i < data.length; i += chunkSize) {
-              const chunk = data.slice(i, i + chunkSize);
+            for (let i = 0; i < itemsToWrite.length; i += chunkSize) {
+              const chunk = itemsToWrite.slice(i, i + chunkSize);
               const firestoreBatch = writeBatch(db);
               for (const item of chunk) {
-                const docRef = doc(db, COLLECTION_NAME, item.id.toString());
-                firestoreBatch.set(docRef, item);
+                const docId = item.id ? item.id.toString() : doc(collection(db, COLLECTION_NAME)).id;
+                const docRef = doc(db, COLLECTION_NAME, docId);
+                firestoreBatch.set(docRef, { ...item, id: docId });
               }
               await firestoreBatch.commit();
               await delay(500);
@@ -202,10 +206,10 @@ export const DatabaseService = {
           }
         })();
       }
-      return { data, error: null };
-    } else if (mode === 'firebase') {
-      // Pure firebase mode. Generate random IDs for the new logs.
-      try {
+      return { data: data || items, error: null };
+    } catch (err) {
+      if (mode === 'firebase') {
+        // Fallback pure firebase if Supabase completely failed in firebase mode
         const newItems = [];
         const chunkSize = 50;
         for (let i = 0; i < items.length; i += chunkSize) {
@@ -220,34 +224,28 @@ export const DatabaseService = {
           await firestoreBatch.commit();
         }
         return { data: newItems, error: null };
-      } catch (error) {
-        throw error;
       }
+      throw err;
     }
   },
 
   async updateLog(id: string | number, updates: any, mode: DatabaseWriteMode) {
-    if (mode === 'supabase' || mode === 'both') {
-      const { error } = await supabase.from('database_log').update(updates).eq('id', id);
-      if (error) throw error;
-      
-      if (mode === 'both') {
-        (async () => {
-          try {
-            const docRef = doc(db, COLLECTION_NAME, id.toString());
-            await setDoc(docRef, updates, { merge: true });
-          } catch (fbError) {
-            console.error('Firebase dual-write update failed:', fbError);
-          }
-        })();
-      }
-    } else if (mode === 'firebase') {
-      try {
-        const docRef = doc(db, COLLECTION_NAME, id.toString());
-        await setDoc(docRef, updates, { merge: true });
-      } catch (error) {
-        throw error;
-      }
+    try {
+      await supabase.from('database_log').update(updates).eq('id', id);
+    } catch (sbError) {
+      if (mode === 'supabase') throw sbError;
+      console.warn('Supabase update log warning:', sbError);
+    }
+
+    if (mode === 'both' || mode === 'firebase') {
+      (async () => {
+        try {
+          const docRef = doc(db, COLLECTION_NAME, id.toString());
+          await setDoc(docRef, updates, { merge: true });
+        } catch (fbError) {
+          console.error('Firebase dual-write update failed:', fbError);
+        }
+      })();
     }
   },
 
