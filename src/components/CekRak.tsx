@@ -905,17 +905,16 @@ export function CekRak() {
                 const filteredUnverified = existingUnverified.filter((name: string) => name.trim().toLowerCase() !== prodName);
                 localStorage.setItem(unverifiedKey, JSON.stringify(filteredUnverified));
                 
-                // Insert VERIFY log inheriting original tgl & tgl_scan
-                const vNow = new Date();
+                // Insert VERIFY log inheriting realtime todayTgl & nowWaktu
                 await DatabaseService.insertLogs([{
-                    tgl: tglAsli,
-                    waktu: vNow.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                    tgl: todayTgl,
+                    waktu: nowWaktu,
                     sku: pullItem.nama_produk,
                     jumlah: pullQty,
                     type: 'MOVE',
                     gudang: 'VERIFY',
                     rak: cleanRak,
-                    tgl_scan: tglScanAsli,
+                    tgl_scan: todayTgl,
                     user_name: user?.email || 'System (Tarik Fisik)',
                     sub_rak: cleanRak
                 }], writeMode);
