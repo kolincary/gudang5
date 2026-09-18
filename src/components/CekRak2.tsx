@@ -17,6 +17,7 @@ import { BarcodeScanner } from './ui/BarcodeScanner';
 import { cn } from '../lib/utils';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
+import { useAuth } from '../lib/AuthContext';
 import { getRealtimeDateTime } from '../lib/transferDateHelper';
 import { KarantinaRevisiOutModal } from './KarantinaRevisiOutModal';
 import { 
