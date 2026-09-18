@@ -509,7 +509,7 @@ export function CekRak2() {
             // 1. Fetch from Supabase database_log with fast indexed query
             const { data, error } = await supabase
                 .from('database_log')
-                .select('id, sku, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah')
+                .select('id, sku, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah, keterangan')
                 .in('gudang', ['VERIFY', 'UNVERIFY'])
                 .order('created_at', { ascending: false })
                 .limit(2000);
@@ -542,7 +542,8 @@ export function CekRak2() {
                         ...log,
                         sku: log.sku || log.nama_barang || log.nama_produk,
                         rak: rak,
-                        sub_rak: rak
+                        sub_rak: rak,
+                        keterangan: log.keterangan || undefined
                     });
                 }
             });
@@ -3586,6 +3587,18 @@ export function CekRak2() {
                 const filteredUnverified = existingUnverified.filter((name: string) => name.trim().toLowerCase() !== prodName);
                 localStorage.setItem(unverifiedKey, JSON.stringify(filteredUnverified));
                 
+                // Clean up any old UNVERIFY records for this item in this rack so VERIFY is cleanly recorded
+                try {
+                    await supabase
+                        .from('database_log')
+                        .delete()
+                        .eq('gudang', 'UNVERIFY')
+                        .ilike('sku', pullItem.nama_produk)
+                        .or(`rak.eq.${cleanRak},sub_rak.eq.${cleanRak}`);
+                } catch (delErr) {
+                    console.warn('Could not cleanup UNVERIFY logs:', delErr);
+                }
+
                 // Insert VERIFY log inheriting realtime todayTgl & nowWaktu
                 await DatabaseService.insertLogs([{
                     tgl: todayTgl,
@@ -3596,7 +3609,7 @@ export function CekRak2() {
                     gudang: 'VERIFY',
                     rak: cleanRak,
                     tgl_scan: todayTgl,
-                    user_name: user?.email || 'System (Tarik Fisik)',
+                    user_name: user?.email || userName || 'System (Tarik Fisik)',
                     sub_rak: cleanRak,
                     keterangan: countNum ? `BOX_COUNT:${countNum}` : undefined
                 }], writeMode);
@@ -3619,8 +3632,9 @@ export function CekRak2() {
             setPullQuantity('');
             setPullBoxCount('');
 
-            // Refresh data rak ini
-            fetchItems(lastScanned, false);
+            // Refresh data rak ini & data selesai diproses
+            await fetchItems(lastScanned, true);
+            await fetchAllFinishedItems();
             
             // Update list state agar angka di modal pencarian langsung ter-update (misal 480 -> 400)
             const newRemaining = pullItem.tersedia - Number(pullQuantity);
@@ -3758,7 +3772,9 @@ export function CekRak2() {
 
         setIsExecutingOutTrace(true);
         try {
-            const targetRak = lastScanned.trim().toUpperCase();
+            const currentRack = lastScanned.trim().toUpperCase();
+            // Target transit is the active TEMP / Bridge rack (e.g. TEMP-A for rack A1)
+            const activeTempRak = getTempRackForPrefix(currentRack) || getTempRackForPrefix(selectedOutLog.rak) || 'TEMP-A';
             const actor = userName || user?.email || 'Staf Gudang';
 
             // 1. Simpan ke wadah karantina_revisi_out (Dual-write Supabase & Firestore)
@@ -3769,8 +3785,8 @@ export function CekRak2() {
                     nama_barang: selectedOutLog.nama_barang || selectedOutLog.sku,
                     packing: selectedOutLog.packing || '',
                     jumlah: pulihQty,
-                    rak_asal: selectedOutLog.rak || 'TEMP-A',
-                    sub_rak_tujuan: targetRak,
+                    rak_asal: selectedOutLog.rak || activeTempRak,
+                    sub_rak_tujuan: activeTempRak,
                     tgl_out_asli: selectedOutLog.tgl || selectedOutLog.tgl_scan || '',
                     gudang: selectedOutLog.gudang || '',
                     user_pemotong_out: selectedOutLog.user_name || 'System',
@@ -3794,7 +3810,7 @@ export function CekRak2() {
                     .update({
                         type: 'MOVE',
                         status: 'REVISI_KARANTINA',
-                        log_update_user: `[REVISI KARANTINA] Dipindahkan oleh ${actor} ke sub-rak ${targetRak}`
+                        log_update_user: `[REVISI KARANTINA] Dipulihkan oleh ${actor} ke wadah ${activeTempRak} (Fisik di: ${currentRack})`
                     })
                     .eq('id', selectedOutLog.id);
 
@@ -3805,7 +3821,7 @@ export function CekRak2() {
                 console.warn('Error updating database_log:', upErr);
             }
 
-            // 3. Masukkan transfer resmi (OUT dari rak asal dan IN ke sub-rak target)
+            // 3. Masukkan transfer resmi (OUT dari rak asal dan IN ke rak TEMP transit aktif)
             const now = new Date();
             const tglNormalized = now.toISOString().split('T')[0];
             const tglFormatted = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
@@ -3815,8 +3831,8 @@ export function CekRak2() {
             const transferLogs = [
                 {
                     sku: selectedOutLog.sku,
-                    rak: selectedOutLog.rak || 'TEMP-A',
-                    sub_rak: selectedOutLog.rak || 'TEMP-A',
+                    rak: selectedOutLog.rak || activeTempRak,
+                    sub_rak: selectedOutLog.rak || activeTempRak,
                     jumlah: pulihQty,
                     type: 'OUT',
                     gudang: 'TRANSFER',
@@ -3830,8 +3846,8 @@ export function CekRak2() {
                 },
                 {
                     sku: selectedOutLog.sku,
-                    rak: targetRak,
-                    sub_rak: targetRak,
+                    rak: activeTempRak,
+                    sub_rak: activeTempRak,
                     jumlah: pulihQty,
                     type: 'IN',
                     gudang: 'TRANSFER',
@@ -3847,17 +3863,17 @@ export function CekRak2() {
 
             await DatabaseService.insertLogs(transferLogs, writeMode);
 
-            // 4. Update atau Insert ke stock_items untuk target sub-rak
+            // 4. Update atau Insert ke stock_items untuk rak TEMP transit aktif (akumulasi sub total jika SKU sama)
             const { data: existingDest } = await supabase
                 .from('stock_items')
                 .select('*')
                 .eq('nama_produk', selectedOutLog.sku)
-                .eq('rak', targetRak)
+                .eq('rak', activeTempRak)
                 .limit(1);
 
             let targetItemRow = existingDest?.[0];
             if (!targetItemRow) {
-                const { data: newRow } = await DatabaseService.insertStockItems([{
+                await DatabaseService.insertStockItems([{
                     nama_produk: selectedOutLog.sku,
                     satuan: 'PCS',
                     stok_awal: 0,
@@ -3865,11 +3881,10 @@ export function CekRak2() {
                     keluar: 0,
                     tersedia: pulihQty,
                     packing: selectedOutLog.packing || '',
-                    rak: targetRak,
-                    sub_rak: targetRak,
+                    rak: activeTempRak,
+                    sub_rak: activeTempRak,
                     status: 'Aktif'
                 }], writeMode);
-                targetItemRow = newRow?.[0];
             } else {
                 const newMasuk = (targetItemRow.masuk || 0) + pulihQty;
                 const newTersedia = (targetItemRow.stok_awal || 0) + newMasuk - (targetItemRow.keluar || 0);
@@ -3879,43 +3894,10 @@ export function CekRak2() {
                 }, writeMode);
             }
 
-            // 5. Auto-mark sebagai terkonfirmasi jika bukan rak TEMP
-            if (!targetRak.startsWith('TEMP')) {
-                const storageKey = `verified_rak_${targetRak}`;
-                const prodName = selectedOutLog.sku.trim().toLowerCase();
-                const existingVerified: string[] = JSON.parse(localStorage.getItem(storageKey) || '[]');
-                if (!existingVerified.includes(prodName)) {
-                    existingVerified.push(prodName);
-                    localStorage.setItem(storageKey, JSON.stringify(existingVerified));
-                }
-
-                if (targetItemRow?.id) {
-                    setVerifiedIds(prev => new Set(prev).add(targetItemRow.id));
-                }
-
-                // Tambah log VERIFY ke database_log agar terkonfirmasi secara universal
-                try {
-                    await supabase.from('database_log').insert([{
-                        sku: selectedOutLog.sku,
-                        jumlah: pulihQty,
-                        type: 'MOVE',
-                        gudang: 'VERIFY',
-                        rak: targetRak,
-                        sub_rak: targetRak,
-                        tgl_scan: tglScanFinal,
-                        user_name: actor,
-                        status: 'VERIFIED',
-                        created_at: new Date(now.getTime() + 1500).toISOString()
-                    }]);
-                } catch (vErr) {
-                    console.warn('Verify log insert warning:', vErr);
-                }
-            }
-
-            // 6. Siapkan Data Laporan WhatsApp
+            // 5. Siapkan Data Laporan WhatsApp
             const reportPayload = {
                 sku: selectedOutLog.sku,
-                sub_rak_tujuan: targetRak,
+                sub_rak_tujuan: `${activeTempRak} (Fisik di: ${currentRack})`,
                 qty: pulihQty,
                 tgl_out: selectedOutLog.tgl || selectedOutLog.tgl_scan || '-',
                 gudang: selectedOutLog.gudang || '-',
@@ -3937,13 +3919,13 @@ export function CekRak2() {
             setShowOutTraceModal(false);
             setShowPullModal(false);
 
-            // Refresh tampilan rak aktif
-            fetchItems(targetRak, true);
+            // Refresh tampilan rak aktif & antrian karantina
+            await fetchItems(currentRack, true);
             fetchPendingKarantinaCount();
 
             setToast({
                 isOpen: true,
-                message: `✅ Berhasil memulihkan ${pulihQty} pcs ke Rak ${targetRak}!`,
+                message: `✅ Berhasil memulihkan ${pulihQty} pcs ke ${activeTempRak}! Silakan tarik ke Rak ${currentRack} melalui menu Tarik Barang.`,
                 type: 'success'
             });
 
