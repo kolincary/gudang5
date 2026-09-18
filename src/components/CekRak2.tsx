@@ -106,28 +106,6 @@ export function CekRak2() {
     const [pullBoxCount, setPullBoxCount] = useState<number | ''>('');
     const [isPulling, setIsPulling] = useState(false);
 
-    // Live Barcode Calculation for Tarik Qty Modal (Bagi Rata Barcode)
-    const pullBoxBreakdown = useMemo(() => {
-        const tot = typeof pullQuantity === 'number' && pullQuantity > 0 ? pullQuantity : 0;
-        const cnt = typeof pullBoxCount === 'number' && pullBoxCount > 0 ? pullBoxCount : 0;
-        if (tot <= 0 || cnt <= 0) return { boxes: [], totalBoxes: 0, summary: '' };
-
-        const base = Math.floor(tot / cnt);
-        const rem = tot % cnt;
-        const boxes: { boxIndex: number; totalBoxes: number; qty: number }[] = [];
-
-        for (let i = 0; i < cnt; i++) {
-            const bQty = base + (i < rem ? 1 : 0);
-            boxes.push({ boxIndex: i + 1, totalBoxes: cnt, qty: bQty });
-        }
-
-        let summary = `@ ${base} PCS`;
-        if (rem > 0) {
-            summary = `@ ${base} - ${base + 1} PCS`;
-        }
-
-        return { boxes, totalBoxes: cnt, summary };
-    }, [pullQuantity, pullBoxCount]);
 
     // Wadah Karantina Revisi State
     const [showKarantinaModal, setShowKarantinaModal] = useState(false);
@@ -819,49 +797,19 @@ export function CekRak2() {
         if (isSingle && config.singleItem) {
             const item = config.singleItem;
             const totalQty = Math.max(1, Number(item.totalQty || 1));
-            const splitMode = item.splitMode || 'capacity';
             const formattedDate = formatToDDMMYYYY(item.tgl_scan || item.waktu);
             
+            const totalBoxes = Math.max(1, Number(item.boxCount || 1));
             const boxes: Array<{ boxIndex: number; totalBoxes: number; qty: number; totalQty: number; isRemainder: boolean }> = [];
-            let totalBoxes = 1;
-            let boxCapacity = item.boxQty || 0;
 
-            if (splitMode === 'count' && item.boxCount && item.boxCount > 0) {
-                totalBoxes = item.boxCount;
-                const base = Math.floor(totalQty / totalBoxes);
-                const rem = totalQty % totalBoxes;
-                for (let i = 0; i < totalBoxes; i++) {
-                    const bQty = base + (i < rem ? 1 : 0);
-                    boxes.push({ boxIndex: i + 1, totalBoxes, qty: bQty, totalQty, isRemainder: false });
-                }
-            } else if (splitMode === 'copies' && item.boxCount && item.boxCount > 0) {
-                totalBoxes = item.boxCount;
-                for (let i = 0; i < totalBoxes; i++) {
-                    boxes.push({ boxIndex: i + 1, totalBoxes, qty: totalQty, totalQty, isRemainder: false });
-                }
-            } else {
-                boxCapacity = Math.max(1, Number(item.boxQty || (totalQty >= 48 ? 48 : (totalQty >= 24 ? 24 : totalQty))));
-                const fullBoxes = boxCapacity > 0 ? Math.floor(totalQty / boxCapacity) : 1;
-                const rem = boxCapacity > 0 ? totalQty % boxCapacity : 0;
-                totalBoxes = fullBoxes + (rem > 0 ? 1 : 0);
-                
-                for (let i = 0; i < fullBoxes; i++) {
-                    boxes.push({ boxIndex: i + 1, totalBoxes, qty: boxCapacity, totalQty, isRemainder: false });
-                }
-                if (rem > 0) {
-                    boxes.push({ boxIndex: totalBoxes, totalBoxes, qty: rem, totalQty, isRemainder: true });
-                }
-                if (boxes.length === 0) {
-                    boxes.push({ boxIndex: 1, totalBoxes: 1, qty: totalQty, totalQty, isRemainder: false });
-                }
+            for (let i = 0; i < totalBoxes; i++) {
+                boxes.push({ boxIndex: i + 1, totalBoxes, qty: totalQty, totalQty, isRemainder: false });
             }
 
             const numSheets = Math.ceil(boxes.length / 3);
             initialSummaryBadge = totalBoxes > 1 
-                ? (splitMode === 'capacity' && boxCapacity > 0 
-                    ? `${numSheets} Halaman (${boxes.length} Karton @ ${boxCapacity} PCS - Total ${totalQty} PCS)`
-                    : `${numSheets} Halaman (${boxes.length} Karton - Total ${totalQty} PCS)`)
-                : `1 Halaman (1 Label - ${totalQty} PCS)`;
+                ? `${numSheets} Halaman (${boxes.length} Barcode Label)`
+                : `1 Halaman (1 Barcode Label)`;
 
             for (let p = 0; p < boxes.length; p += 3) {
                 const pageBoxes = boxes.slice(p, p + 3);
@@ -1687,13 +1635,10 @@ export function CekRak2() {
         </div>
         <div class="controls-group-right">
             ${isSingle ? `
-            <button id="btn-quick-split" class="btn-action-split" onclick="openBoxSplitDrawer()" title="Atur Pembagian QTY & Karton">
-                📦 Pecah Dus (Split QTY)
-            </button>
-            <span class="control-label">Quick:</span>
-            <button id="btn-quick-1" class="btn-toggle active" onclick="quickSelectSplit('1')">1 Lembar</button>
-            <button id="btn-quick-2" class="btn-toggle" onclick="quickSelectSplit('2')">2 Dus</button>
-            <button id="btn-quick-3" class="btn-toggle" onclick="quickSelectSplit('3')">3 Dus</button>
+            <span class="control-label">Jumlah Barcode:</span>
+            <button id="btn-quick-1" class="btn-toggle ${(config.singleItem?.boxCount || 1) === 1 ? 'active' : ''}" onclick="quickSelectSplit('1')">1 Barcode</button>
+            <button id="btn-quick-2" class="btn-toggle ${(config.singleItem?.boxCount || 1) === 2 ? 'active' : ''}" onclick="quickSelectSplit('2')">2 Barcode</button>
+            <button id="btn-quick-3" class="btn-toggle ${(config.singleItem?.boxCount || 1) === 3 ? 'active' : ''}" onclick="quickSelectSplit('3')">3 Barcode</button>
             <span class="toolbar-divider"></span>
             ` : ''}
             <span class="control-label">Preset:</span>
@@ -1734,54 +1679,20 @@ export function CekRak2() {
         </div>
 
         <div class="drawer-body">
-            <!-- SECTION: BOX SPLITTING & QTY (SINGLE ITEM MODE ONLY) -->
+            <!-- SECTION: BARCODE COUNT (SINGLE ITEM MODE ONLY) -->
             ${isSingle ? `
             <div id="drawer-box-split-section" class="drawer-section drawer-section-highlight">
-                <div class="drawer-section-title" style="color: #38bdf8;">📦 Pembagian Karton & QTY</div>
+                <div class="drawer-section-title" style="color: #38bdf8;">🖨️ Jumlah Barcode Dicetak</div>
                 
-                <div class="split-mode-selector">
-                    <button id="btn-mode-capacity" class="btn-mode ${effectiveSplitMode === 'capacity' ? 'active' : ''}" onclick="switchSplitMode('capacity')">Isi / Dus</button>
-                    <button id="btn-mode-count" class="btn-mode ${effectiveSplitMode === 'count' ? 'active' : ''}" onclick="switchSplitMode('count')">Bagi Dus</button>
-                    <button id="btn-mode-copies" class="btn-mode ${effectiveSplitMode === 'copies' ? 'active' : ''}" onclick="switchSplitMode('copies')">Salin</button>
-                </div>
-
                 <div class="form-group" style="margin-top: 6px;">
-                    <label>Total Qty di Rak (PCS):</label>
-                    <input id="input-total-qty" type="number" class="custom-number-input" min="1" max="999999" oninput="onBoxSplitParamsChange()" />
-                </div>
-
-                <!-- Mode Capacity Input -->
-                <div id="group-mode-capacity" class="form-group" style="display:${effectiveSplitMode === 'capacity' ? 'flex' : 'none'};">
-                    <label>Isi per Dus / Kapasitas Karton:</label>
-                    <div style="display:flex; gap:6px;">
-                        <input id="input-box-capacity" type="number" class="custom-number-input" min="1" max="99999" oninput="onBoxSplitParamsChange()" />
-                        <button type="button" class="btn-quick-tag" onclick="setQuickCapacity(12)">12</button>
-                        <button type="button" class="btn-quick-tag" onclick="setQuickCapacity(24)">24</button>
-                        <button type="button" class="btn-quick-tag" onclick="setQuickCapacity(48)">48</button>
-                        <button type="button" class="btn-quick-tag" onclick="setQuickCapacity(96)">96</button>
-                    </div>
-                </div>
-
-                <!-- Mode Count Input -->
-                <div id="group-mode-count" class="form-group" style="display:${effectiveSplitMode === 'count' ? 'flex' : 'none'};">
-                    <label>Bagi Rata Berapa Dus / Karton:</label>
-                    <div style="display:flex; gap:6px;">
-                        <input id="input-box-count" type="number" class="custom-number-input" min="1" max="100" oninput="onBoxSplitParamsChange()" />
-                        <button type="button" class="btn-quick-tag" onclick="setQuickBoxCount(2)">2 Dus</button>
-                        <button type="button" class="btn-quick-tag" onclick="setQuickBoxCount(3)">3 Dus</button>
-                        <button type="button" class="btn-quick-tag" onclick="setQuickBoxCount(4)">4 Dus</button>
-                        <button type="button" class="btn-quick-tag" onclick="setQuickBoxCount(6)">6 Dus</button>
-                    </div>
-                </div>
-
-                <!-- Mode Copies Input -->
-                <div id="group-mode-copies" class="form-group" style="display:${effectiveSplitMode === 'copies' ? 'flex' : 'none'};">
-                    <label>Jumlah Lembar Salinan (Copies):</label>
+                    <label>Jumlah Barcode yang Ingin Dicetak:</label>
                     <div style="display:flex; gap:6px;">
                         <input id="input-copies-count" type="number" class="custom-number-input" min="1" max="50" oninput="onBoxSplitParamsChange()" />
                         <button type="button" class="btn-quick-tag" onclick="setQuickCopies(1)">1</button>
                         <button type="button" class="btn-quick-tag" onclick="setQuickCopies(2)">2</button>
                         <button type="button" class="btn-quick-tag" onclick="setQuickCopies(3)">3</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickCopies(4)">4</button>
+                        <button type="button" class="btn-quick-tag" onclick="setQuickCopies(6)">6</button>
                     </div>
                 </div>
 
@@ -1988,16 +1899,10 @@ export function CekRak2() {
 
         // Splitting Parameters for Single Item Mode
         var initialTot = window.singleData ? Math.max(1, Number(window.singleData.totalQty || 1)) : 1;
-        var initialMode = window.singleData && window.singleData.splitMode ? window.singleData.splitMode : (initialTot > 1 ? 'capacity' : 'copies');
         var initialCount = window.singleData && window.singleData.boxCount ? Math.max(1, Number(window.singleData.boxCount)) : 1;
-        var initialCap = window.singleData && window.singleData.boxQty ? Math.max(1, Number(window.singleData.boxQty)) : (initialTot >= 48 ? 48 : (initialTot >= 24 ? 24 : initialTot));
-        if (initialMode === 'capacity' && !window.singleData?.boxCount) {
-            initialCount = Math.max(1, Math.ceil(initialTot / initialCap));
-        }
         window.splitParams = {
-            mode: initialMode,
+            mode: 'copies',
             totalQty: initialTot,
-            boxCapacity: initialCap,
             boxCount: initialCount,
             numCopies: initialCount
         };
@@ -2063,26 +1968,6 @@ export function CekRak2() {
             } catch (e) {}
         };
 
-        window.switchSplitMode = function(mode) {
-            try {
-                window.splitParams.mode = mode;
-                document.querySelectorAll('.split-mode-selector .btn-mode').forEach(function(b) { b.classList.remove('active'); });
-                var activeModeBtn = document.getElementById('btn-mode-' + mode);
-                if (activeModeBtn) activeModeBtn.classList.add('active');
-
-                var grpCap = document.getElementById('group-mode-capacity');
-                var grpCnt = document.getElementById('group-mode-count');
-                var grpCp = document.getElementById('group-mode-copies');
-                if (grpCap) grpCap.style.display = mode === 'capacity' ? 'flex' : 'none';
-                if (grpCnt) grpCnt.style.display = mode === 'count' ? 'flex' : 'none';
-                if (grpCp) grpCp.style.display = mode === 'copies' ? 'flex' : 'none';
-
-                window.recalculateAndRenderBoxes();
-            } catch (e) {
-                console.error('switchSplitMode error:', e);
-            }
-        };
-
         window.onBoxSplitParamsChange = function() {
             try {
                 var getNum = function(id, def) {
@@ -2091,10 +1976,8 @@ export function CekRak2() {
                     return isNaN(val) || val <= 0 ? def : val;
                 };
 
-                window.splitParams.totalQty = getNum('input-total-qty', 1);
-                window.splitParams.boxCapacity = getNum('input-box-capacity', 48);
-                window.splitParams.boxCount = getNum('input-box-count', 2);
                 window.splitParams.numCopies = getNum('input-copies-count', 1);
+                window.splitParams.boxCount = window.splitParams.numCopies;
 
                 window.recalculateAndRenderBoxes();
             } catch (e) {
@@ -2102,25 +1985,12 @@ export function CekRak2() {
             }
         };
 
-        window.setQuickCapacity = function(cap) {
-            window.splitParams.boxCapacity = cap;
-            var el = document.getElementById('input-box-capacity');
-            if (el) el.value = cap;
-            window.switchSplitMode('capacity');
-        };
-
-        window.setQuickBoxCount = function(cnt) {
-            window.splitParams.boxCount = cnt;
-            var el = document.getElementById('input-box-count');
-            if (el) el.value = cnt;
-            window.switchSplitMode('count');
-        };
-
         window.setQuickCopies = function(cp) {
             window.splitParams.numCopies = cp;
+            window.splitParams.boxCount = cp;
             var el = document.getElementById('input-copies-count');
             if (el) el.value = cp;
-            window.switchSplitMode('copies');
+            window.recalculateAndRenderBoxes();
         };
 
         window.quickSelectSplit = function(type) {
@@ -2129,20 +1999,12 @@ export function CekRak2() {
                 var btn = document.getElementById('btn-quick-' + type);
                 if (btn) btn.classList.add('active');
 
-                if (type === '1') {
-                    window.splitParams.numCopies = 1;
-                    window.switchSplitMode('copies');
-                } else if (type === '2') {
-                    window.splitParams.boxCount = 2;
-                    var el = document.getElementById('input-box-count');
-                    if (el) el.value = 2;
-                    window.switchSplitMode('count');
-                } else if (type === '3') {
-                    window.splitParams.boxCount = 3;
-                    var el = document.getElementById('input-box-count');
-                    if (el) el.value = 3;
-                    window.switchSplitMode('count');
-                }
+                var cnt = parseInt(type, 10) || 1;
+                window.splitParams.numCopies = cnt;
+                window.splitParams.boxCount = cnt;
+                var el = document.getElementById('input-copies-count');
+                if (el) el.value = cnt;
+                window.recalculateAndRenderBoxes();
             } catch (e) {}
         };
 
@@ -2152,39 +2014,11 @@ export function CekRak2() {
                 if (!window.singleData) return;
                 var p = window.splitParams;
                 var tot = Math.max(1, p.totalQty);
-                var mode = p.mode;
+                var cnt = Math.max(1, p.numCopies || p.boxCount || 1);
                 var boxes = [];
 
-                if (mode === 'capacity') {
-                    var cap = Math.max(1, p.boxCapacity);
-                    var full = Math.floor(tot / cap);
-                    var rem = tot % cap;
-                    var totalBoxes = full + (rem > 0 ? 1 : 0);
-                    if (totalBoxes === 0) totalBoxes = 1;
-
-                    for (var i = 0; i < full; i++) {
-                        boxes.push({ boxIndex: i + 1, totalBoxes: totalBoxes, qty: cap, totalQty: tot, isRemainder: false });
-                    }
-                    if (rem > 0) {
-                        boxes.push({ boxIndex: totalBoxes, totalBoxes: totalBoxes, qty: rem, totalQty: tot, isRemainder: true });
-                    }
-                    if (boxes.length === 0) {
-                        boxes.push({ boxIndex: 1, totalBoxes: 1, qty: tot, totalQty: tot, isRemainder: false });
-                    }
-                } else if (mode === 'count') {
-                    var cnt = Math.max(1, p.boxCount);
-                    var base = Math.floor(tot / cnt);
-                    var rem = tot % cnt;
-                    for (var i = 0; i < cnt; i++) {
-                        var bQty = base + (i < rem ? 1 : 0);
-                        boxes.push({ boxIndex: i + 1, totalBoxes: cnt, qty: bQty, totalQty: tot, isRemainder: false });
-                    }
-                } else {
-                    // mode === 'copies'
-                    var copies = Math.max(1, p.numCopies);
-                    for (var i = 0; i < copies; i++) {
-                        boxes.push({ boxIndex: i + 1, totalBoxes: copies, qty: tot, totalQty: tot, isCopy: true });
-                    }
+                for (var i = 0; i < cnt; i++) {
+                    boxes.push({ boxIndex: i + 1, totalBoxes: cnt, qty: tot, totalQty: tot, isRemainder: false });
                 }
 
                 // Render into Sheets (3 labels per sheet)
@@ -2228,25 +2062,15 @@ export function CekRak2() {
                 var badge = document.getElementById('page-summary-badge');
                 var numSheets = Math.ceil(boxes.length / 3);
                 if (badge) {
-                    badge.innerText = numSheets + ' Halaman (' + boxes.length + ' Karton - Total ' + tot + ' PCS)';
+                    badge.innerText = numSheets + ' Halaman (' + boxes.length + ' Barcode Label)';
                 }
 
                 // Update Drawer Calculation Summary Preview
                 var sumBox = document.getElementById('split-calc-summary');
                 if (sumBox) {
                     var summaryLines = [];
-                    summaryLines.push('<strong>✨ Hasil Pembagian: ' + boxes.length + ' Label Karton</strong>');
-                    summaryLines.push('📄 Total Halaman Kertas: <strong>' + numSheets + ' Lembar</strong> (3 slot/lembar)');
-                    if (mode === 'capacity') {
-                        var fullCount = Math.floor(tot / p.boxCapacity);
-                        var remCount = tot % p.boxCapacity;
-                        if (fullCount > 0) summaryLines.push('• ' + fullCount + ' Karton Utama (@ ' + p.boxCapacity + ' PCS)');
-                        if (remCount > 0) summaryLines.push('• 1 Karton Eceran/Sisa (@ ' + remCount + ' PCS)');
-                    } else if (mode === 'count') {
-                        summaryLines.push('• Dibagi rata menjadi ' + p.boxCount + ' Karton');
-                    } else {
-                        summaryLines.push('• ' + p.numCopies + ' Salinan Lembar Identitas');
-                    }
+                    summaryLines.push('<strong>✨ Dicetak: ' + boxes.length + ' Barcode Label</strong>');
+                    summaryLines.push('📄 Total Kertas Thermal: <strong>' + numSheets + ' Lembar</strong> (maks 3 barcode / lembar)');
                     sumBox.innerHTML = summaryLines.join('<br/>');
                 }
             } catch (e) {
@@ -2672,7 +2496,7 @@ export function CekRak2() {
         }
     };
 
-    // Print Single Item (Auto-detects Box Splitting based on Total QTY & SKU Master Conversion or Custom Override)
+    // Print Single Item (Directly prints requested Barcode Count without unwanted carton division)
     const handlePrintThermalLabel = (
         item: any,
         overrideMode?: 'capacity' | 'count' | 'copies',
@@ -2685,77 +2509,35 @@ export function CekRak2() {
         const rawQty = Number(item.jumlah ?? item.qty ?? item.tersedia ?? 1);
         const totalQty = isNaN(rawQty) || rawQty <= 0 ? 1 : rawQty;
 
-        let boxQty = 0;
-        let boxCount = 1;
-        let splitMode: 'capacity' | 'count' | 'copies' = overrideMode || 'capacity';
-
-        // Check if item has explicit box count stored in log_update_user, status, localStorage, or property
-        let storedBoxCount: number | undefined;
+        // Directly resolve requested barcode count
+        let barcodeCount = 1;
         if (typeof item.boxCount === 'number' && item.boxCount > 0) {
-            storedBoxCount = item.boxCount;
+            barcodeCount = item.boxCount;
         } else if (typeof item.box_count === 'number' && item.box_count > 0) {
-            storedBoxCount = item.box_count;
+            barcodeCount = item.box_count;
         } else {
             const rawNote = String(item.log_update_user || item.status || item.keterangan || '');
             const match = rawNote.match(/BOX_COUNT:(\d+)/i);
             if (match && match[1]) {
                 const parsed = parseInt(match[1], 10);
                 if (!isNaN(parsed) && parsed > 0) {
-                    storedBoxCount = parsed;
+                    barcodeCount = parsed;
                 }
             }
-            if (!storedBoxCount && typeof window !== 'undefined') {
+            if (barcodeCount === 1 && typeof window !== 'undefined') {
                 const cleanR = (rak || item.sub_rak || item.rak || '').trim().toUpperCase();
                 const cleanS = (sku || item.sku || item.nama_barang || item.nama_produk || '').trim().toLowerCase();
                 const localKey = `box_count_${cleanR}_${cleanS}`;
                 const cached = localStorage.getItem(localKey);
                 if (cached) {
                     const parsed = parseInt(cached, 10);
-                    if (!isNaN(parsed) && parsed > 0) storedBoxCount = parsed;
+                    if (!isNaN(parsed) && parsed > 0) barcodeCount = parsed;
                 }
             }
         }
 
-        if (overrideMode === 'capacity' && overrideVal && overrideVal > 0) {
-            boxQty = overrideVal;
-            boxCount = Math.ceil(totalQty / boxQty);
-            splitMode = 'capacity';
-        } else if (overrideMode === 'count' && overrideVal && overrideVal > 0) {
-            boxCount = overrideVal;
-            boxQty = Math.ceil(totalQty / boxCount);
-            splitMode = 'count';
-        } else if (overrideMode === 'copies') {
-            splitMode = 'copies';
-            boxQty = totalQty;
-            boxCount = overrideVal && overrideVal > 0 ? overrideVal : 1;
-        } else if (storedBoxCount && storedBoxCount > 0) {
-            boxCount = storedBoxCount;
-            boxQty = Math.ceil(totalQty / boxCount);
-            splitMode = 'count';
-        } else {
-            // Auto-detect box packaging size from SKU conversions cache
-            try {
-                const conversions = skuConversionService.getCachedConversions();
-                const cleanSku = (sku || '').trim().toUpperCase();
-                const foundConv = conversions.find(c => 
-                    (c.sku_pcs || '').trim().toUpperCase() === cleanSku || 
-                    (c.sku_konversi || '').trim().toUpperCase() === cleanSku
-                );
-                if (foundConv && foundConv.qty > 0) {
-                    boxQty = foundConv.qty;
-                } else if (totalQty >= 96 && totalQty % 48 === 0) {
-                    boxQty = 48;
-                } else if (totalQty >= 48 && totalQty % 24 === 0) {
-                    boxQty = 24;
-                } else if (totalQty >= 24 && totalQty % 12 === 0) {
-                    boxQty = 12;
-                }
-            } catch (e) {}
-
-            if (boxQty > 0) {
-                boxCount = Math.ceil(totalQty / boxQty);
-                splitMode = 'capacity';
-            }
+        if (overrideVal && overrideVal > 0) {
+            barcodeCount = overrideVal;
         }
 
         const sn1 = generateSnCode(item, 1);
@@ -2765,7 +2547,19 @@ export function CekRak2() {
         renderThermalPrintWindow({
             title: `Print Label QR Thermal - ${sku}`,
             mode: 'single',
-            singleItem: { sku, sn1, sn2, sn3, rak, tgl_scan, waktu, totalQty, boxQty, boxCount, splitMode }
+            singleItem: { 
+                sku, 
+                sn1, 
+                sn2, 
+                sn3, 
+                rak, 
+                tgl_scan, 
+                waktu, 
+                totalQty, 
+                boxQty: totalQty, 
+                boxCount: barcodeCount, 
+                splitMode: 'count' 
+            }
         });
     };
 
@@ -3411,9 +3205,7 @@ export function CekRak2() {
                 if (item) {
                     setPullItem(item);
                     setPullQuantity(item.tersedia);
-                    const defaultCap = detectDefaultPacking(item.nama_produk, item.packing, item.tersedia);
-                    const calculatedCount = defaultCap > 0 && item.tersedia > defaultCap ? Math.ceil(item.tersedia / defaultCap) : 1;
-                    setPullBoxCount(calculatedCount);
+                    setPullBoxCount('');
                     setShowPullQuantityModal(true);
                 }
             }
@@ -6267,6 +6059,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                         <th className="py-3 px-4">Lokasi Rak</th>
                                                         <th className="py-3 px-4">SKU / Nama Produk</th>
                                                         <th className="py-3 px-4 text-right">Qty Fisik</th>
+                                                        <th className="py-3 px-4 text-center">Jml Barcode</th>
                                                         <th className="py-3 px-4">Petugas / PIC</th>
                                                         <th className="py-3 px-4 text-center">Status</th>
                                                         <th className="py-3 px-4 text-center">Aksi</th>
@@ -6297,6 +6090,41 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                             </td>
                                                             <td className="py-3 px-4 text-right font-black text-emerald-600 text-sm whitespace-nowrap">
                                                                 {(Number(log.jumlah) || 0).toLocaleString()} <span className="text-[10px] text-slate-500 font-bold">PCS</span>
+                                                            </td>
+                                                            <td className="py-3 px-4 text-center whitespace-nowrap">
+                                                                {(() => {
+                                                                    let count = 1;
+                                                                    if (typeof log.boxCount === 'number' && log.boxCount > 0) count = log.boxCount;
+                                                                    else if (typeof log.box_count === 'number' && log.box_count > 0) count = log.box_count;
+                                                                    else {
+                                                                        const raw = String(log.log_update_user || log.status || log.keterangan || '');
+                                                                        const m = raw.match(/BOX_COUNT:(\d+)/i);
+                                                                        if (m && m[1]) {
+                                                                            const parsed = parseInt(m[1], 10);
+                                                                            if (!isNaN(parsed) && parsed > 0) count = parsed;
+                                                                        } else if (typeof window !== 'undefined') {
+                                                                            const cleanR = (log.sub_rak || log.rak || '').trim().toUpperCase();
+                                                                            const cleanS = (log.sku || log.nama_barang || log.nama_produk || '').trim().toLowerCase();
+                                                                            const cached = localStorage.getItem(`box_count_${cleanR}_${cleanS}`);
+                                                                            if (cached) {
+                                                                                const parsed = parseInt(cached, 10);
+                                                                                if (!isNaN(parsed) && parsed > 0) count = parsed;
+                                                                            }
+                                                                        }
+                                                                    }
+
+                                                                    return (
+                                                                        <span className={cn(
+                                                                            "px-2.5 py-1 rounded-xl text-[11px] font-black uppercase inline-flex items-center gap-1.5 shadow-sm transition-all",
+                                                                            count > 1 
+                                                                                ? "bg-indigo-50 text-indigo-700 border border-indigo-200" 
+                                                                                : "bg-slate-100 text-slate-700 border border-slate-200"
+                                                                        )}>
+                                                                            <QrCode className="w-3.5 h-3.5" />
+                                                                            <span>{count} Barcode</span>
+                                                                        </span>
+                                                                    );
+                                                                })()}
                                                             </td>
                                                             <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
                                                                 {log.user_name || log.user || '-'}
@@ -6584,11 +6412,13 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         <span>2. Jumlah Barcode</span>
                                     </label>
                                     <span className="text-[11px] font-bold text-slate-500">
-                                        {typeof pullQuantity === 'number' && pullQuantity > 0 && typeof pullBoxCount === 'number' && pullBoxCount > 0 ? (
-                                            <span className="text-indigo-600 font-bold">
-                                                ~{Math.round(pullQuantity / pullBoxCount)} PCS / label
+                                        {typeof pullBoxCount === 'number' && pullBoxCount > 0 ? (
+                                            <span className="text-indigo-600 font-black">
+                                                {pullBoxCount} Barcode Label
                                             </span>
-                                        ) : null}
+                                        ) : (
+                                            <span className="text-slate-400">Default 1 Barcode</span>
+                                        )}
                                     </span>
                                 </div>
                                 <input
@@ -6606,7 +6436,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         setPullBoxCount(isNaN(num) || num <= 0 ? '' : num);
                                     }}
                                     className="w-full px-4 h-11 rounded-xl border-2 border-slate-200 focus:border-indigo-600 focus:ring-4 focus:ring-indigo-100 font-black text-gray-900 text-base bg-white"
-                                    placeholder="Ketik jumlah barcode (Opsional)..."
+                                    placeholder="Default: 1 Barcode (Ketik jumlah jika ingin lebih)..."
                                 />
                                 {/* Quick Presets for Barcode Count */}
                                 <div className="flex items-center gap-1.5">
@@ -6626,16 +6456,6 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         </button>
                                     ))}
                                 </div>
-
-                                {/* Summary preview text */}
-                                {typeof pullQuantity === 'number' && pullQuantity > 0 && typeof pullBoxCount === 'number' && pullBoxCount > 0 && pullBoxBreakdown.summary && (
-                                    <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 text-xs text-slate-700 flex items-center justify-between">
-                                        <span className="font-semibold text-slate-600">Hasil Pembagian:</span>
-                                        <span className="font-black text-indigo-700">
-                                            {pullBoxCount} Barcode ({pullBoxBreakdown.summary})
-                                        </span>
-                                    </div>
-                                )}
                             </div>
                         </div>
 
