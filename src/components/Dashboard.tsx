@@ -309,14 +309,10 @@ export function Dashboard() {
         }
       }
 
-      // 2. Jalankan warmup di background (jangan ditunggu/await if we want instant UI)
-      // TAPI fetch data utama tetap harus dijalankan
-      Promise.all([
-        warmupConnection(),
-        queryOptimizer.warmupCache()
-      ]).catch(err => console.error('Background init error:', err));
+      // 2. Jalankan warmup connection saja di background
+      warmupConnection().catch(err => console.error('Background init error:', err));
 
-      // 3. Selalu fetch data terbaru di background
+      // 3. Fetch data produk jika belum ada di cache
       await loadDashboardData(cachedProducts ? false : true);
     };
     initDashboard();
@@ -342,19 +338,10 @@ export function Dashboard() {
         .on('postgres_changes',
           { event: '*', schema: 'public', table: 'stock_items' },
           async (payload) => {
-            console.log('🔄 INSTANT update: stock_items', payload);
             const currentProduct = selectedProductRef.current;
-
-            // Clear ALL cache instantly
-            queryOptimizer.invalidateProductCache(currentProduct);
-            setLogCache(new Map());
-            localStorage.removeItem(CACHE_PRODUCTS_KEY);
-            localStorage.removeItem(CACHE_STOCK_KEY);
-
-            // Immediate reload
-            await loadDashboardData(true);
-
             if (currentProduct) {
+              queryOptimizer.invalidateProductCache(currentProduct);
+              setLogCache(new Map());
               await updateProductStocks(currentProduct, true);
             }
           }
@@ -362,19 +349,12 @@ export function Dashboard() {
         .on('postgres_changes',
           { event: '*', schema: 'public', table: 'database_log' },
           async (payload) => {
-            console.log('🔄 INSTANT update: database_log', payload);
             const currentProduct = selectedProductRef.current;
-
-            // Clear ALL cache instantly
-            setLogCache(new Map());
-            localStorage.removeItem(CACHE_LOGS_KEY);
-
             if (currentProduct) {
+              setLogCache(new Map());
               queryOptimizer.invalidateStockCalculation(currentProduct, '');
               await updateProductStocks(currentProduct, true);
             }
-
-            await loadDashboardData(true);
           }
         )
         .subscribe((status) => {
@@ -393,10 +373,8 @@ export function Dashboard() {
 
     const visibilityHandler = async () => {
       if (!document.hidden && subscriptionActive) {
-        console.log('Tab visible - INSTANT refresh');
-        await loadDashboardData(true);
         if (selectedProductRef.current) {
-          await updateProductStocks(selectedProductRef.current, true);
+          await updateProductStocks(selectedProductRef.current, false);
         }
       }
     };

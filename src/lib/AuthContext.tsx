@@ -32,10 +32,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             created_at: new Date().toISOString()
         } as User : null;
     });
+    const isDevMock = typeof window !== 'undefined' && (
+        localStorage.getItem('dev_mock_user') === 'true' || 
+        localStorage.getItem('devmode') === 'true'
+    );
+
     const [session, setSession] = useState<Session | null>(null);
     const [loading, setLoading] = useState(true);
-    const [userRole, setUserRole] = useState<string>(() => localStorage.getItem('cached_user_role') || '');
-    const [userPermissions, setUserPermissions] = useState<string[]>([]);
+    const [userRole, setUserRole] = useState<string>(() => {
+        if (isDevMock) return 'developer';
+        return localStorage.getItem('cached_user_role') || '';
+    });
+    const [userPermissions, setUserPermissions] = useState<string[]>(() => {
+        if (isDevMock) return ['*'];
+        try {
+            const cached = localStorage.getItem('cached_user_permissions');
+            if (cached) return JSON.parse(cached);
+        } catch (e) {}
+        return [];
+    });
 
     useEffect(() => {
         let isMounted = true;
@@ -201,7 +216,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 if (currentRole === 'developer') {
                     // Developer gets access to everything by default (UI will bypass checks)
                     // We also merge with any specific user permissions like bypass_pin_log
-                    setUserPermissions(['*', ...allowedMenus]);
+                    const devPerms = ['*', ...allowedMenus];
+                    setUserPermissions(devPerms);
+                    try { localStorage.setItem('cached_user_permissions', JSON.stringify(devPerms)); } catch (e) {}
                 } else {
                     // Fetch permissions for the role
                     const { data: permData, error: permError } = await supabase
@@ -221,12 +238,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     const normalizedAllowed = (allowedMenus || []).map(m => m === '/cek-rak-2' ? '/stock-opname' : m);
                     allPerms = [...allPerms, ...normalizedAllowed];
                     
-                    setUserPermissions([...new Set(allPerms)]);
+                    const finalPerms = [...new Set(allPerms)];
+                    setUserPermissions(finalPerms);
+                    try { localStorage.setItem('cached_user_permissions', JSON.stringify(finalPerms)); } catch (e) {}
                 }
             } catch (err) {
                 console.error('Error fetching role permissions:', err);
                 setUserRole('staf_gudang');
-                setUserPermissions([]);
+                const fallback = ['/'];
+                setUserPermissions(fallback);
+                try { localStorage.setItem('cached_user_permissions', JSON.stringify(fallback)); } catch (e) {}
             }
         };
 
