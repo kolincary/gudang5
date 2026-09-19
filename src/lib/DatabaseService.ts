@@ -1573,7 +1573,12 @@ export const DatabaseService = {
           data.forEach(item => {
             const key = `${(item.sku || '').trim().toLowerCase()}:::${(item.rak || '').trim().toUpperCase()}`;
             if (!itemMap.has(key)) {
-              itemMap.set(key, item);
+              const bCount = Number(item.box_count || item.boxCount || 1);
+              itemMap.set(key, {
+                ...item,
+                boxCount: bCount,
+                box_count: bCount
+              });
             }
           });
         }
@@ -1591,7 +1596,13 @@ export const DatabaseService = {
         const item = d.data();
         const key = `${(item.sku || '').trim().toLowerCase()}:::${(item.rak || '').trim().toUpperCase()}`;
         if (!itemMap.has(key)) {
-          itemMap.set(key, { ...item, id: d.id });
+          const bCount = Number(item.box_count || item.boxCount || 1);
+          itemMap.set(key, {
+            ...item,
+            id: d.id,
+            boxCount: bCount,
+            box_count: bCount
+          });
         }
       });
     } catch (fbErr) {
@@ -1608,7 +1619,12 @@ export const DatabaseService = {
             parsed.forEach(item => {
               const key = `${(item.sku || '').trim().toLowerCase()}:::${(item.rak || '').trim().toUpperCase()}`;
               if (!itemMap.has(key)) {
-                itemMap.set(key, item);
+                const bCount = Number(item.box_count || item.boxCount || 1);
+                itemMap.set(key, {
+                  ...item,
+                  boxCount: bCount,
+                  box_count: bCount
+                });
               }
             });
           }

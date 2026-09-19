@@ -527,17 +527,36 @@ export function CekRak2() {
                 } catch (lsPErr) {}
             }
 
-            // 1. Fetch from Supabase database_log with fast indexed query
+            // 1. Fetch from Supabase database_log with fast indexed query (include TRANSFER to catch BOX_COUNT)
             const { data, error } = await supabase
                 .from('database_log')
                 .select('id, sku, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah, log_update_user')
-                .in('gudang', ['VERIFY', 'UNVERIFY'])
+                .in('gudang', ['VERIFY', 'UNVERIFY', 'TRANSFER'])
                 .order('created_at', { ascending: false })
-                .limit(2000);
+                .limit(3000);
 
             if (error) {
                 console.warn('Error fetching verify logs from DB:', error);
             }
+
+            // Build map of custom barcode box count from all logs
+            const boxCountFromLogs = new Map<string, number>();
+            (data || []).forEach((log: any) => {
+                const sku = (log.sku || log.nama_barang || log.nama_produk || '').trim().toLowerCase();
+                const rak = (log.sub_rak || log.rak || '').trim().toUpperCase();
+                if (!sku || !rak) return;
+                const pairKey = `${sku}:::${rak}`;
+                if (!boxCountFromLogs.has(pairKey)) {
+                    const rawNote = String(log.log_update_user || log.status || log.keterangan || '');
+                    const m = rawNote.match(/BOX_COUNT:(\d+)/i);
+                    if (m && m[1]) {
+                        const parsed = parseInt(m[1], 10);
+                        if (!isNaN(parsed) && parsed > 0) {
+                            boxCountFromLogs.set(pairKey, parsed);
+                        }
+                    }
+                }
+            });
 
             const seenMap = new Map<string, any>();
             const excludedKeys = new Set<string>();
@@ -559,12 +578,23 @@ export function CekRak2() {
                 if (gudangUpper === 'UNVERIFY' || typeUpper === 'UNVERIFY') {
                     excludedKeys.add(pairKey);
                 } else if (gudangUpper === 'VERIFY' || typeUpper === 'VERIFY' || log.status === 'VERIFIED') {
+                    let resolvedBoxCount = boxCountFromLogs.get(pairKey) || 1;
+                    if (resolvedBoxCount === 1 && typeof window !== 'undefined') {
+                        const cached = localStorage.getItem(`box_count_${rak}_${sku}`);
+                        if (cached) {
+                            const parsed = parseInt(cached, 10);
+                            if (!isNaN(parsed) && parsed > 0) resolvedBoxCount = parsed;
+                        }
+                    }
+
                     seenMap.set(pairKey, {
                         ...log,
                         sku: log.sku || log.nama_barang || log.nama_produk,
                         rak: rak,
                         sub_rak: rak,
-                        log_update_user: log.log_update_user || undefined
+                        boxCount: resolvedBoxCount,
+                        box_count: resolvedBoxCount,
+                        log_update_user: log.log_update_user || (resolvedBoxCount > 1 ? `BOX_COUNT:${resolvedBoxCount}` : undefined)
                     });
                 }
             });
@@ -586,6 +616,13 @@ export function CekRak2() {
                                         if (!cleanP) return;
                                         const pairKey = `${cleanP}:::${rak}`;
                                         if (!seenMap.has(pairKey) && !excludedKeys.has(pairKey) && !printedPairs.has(pairKey)) {
+                                            let resolvedBoxCount = boxCountFromLogs.get(pairKey) || 1;
+                                            const cached = localStorage.getItem(`box_count_${rak}_${cleanP}`);
+                                            if (cached) {
+                                                const parsed = parseInt(cached, 10);
+                                                if (!isNaN(parsed) && parsed > 0) resolvedBoxCount = parsed;
+                                            }
+
                                             seenMap.set(pairKey, {
                                                 id: `local-${rak}-${cleanP}`,
                                                 sku: pName.toUpperCase(),
@@ -595,6 +632,8 @@ export function CekRak2() {
                                                 sub_rak: rak,
                                                 gudang: 'VERIFY',
                                                 type: 'MOVE',
+                                                boxCount: resolvedBoxCount,
+                                                box_count: resolvedBoxCount,
                                                 user_name: userEmail?.split('@')[0] || userName || 'User',
                                                 tgl: new Date().toISOString().split('T')[0],
                                                 waktu: new Date().toLocaleTimeString('id-ID'),
@@ -618,6 +657,42 @@ export function CekRak2() {
             isFetchingFinishedRef.current = false;
             setIsLoadingFinished(false);
         }
+    };
+
+    // Quick barcode count updater for Data Selesai Diproses
+    const handleUpdateFinishedBoxCount = (log: any, deltaOrVal: number | string) => {
+        const sku = (log.sku || log.nama_barang || log.nama_produk || '').trim();
+        const rak = (log.sub_rak || log.rak || '').trim().toUpperCase();
+        if (!sku || !rak) return;
+        const cleanSku = sku.toLowerCase();
+
+        let newCount = 1;
+        if (typeof deltaOrVal === 'string') {
+            const parsed = parseInt(deltaOrVal, 10);
+            newCount = isNaN(parsed) || parsed < 1 ? 1 : Math.min(50, parsed);
+        } else if (typeof deltaOrVal === 'number' && deltaOrVal > 0) {
+            newCount = Math.min(50, deltaOrVal);
+        }
+
+        // Save to localStorage immediately
+        if (typeof window !== 'undefined') {
+            localStorage.setItem(`box_count_${rak}_${cleanSku}`, String(newCount));
+        }
+
+        // Update finishedLogs state
+        setFinishedLogs(prev => prev.map(item => {
+            const itemSku = (item.sku || item.nama_barang || item.nama_produk || '').trim().toLowerCase();
+            const itemRak = (item.sub_rak || item.rak || '').trim().toUpperCase();
+            if (itemSku === cleanSku && itemRak === rak) {
+                return {
+                    ...item,
+                    boxCount: newCount,
+                    box_count: newCount,
+                    log_update_user: newCount > 1 ? `BOX_COUNT:${newCount}` : undefined
+                };
+            }
+            return item;
+        }));
     };
 
     const fetchPrintHistoryData = async () => {
@@ -1716,9 +1791,12 @@ export function CekRak2() {
         <div class="controls-group-right">
             ${isSingle ? `
             <span class="control-label">Jumlah Barcode:</span>
-            <button id="btn-quick-1" class="btn-toggle ${(config.singleItem?.boxCount || 1) === 1 ? 'active' : ''}" onclick="quickSelectSplit('1')">1 Barcode</button>
-            <button id="btn-quick-2" class="btn-toggle ${(config.singleItem?.boxCount || 1) === 2 ? 'active' : ''}" onclick="quickSelectSplit('2')">2 Barcode</button>
-            <button id="btn-quick-3" class="btn-toggle ${(config.singleItem?.boxCount || 1) === 3 ? 'active' : ''}" onclick="quickSelectSplit('3')">3 Barcode</button>
+            <button id="btn-quick-1" class="btn-toggle btn-quick-split ${(config.singleItem?.boxCount || 1) === 1 ? 'active' : ''}" onclick="quickSelectSplit('1')">1</button>
+            <button id="btn-quick-2" class="btn-toggle btn-quick-split ${(config.singleItem?.boxCount || 1) === 2 ? 'active' : ''}" onclick="quickSelectSplit('2')">2</button>
+            <button id="btn-quick-3" class="btn-toggle btn-quick-split ${(config.singleItem?.boxCount || 1) === 3 ? 'active' : ''}" onclick="quickSelectSplit('3')">3</button>
+            <button id="btn-quick-4" class="btn-toggle btn-quick-split ${(config.singleItem?.boxCount || 1) === 4 ? 'active' : ''}" onclick="quickSelectSplit('4')">4</button>
+            <button id="btn-quick-5" class="btn-toggle btn-quick-split ${(config.singleItem?.boxCount || 1) === 5 ? 'active' : ''}" onclick="quickSelectSplit('5')">5</button>
+            <button id="btn-quick-6" class="btn-toggle btn-quick-split ${(config.singleItem?.boxCount || 1) === 6 ? 'active' : ''}" onclick="quickSelectSplit('6')">6</button>
             <span class="toolbar-divider"></span>
             ` : ''}
             <span class="control-label">Preset:</span>
@@ -2075,7 +2153,7 @@ export function CekRak2() {
 
         window.quickSelectSplit = function(type) {
             try {
-                document.querySelectorAll('#btn-quick-1, #btn-quick-2, #btn-quick-3').forEach(function(b) { b.classList.remove('active'); });
+                document.querySelectorAll('.btn-quick-split').forEach(function(b) { b.classList.remove('active'); });
                 var btn = document.getElementById('btn-quick-' + type);
                 if (btn) btn.classList.add('active');
 
@@ -2588,10 +2666,14 @@ export function CekRak2() {
         const waktu = item.waktu || '';
         const rawQty = Number(item.jumlah ?? item.qty ?? item.tersedia ?? 1);
         const totalQty = isNaN(rawQty) || rawQty <= 0 ? 1 : rawQty;
+        const cleanR = (rak || item.sub_rak || item.rak || '').trim().toUpperCase();
+        const cleanS = (sku || item.sku || item.nama_barang || item.nama_produk || '').trim().toLowerCase();
 
         // Directly resolve requested barcode count
         let barcodeCount = 1;
-        if (typeof item.boxCount === 'number' && item.boxCount > 0) {
+        if (typeof overrideVal === 'number' && overrideVal > 0) {
+            barcodeCount = overrideVal;
+        } else if (typeof item.boxCount === 'number' && item.boxCount > 0) {
             barcodeCount = item.boxCount;
         } else if (typeof item.box_count === 'number' && item.box_count > 0) {
             barcodeCount = item.box_count;
@@ -2605,8 +2687,6 @@ export function CekRak2() {
                 }
             }
             if (barcodeCount === 1 && typeof window !== 'undefined') {
-                const cleanR = (rak || item.sub_rak || item.rak || '').trim().toUpperCase();
-                const cleanS = (sku || item.sku || item.nama_barang || item.nama_produk || '').trim().toLowerCase();
                 const localKey = `box_count_${cleanR}_${cleanS}`;
                 const cached = localStorage.getItem(localKey);
                 if (cached) {
@@ -2614,10 +2694,6 @@ export function CekRak2() {
                     if (!isNaN(parsed) && parsed > 0) barcodeCount = parsed;
                 }
             }
-        }
-
-        if (overrideVal && overrideVal > 0) {
-            barcodeCount = overrideVal;
         }
 
         const sn1 = generateSnCode(item, 1);
@@ -2653,6 +2729,7 @@ export function CekRak2() {
             packing: item.packing || '',
             jumlah: totalQty,
             boxCount: barcodeCount,
+            box_count: barcodeCount,
             user_name: item.user_name || item.user || user?.email || userName || 'User',
             tgl: tgl_scan || now.toISOString().split('T')[0],
             waktu: waktu || now.toLocaleTimeString('id-ID'),
@@ -2719,9 +2796,19 @@ export function CekRak2() {
         const historyRecords = targetList.map((log, idx) => {
             const sku = log.sku || log.nama_barang || log.nama_produk || '-';
             const rak = log.sub_rak || log.rak || '-';
+            const cleanR = rak.trim().toUpperCase();
+            const cleanS = sku.trim().toLowerCase();
             const tgl_scan = log.tgl_scan || log.tgl || '';
             const waktu = log.waktu || '';
             const rawQty = Number(log.jumlah ?? log.qty ?? 0);
+            let bCount = Number(log.boxCount || log.box_count || 1);
+            if (bCount <= 1 && typeof window !== 'undefined') {
+                const cached = localStorage.getItem(`box_count_${cleanR}_${cleanS}`);
+                if (cached) {
+                    const parsed = parseInt(cached, 10);
+                    if (!isNaN(parsed) && parsed > 0) bCount = parsed;
+                }
+            }
             return {
                 sku,
                 rak,
@@ -2730,7 +2817,8 @@ export function CekRak2() {
                 nama_produk: sku,
                 packing: log.packing || '',
                 jumlah: rawQty > 0 ? rawQty : 1,
-                boxCount: log.boxCount || 1,
+                boxCount: bCount,
+                box_count: bCount,
                 user_name: log.user_name || user?.email || userName || 'User',
                 tgl: tgl_scan || now.toISOString().split('T')[0],
                 waktu: waktu || now.toLocaleTimeString('id-ID'),
@@ -4122,6 +4210,9 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 const tglHariIni = now.toISOString().split('T')[0];
                 const waktuSekarang = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+                const boxCountLocal = typeof window !== 'undefined' ? localStorage.getItem(`box_count_${cleanRak.toUpperCase()}_${prodName.toLowerCase()}`) : null;
+                const countNum = item.boxCount || item.box_count || (boxCountLocal ? parseInt(boxCountLocal, 10) : undefined);
+
                 await DatabaseService.insertLogs([{
                     tgl: tglHariIni,
                     waktu: waktuSekarang,
@@ -4132,7 +4223,8 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                     rak: cleanRak.toUpperCase(),
                     tgl_scan: item.tgl_scan || tglHariIni,
                     user_name: user?.email || userName || 'User',
-                    sub_rak: item.sub_rak || cleanRak.toUpperCase()
+                    sub_rak: item.sub_rak || cleanRak.toUpperCase(),
+                    log_update_user: countNum ? `BOX_COUNT:${countNum}` : undefined
                 }], writeMode);
             }
 
@@ -4279,18 +4371,24 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                     console.warn('Could not cleanup UNVERIFY logs:', delErr);
                 }
 
-                const logsToInsert = items.map(i => ({
-                    tgl: tglHariIni,
-                    waktu: waktuSekarang,
-                    sku: i.nama_produk,
-                    jumlah: i.tersedia || 0,
-                    type: 'MOVE',
-                    gudang: 'VERIFY',
-                    rak: cleanRak.toUpperCase(),
-                    tgl_scan: i.tgl_scan || tglHariIni,
-                    user_name: user?.email || userName || 'User',
-                    sub_rak: i.sub_rak || cleanRak.toUpperCase()
-                }));
+                const logsToInsert = items.map(i => {
+                    const prodName = (i.nama_produk || i.sku || '').trim().toLowerCase();
+                    const boxCountLocal = typeof window !== 'undefined' ? localStorage.getItem(`box_count_${cleanRak.toUpperCase()}_${prodName}`) : null;
+                    const countNum = i.boxCount || i.box_count || (boxCountLocal ? parseInt(boxCountLocal, 10) : undefined);
+                    return {
+                        tgl: tglHariIni,
+                        waktu: waktuSekarang,
+                        sku: i.nama_produk,
+                        jumlah: i.tersedia || 0,
+                        type: 'MOVE',
+                        gudang: 'VERIFY',
+                        rak: cleanRak.toUpperCase(),
+                        tgl_scan: i.tgl_scan || tglHariIni,
+                        user_name: user?.email || userName || 'User',
+                        sub_rak: i.sub_rak || cleanRak.toUpperCase(),
+                        log_update_user: countNum ? `BOX_COUNT:${countNum}` : undefined
+                    };
+                });
 
                 await DatabaseService.insertLogs(logsToInsert, writeMode);
                 await fetchAllFinishedItems();
@@ -6440,36 +6538,34 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                             </td>
                                                             <td className="py-3 px-4 text-center whitespace-nowrap">
                                                                 {(() => {
-                                                                    let count = 1;
-                                                                    if (typeof log.boxCount === 'number' && log.boxCount > 0) count = log.boxCount;
-                                                                    else if (typeof log.box_count === 'number' && log.box_count > 0) count = log.box_count;
-                                                                    else {
-                                                                        const raw = String(log.log_update_user || log.status || log.keterangan || '');
-                                                                        const m = raw.match(/BOX_COUNT:(\d+)/i);
-                                                                        if (m && m[1]) {
-                                                                            const parsed = parseInt(m[1], 10);
-                                                                            if (!isNaN(parsed) && parsed > 0) count = parsed;
-                                                                        } else if (typeof window !== 'undefined') {
-                                                                            const cleanR = (log.sub_rak || log.rak || '').trim().toUpperCase();
-                                                                            const cleanS = (log.sku || log.nama_barang || log.nama_produk || '').trim().toLowerCase();
-                                                                            const cached = localStorage.getItem(`box_count_${cleanR}_${cleanS}`);
-                                                                            if (cached) {
-                                                                                const parsed = parseInt(cached, 10);
-                                                                                if (!isNaN(parsed) && parsed > 0) count = parsed;
-                                                                            }
-                                                                        }
-                                                                    }
-
+                                                                    const count = Number(log.boxCount || log.box_count || 1);
                                                                     return (
-                                                                        <span className={cn(
-                                                                            "px-2.5 py-1 rounded-xl text-[11px] font-black uppercase inline-flex items-center gap-1.5 shadow-sm transition-all",
-                                                                            count > 1 
-                                                                                ? "bg-indigo-50 text-indigo-700 border border-indigo-200" 
-                                                                                : "bg-slate-100 text-slate-700 border border-slate-200"
-                                                                        )}>
-                                                                            <QrCode className="w-3.5 h-3.5" />
-                                                                            <span>{count} Barcode</span>
-                                                                        </span>
+                                                                        <div className="inline-flex items-center gap-1.5 bg-slate-50 p-1 rounded-xl border border-slate-200 shadow-xs">
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleUpdateFinishedBoxCount(log, Math.max(1, count - 1))}
+                                                                                disabled={count <= 1}
+                                                                                className="w-6 h-6 rounded-lg bg-white hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-white text-slate-700 font-black text-xs flex items-center justify-center border border-slate-200 transition-all cursor-pointer"
+                                                                                title="Kurangi 1 Barcode"
+                                                                            >
+                                                                                -
+                                                                            </button>
+                                                                            <div className="flex items-center gap-1 px-1.5">
+                                                                                <QrCode className={cn("w-3.5 h-3.5", count > 1 ? "text-indigo-600" : "text-slate-500")} />
+                                                                                <span className={cn("font-black text-xs min-w-[16px] text-center", count > 1 ? "text-indigo-700" : "text-slate-700")}>
+                                                                                    {count}
+                                                                                </span>
+                                                                                <span className="text-[10px] font-bold text-slate-400">Barcode</span>
+                                                                            </div>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleUpdateFinishedBoxCount(log, count + 1)}
+                                                                                className="w-6 h-6 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-black text-xs flex items-center justify-center border border-indigo-200 transition-all cursor-pointer"
+                                                                                title="Tambah 1 Barcode"
+                                                                            >
+                                                                                +
+                                                                            </button>
+                                                                        </div>
                                                                     );
                                                                 })()}
                                                             </td>
