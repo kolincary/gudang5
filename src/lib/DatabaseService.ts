@@ -1569,24 +1569,53 @@ export const DatabaseService = {
   async fetchPrintHistory(mode: DatabaseReadMode = 'supabase') {
     const itemMap = new Map<string, any>();
 
-    // 1. Supabase fetch from 'opname_print_history'
+    // 1. Supabase fetch from 'opname_print_history' + cross-reference active 'stock_items' for true physical consolidation
     if (mode === 'supabase') {
       try {
-        const { data, error } = await supabase
-          .from('opname_print_history')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(1000);
+        const [histRes, stockRes] = await Promise.all([
+          supabase
+            .from('opname_print_history')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(1000),
+          supabase
+            .from('stock_items')
+            .select('nama_produk, rak, sub_rak, tersedia, packing, satuan')
+            .eq('status', 'Aktif')
+        ]);
 
-        if (!error && data && data.length > 0) {
-          data.forEach(item => {
+        const stockMap = new Map<string, any>();
+        (stockRes.data || []).forEach(stk => {
+          const s = (stk.nama_produk || '').trim().toLowerCase();
+          const r = (stk.sub_rak || stk.rak || '').trim().toUpperCase();
+          if (s && r && stk.tersedia > 0) {
+            stockMap.set(`${s}:::${r}`, stk);
+          }
+        });
+
+        if (!histRes.error && histRes.data && histRes.data.length > 0) {
+          histRes.data.forEach(item => {
             const key = `${(item.sku || '').trim().toLowerCase()}:::${(item.rak || '').trim().toUpperCase()}`;
             if (!itemMap.has(key)) {
-              const bCount = Number(item.box_count || item.boxCount || 1);
+              const stockItem = stockMap.get(key);
+              const realStockQty = stockItem?.tersedia !== undefined ? stockItem.tersedia : 0;
+              const finalJumlah = realStockQty > 0 ? Math.max(Number(item.jumlah || 0), realStockQty) : Number(item.jumlah || 0);
+              
+              let bCount = Number(item.box_count || item.boxCount || 1);
+              if (realStockQty > 0 && finalJumlah > 0) {
+                let calcBoxes = 1;
+                if (finalJumlah >= 48 && finalJumlah % 48 === 0) calcBoxes = finalJumlah / 48;
+                else if (finalJumlah >= 24 && finalJumlah % 24 === 0) calcBoxes = finalJumlah / 24;
+                else calcBoxes = Math.max(1, Math.ceil(finalJumlah / 48));
+                bCount = Math.max(bCount, calcBoxes);
+              }
+
               itemMap.set(key, {
                 ...item,
+                jumlah: finalJumlah,
                 boxCount: bCount,
-                box_count: bCount
+                box_count: bCount,
+                packing: item.packing || stockItem?.packing || ''
               });
             }
           });
@@ -1641,7 +1670,14 @@ export const DatabaseService = {
       } catch (lsErr) {}
     }
 
-    return Array.from(itemMap.values());
+    const resultList = Array.from(itemMap.values());
+    if (typeof window !== 'undefined' && resultList.length > 0) {
+      try {
+        localStorage.setItem('opname_print_history_items', JSON.stringify(resultList));
+      } catch (e) {}
+    }
+
+    return resultList;
   },
 
   async deletePrintHistory(itemOrId: any, mode: DatabaseWriteMode = 'both') {
