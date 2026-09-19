@@ -91,10 +91,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     clearTimeout(loadTimeout);
                     setLoading(false);
                 } else if (event === 'SIGNED_OUT') {
+                    clearTimeout(loadTimeout);
                     setSession(null);
                     setUser(null);
                     setLoading(false);
                 } else if (event === 'INITIAL_SESSION' && !hasAuthParamsInUrl) {
+                    clearTimeout(loadTimeout);
                     setLoading(false);
                 }
             }
