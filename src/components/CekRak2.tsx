@@ -7,7 +7,7 @@ import {
     QrCode, Camera, Menu, X, ChevronRight, ChevronDown, ArrowRightLeft, Loader, 
     MoveRight, Lock, MapPin, LayoutGrid, List, Sparkles, Layers, History,
     Box, ExternalLink, HelpCircle, Eye, Check, Copy, Table, Grid3X3, ShieldCheck, MessageSquare, Printer,
-    Compass, ArrowUpRight
+    Compass, ArrowUpRight, Trash2
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Toast } from './ui/Toast';
@@ -2769,12 +2769,12 @@ export function CekRak2() {
         });
     };
 
-    // Revert an item from Print History back to active "Data Selesai Diproses" queue (Admin/Dev only)
+    // Revert an item from Print History back to active "Data Selesai Diproses" queue (Developer only)
     const handleRevertPrintHistory = async (historyItem: any) => {
-        if (!isAdminOrDev) {
+        if (!isDeveloper) {
             setToast({
                 isOpen: true,
-                message: '❌ Hanya Admin/Developer yang dapat mengembalikan data dari History.',
+                message: '❌ Hanya Developer yang dapat mengembalikan data dari History.',
                 type: 'error'
             });
             return;
@@ -2806,6 +2806,81 @@ export function CekRak2() {
         } catch (err: any) {
             console.error('Error reverting print history:', err);
             setToast({ isOpen: true, message: 'Gagal mengembalikan data history', type: 'error' });
+        }
+    };
+
+    // Permanently Delete an item from Print History (Developer only)
+    const handleDeletePrintHistory = async (historyItem: any) => {
+        if (!isDeveloper) {
+            setToast({
+                isOpen: true,
+                message: '❌ Hanya Developer yang dapat menghapus data dari History.',
+                type: 'error'
+            });
+            return;
+        }
+
+        const sku = historyItem.sku || historyItem.nama_barang || historyItem.nama_produk || '';
+        const rak = historyItem.sub_rak || historyItem.rak || '';
+
+        if (!window.confirm(`⚠️ Hapus permanen riwayat cetak item "${sku}" di Rak ${rak}?\n\nData ini akan dihapus dari history print.`)) {
+            return;
+        }
+
+        try {
+            await DatabaseService.deletePrintHistory(historyItem, writeMode);
+
+            setPrintHistoryLogs(prev => prev.filter(h => {
+                if (historyItem.id && h.id && historyItem.id === h.id) return false;
+                const hSku = (h.sku || h.nama_barang || '').trim().toLowerCase();
+                const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
+                return !(hSku === sku.trim().toLowerCase() && hRak === rak.trim().toUpperCase());
+            }));
+
+            setToast({
+                isOpen: true,
+                message: `✅ Riwayat cetak "${sku}" di Rak ${rak} berhasil dihapus permanen!`,
+                type: 'success'
+            });
+        } catch (err: any) {
+            console.error('Error deleting print history:', err);
+            setToast({ isOpen: true, message: 'Gagal menghapus data riwayat cetak', type: 'error' });
+        }
+    };
+
+    // Clear all Print History (Developer only)
+    const handleClearAllPrintHistory = async () => {
+        if (!isDeveloper) {
+            setToast({
+                isOpen: true,
+                message: '❌ Hanya Developer yang dapat menghapus seluruh riwayat cetak.',
+                type: 'error'
+            });
+            return;
+        }
+
+        if (printHistoryLogs.length === 0) return;
+
+        if (!window.confirm(`⚠️ PERINGATAN DEVELOPER:\n\nApakah Anda yakin ingin MENGHAPUS SEMUA (${printHistoryLogs.length}) data riwayat cetak barcode QR?\nData akan dihapus permanen dari Supabase, Firestore, dan Penyimpanan Lokal.`)) {
+            return;
+        }
+
+        try {
+            for (const item of printHistoryLogs) {
+                await DatabaseService.deletePrintHistory(item, writeMode);
+            }
+            if (typeof window !== 'undefined') {
+                localStorage.removeItem('opname_print_history_items');
+            }
+            setPrintHistoryLogs([]);
+            setToast({
+                isOpen: true,
+                message: '✅ Seluruh data riwayat cetak berhasil dibersihkan!',
+                type: 'success'
+            });
+        } catch (err) {
+            console.error('Error clearing all print history:', err);
+            setToast({ isOpen: true, message: 'Gagal membersihkan seluruh riwayat cetak', type: 'error' });
         }
     };
 
@@ -5184,6 +5259,17 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
 
                         {activeMainTab === 'history_print' && (
                             <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
+                                {isDeveloper && printHistoryLogs.length > 0 && (
+                                    <button
+                                        type="button"
+                                        onClick={handleClearAllPrintHistory}
+                                        className="h-11 px-3.5 sm:px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 font-black rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider border border-rose-200/80 transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95 flex-1 sm:flex-none"
+                                        title="Hapus seluruh riwayat cetak (Khusus Developer)"
+                                    >
+                                        <Trash2 className="h-4 w-4 text-rose-600 flex-shrink-0" />
+                                        <span className="whitespace-nowrap">Hapus Semua History</span>
+                                    </button>
+                                )}
                                 <button
                                     type="button"
                                     onClick={fetchPrintHistoryData}
@@ -6601,15 +6687,27 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                         <span>Print Ulang</span>
                                                                     </button>
 
-                                                                    {isAdminOrDev && (
+                                                                    {isDeveloper && (
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => handleRevertPrintHistory(log)}
                                                                             className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-black text-[11px] uppercase tracking-wider rounded-xl border border-blue-200 shadow-sm active:scale-95 transition-all flex items-center gap-1 cursor-pointer"
-                                                                            title="Kembalikan ke antrian Data Selesai Diproses (Khusus Dev/Admin)"
+                                                                            title="Kembalikan ke antrian Data Selesai Diproses (Khusus Developer)"
                                                                         >
                                                                             <ArrowRightLeft className="w-3.5 h-3.5 text-blue-600" />
                                                                             <span>Kembalikan</span>
+                                                                        </button>
+                                                                    )}
+
+                                                                    {isDeveloper && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => handleDeletePrintHistory(log)}
+                                                                            className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-black text-[11px] uppercase tracking-wider rounded-xl border border-rose-200 shadow-sm active:scale-95 transition-all flex items-center gap-1 cursor-pointer"
+                                                                            title="Hapus permanen riwayat cetak ini (Khusus Developer)"
+                                                                        >
+                                                                            <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                                                                            <span>Hapus</span>
                                                                         </button>
                                                                     )}
                                                                 </div>
