@@ -1032,7 +1032,7 @@ export function CekRak2() {
             for (let i = 0; i < batch.length; i += 3) {
                 pages.push(batch.slice(i, i + 3));
             }
-            initialSummaryBadge = pages.length + ' Halaman (' + batch.length + ' Data)';
+            initialSummaryBadge = pages.length + ' Halaman (' + batch.length + ' Barcode Label)';
             
             pages.forEach((pageRows) => {
                 initialPagesHtml += '<div class="thermal-sheet">';
@@ -2810,16 +2810,52 @@ export function CekRak2() {
         targetList.forEach((log, idx) => {
             const sku = log.sku || log.nama_barang || log.nama_produk || '-';
             const rak = log.sub_rak || log.rak || '-';
+            const cleanR = rak.trim().toUpperCase();
+            const cleanS = sku.trim().toLowerCase();
             const tgl_scan = log.tgl_scan || log.tgl || '';
             const waktu = log.waktu || '';
             const rawQty = Number(log.jumlah ?? log.qty ?? 0);
-            const sn = generateSnCode(log, idx + 1);
-            const slotNum = (idx % 3) + 1;
-            batchItems.push({ sku, sn, rak, slotNum, tgl_scan, waktu, qty: rawQty > 0 ? rawQty : undefined });
+
+            // Determine barcodeCount (boxCount / copies)
+            let barcodeCount = 1;
+            if (typeof log.boxCount === 'number' && log.boxCount > 0) {
+                barcodeCount = log.boxCount;
+            } else if (typeof log.box_count === 'number' && log.box_count > 0) {
+                barcodeCount = log.box_count;
+            } else {
+                const rawNote = String(log.log_update_user || log.status || log.keterangan || '');
+                const match = rawNote.match(/BOX_COUNT:(\d+)/i);
+                if (match && match[1]) {
+                    const parsed = parseInt(match[1], 10);
+                    if (!isNaN(parsed) && parsed > 0) barcodeCount = parsed;
+                }
+                if (barcodeCount === 1 && typeof window !== 'undefined') {
+                    const cached = localStorage.getItem(`box_count_${cleanR}_${cleanS}`);
+                    if (cached) {
+                        const parsed = parseInt(cached, 10);
+                        if (!isNaN(parsed) && parsed > 0) barcodeCount = parsed;
+                    }
+                }
+            }
+
+            const baseSn = generateSnCode(log, idx + 1);
+            for (let b = 1; b <= barcodeCount; b++) {
+                const sn = barcodeCount > 1 ? `${baseSn}-B${b}` : baseSn;
+                const slotNum = (batchItems.length % 3) + 1;
+                batchItems.push({ 
+                    sku, 
+                    sn, 
+                    rak, 
+                    slotNum, 
+                    tgl_scan, 
+                    waktu, 
+                    qty: rawQty > 0 ? rawQty : undefined 
+                });
+            }
         });
 
         renderThermalPrintWindow({
-            title: `Print Batch QR Thermal (${batchItems.length} Data)`,
+            title: `Print Batch QR Thermal (${batchItems.length} Barcode Label)`,
             mode: 'batch',
             batchItems
         });
@@ -2885,7 +2921,7 @@ export function CekRak2() {
 
         setToast({ 
             isOpen: true, 
-            message: `✅ Seluruh (${historyRecords.length}) item berhasil dicetak & dipindahkan ke Tab History!`, 
+            message: `✅ Seluruh ${historyRecords.length} item (${batchItems.length} label barcode) berhasil dicetak & dipindahkan ke Tab History!`, 
             type: 'success' 
         });
     };
