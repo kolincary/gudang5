@@ -3465,67 +3465,6 @@ export function CekRak2() {
 
         return totalIn - totalOut;
     };
-
-    // Cache kalibrasi stok TEMP-* di memory agar tidak query berulang-ulang ke Supabase
-    const tempStockCache = useRef<Map<string, { value: number; timestamp: number }>>(new Map());
-
-    // Kalibrasi stok otomatis dari riwayat transaksi database_log untuk wadah transit/penampung TEMP-*
-    const calibrateTempRackStock = async (skuName: string, tempRak: string, currentTersedia: number, stockItemId?: string): Promise<number> => {
-        try {
-            const cleanRak = (tempRak || '').trim().toUpperCase();
-            if (!cleanRak.startsWith('TEMP')) return currentTersedia;
-
-            const cleanSku = (skuName || '').trim().toUpperCase();
-            const cacheKey = `${cleanRak}:${cleanSku}`;
-            const cached = tempStockCache.current.get(cacheKey);
-            // Cache berlaku selama 5 menit
-            if (cached && (Date.now() - cached.timestamp < 300000)) {
-                return cached.value;
-            }
-
-            const { data: logs, error } = await supabase
-                .from('database_log')
-                .select('type, jumlah')
-                .ilike('sku', (skuName || '').trim())
-                .or(`rak.eq.${cleanRak},sub_rak.eq.${cleanRak}`);
-
-            if (error || !logs || logs.length === 0) {
-                tempStockCache.current.set(cacheKey, { value: currentTersedia, timestamp: Date.now() });
-                return currentTersedia;
-            }
-
-            let inQty = 0;
-            let outQty = 0;
-            logs.forEach(l => {
-                const t = (l.type || '').toUpperCase();
-                const q = Number(l.jumlah) || 0;
-                if (t === 'IN') inQty += q;
-                else if (t === 'OUT') outQty += q;
-            });
-
-            const ledgerStock = Math.max(0, inQty - outQty);
-            tempStockCache.current.set(cacheKey, { value: ledgerStock, timestamp: Date.now() });
-
-            // Jika ada selisih antara ledger dan stock_items, auto-heal ke stock_items
-            if (stockItemId && currentTersedia !== ledgerStock) {
-                supabase
-                    .from('stock_items')
-                    .update({
-                        masuk: inQty,
-                        keluar: outQty,
-                        tersedia: ledgerStock
-                    })
-                    .eq('id', stockItemId)
-                    .then(() => {
-                        console.log(`[Auto-Heal] Calibrated TEMP rack stock for ${skuName} in ${cleanRak}: ${currentTersedia} -> ${ledgerStock}`);
-                    });
-            }
-
-            return ledgerStock;
-        } catch (e) {
-            return currentTersedia;
-        }
-    };
     
     const openPullModal = async () => {
         setShowPullModal(true);
@@ -3582,17 +3521,6 @@ export function CekRak2() {
                 return true;
             });
 
-            // Preventif: Kalibrasi stok otomatis dari database_log untuk item dari rak TEMP-*
-            if (filteredData && filteredData.length > 0) {
-                const tempItems = filteredData.filter((it: any) => (it.rak || '').toUpperCase().startsWith('TEMP'));
-                if (tempItems.length > 0) {
-                    await Promise.all(
-                        tempItems.map(async (it: any) => {
-                            it.tersedia = await calibrateTempRackStock(it.nama_produk, it.rak, it.tersedia, it.id);
-                        })
-                    );
-                }
-            }
 
             // Aggregate duplicate stock items by nama_produk and rak
             const aggregatedMap = new Map<string, any>();
@@ -3678,17 +3606,6 @@ export function CekRak2() {
                 return true;
             });
 
-            // Preventif: Kalibrasi stok otomatis dari database_log untuk item dari rak TEMP-*
-            if (filteredData && filteredData.length > 0) {
-                const tempItems = filteredData.filter((it: any) => (it.rak || '').toUpperCase().startsWith('TEMP'));
-                if (tempItems.length > 0) {
-                    await Promise.all(
-                        tempItems.map(async (it: any) => {
-                            it.tersedia = await calibrateTempRackStock(it.nama_produk, it.rak, it.tersedia, it.id);
-                        })
-                    );
-                }
-            }
 
             const aggregatedMap = new Map<string, any>();
             filteredData?.forEach((item: any) => {
@@ -3773,10 +3690,6 @@ export function CekRak2() {
             const freshKeluar = data?.reduce((sum, r) => sum + (r.keluar || 0), 0) ?? item.keluar;
             const freshPacking = data?.[0]?.packing || item.packing;
 
-            // Preventif: Kalibrasi stok TEMP-* langsung dari database_log
-            if ((item.rak || '').toUpperCase().startsWith('TEMP')) {
-                freshTersedia = await calibrateTempRackStock(item.nama_produk, item.rak, freshTersedia, item.id || data?.[0]?.id);
-            }
 
             const updatedItem = {
                 ...item,
