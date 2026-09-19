@@ -62,11 +62,16 @@ export function CekRak2() {
     // View Mode: 'grid' (Kartu Visual) or 'table' (Tabel Rapat)
     const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
 
-    // Main Tab state: 'opname_rak' (Cek & Scan Rak) vs 'selesai_proses' (Data Selesai Diproses Live)
-    const [activeMainTab, setActiveMainTab] = useState<'opname_rak' | 'selesai_proses'>('opname_rak');
+    // Main Tab state: 'opname_rak' (Cek & Scan Rak) vs 'selesai_proses' (Data Selesai Diproses Live) vs 'history_print' (Riwayat Cetak QR)
+    const [activeMainTab, setActiveMainTab] = useState<'opname_rak' | 'selesai_proses' | 'history_print'>('opname_rak');
     const [finishedLogs, setFinishedLogs] = useState<any[]>([]);
     const [isLoadingFinished, setIsLoadingFinished] = useState(false);
     const [finishedSearchTerm, setFinishedSearchTerm] = useState('');
+
+    // History Print State (Cetak QR Selesai)
+    const [printHistoryLogs, setPrintHistoryLogs] = useState<any[]>([]);
+    const [isLoadingPrintHistory, setIsLoadingPrintHistory] = useState(false);
+    const [printHistorySearchTerm, setPrintHistorySearchTerm] = useState('');
 
     // Interactive Rack Explorer State
     const [selectedPrefixTab, setSelectedPrefixTab] = useState<string>('ALL');
@@ -479,11 +484,49 @@ export function CekRak2() {
 
     const isFetchingFinishedRef = useRef(false);
 
-    // Real-Time Finished / Verified Items Fetching
+    // Real-Time Finished / Verified Items Fetching (Excludes Already Printed Items)
     const fetchAllFinishedItems = async () => {
         if (isFetchingFinishedRef.current) return;
         isFetchingFinishedRef.current = true;
         try {
+            // 0. Load printed items from print history (Supabase / Firestore / LocalStorage)
+            const printedPairs = new Set<string>();
+            try {
+                const history = await DatabaseService.fetchPrintHistory(dbMode as any);
+                if (history && history.length > 0) {
+                    setPrintHistoryLogs(history);
+                    history.forEach((h: any) => {
+                        const hSku = (h.sku || h.nama_barang || h.nama_produk || '').trim().toLowerCase();
+                        const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
+                        if (hSku && hRak) {
+                            printedPairs.add(`${hSku}:::${hRak}`);
+                        }
+                    });
+                }
+            } catch (pErr) {
+                console.warn('Error checking print history in fetchAllFinishedItems:', pErr);
+            }
+
+            // Also check localStorage printed_opname_* keys for instantaneous local exclusion
+            if (typeof window !== 'undefined') {
+                try {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const k = localStorage.key(i);
+                        if (k && k.startsWith('printed_opname_')) {
+                            const withoutPrefix = k.replace('printed_opname_', '');
+                            const underscoreIdx = withoutPrefix.indexOf('_');
+                            if (underscoreIdx !== -1) {
+                                const r = withoutPrefix.substring(0, underscoreIdx).trim().toUpperCase();
+                                const s = withoutPrefix.substring(underscoreIdx + 1).trim().toLowerCase();
+                                if (r && s) {
+                                    printedPairs.add(`${s}:::${r}`);
+                                }
+                            }
+                        }
+                    }
+                } catch (lsPErr) {}
+            }
+
             // 1. Fetch from Supabase database_log with fast indexed query
             const { data, error } = await supabase
                 .from('database_log')
@@ -506,7 +549,7 @@ export function CekRak2() {
 
                 const pairKey = `${sku}:::${rak}`;
 
-                if (seenMap.has(pairKey) || excludedKeys.has(pairKey)) {
+                if (seenMap.has(pairKey) || excludedKeys.has(pairKey) || printedPairs.has(pairKey)) {
                     return;
                 }
 
@@ -542,7 +585,7 @@ export function CekRak2() {
                                         const cleanP = (pName || '').trim().toLowerCase();
                                         if (!cleanP) return;
                                         const pairKey = `${cleanP}:::${rak}`;
-                                        if (!seenMap.has(pairKey) && !excludedKeys.has(pairKey)) {
+                                        if (!seenMap.has(pairKey) && !excludedKeys.has(pairKey) && !printedPairs.has(pairKey)) {
                                             seenMap.set(pairKey, {
                                                 id: `local-${rak}-${cleanP}`,
                                                 sku: pName.toUpperCase(),
@@ -577,9 +620,22 @@ export function CekRak2() {
         }
     };
 
+    const fetchPrintHistoryData = async () => {
+        setIsLoadingPrintHistory(true);
+        try {
+            const history = await DatabaseService.fetchPrintHistory(dbMode as any);
+            setPrintHistoryLogs(history || []);
+        } catch (err) {
+            console.warn('Error fetching print history:', err);
+        } finally {
+            setIsLoadingPrintHistory(false);
+        }
+    };
+
     useEffect(() => {
         // Fetch immediately on mount
         fetchAllFinishedItems();
+        fetchPrintHistoryData();
         
         // Supabase Realtime channel subscription
         const channel = supabase
@@ -591,10 +647,21 @@ export function CekRak2() {
             }, () => {
                 fetchAllFinishedItems();
             })
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'opname_print_history'
+            }, () => {
+                fetchPrintHistoryData();
+                fetchAllFinishedItems();
+            })
             .subscribe();
 
         // Cross-tab and window listeners
-        const handleSyncEvent = () => fetchAllFinishedItems();
+        const handleSyncEvent = () => {
+            fetchAllFinishedItems();
+            fetchPrintHistoryData();
+        };
         window.addEventListener('focus', handleSyncEvent);
         window.addEventListener('storage', handleSyncEvent);
         window.addEventListener('finished-logs-updated', handleSyncEvent);
@@ -624,6 +691,19 @@ export function CekRak2() {
             return sku.includes(term) || rak.includes(term) || user.includes(term) || status.includes(term);
         });
     }, [finishedLogs, finishedSearchTerm]);
+
+    const filteredPrintHistoryLogs = useMemo(() => {
+        if (!printHistorySearchTerm.trim()) return printHistoryLogs;
+        const term = printHistorySearchTerm.toLowerCase().trim();
+        return printHistoryLogs.filter(log => {
+            const sku = (log.sku || log.nama_barang || log.nama_produk || '').toLowerCase();
+            const rak = (log.sub_rak || log.rak || '').toLowerCase();
+            const user = (log.user_name || '').toLowerCase();
+            const tgl = (log.tgl_scan || log.tgl || '').toLowerCase();
+            const status = (log.status || '').toLowerCase();
+            return sku.includes(term) || rak.includes(term) || user.includes(term) || tgl.includes(term) || status.includes(term);
+        });
+    }, [printHistoryLogs, printHistorySearchTerm]);
 
     // Helper to generate or derive standard Serial Number (SN-XXXXXXXX-XXXX)
     const generateSnCode = (item: any, index = 0): string => {
@@ -2497,7 +2577,7 @@ export function CekRak2() {
     };
 
     // Print Single Item (Directly prints requested Barcode Count without unwanted carton division)
-    const handlePrintThermalLabel = (
+    const handlePrintThermalLabel = async (
         item: any,
         overrideMode?: 'capacity' | 'count' | 'copies',
         overrideVal?: number
@@ -2561,10 +2641,55 @@ export function CekRak2() {
                 splitMode: 'count' 
             }
         });
+
+        // 1. Build and save print history record (Supabase + Firestore + LocalStorage)
+        const now = new Date();
+        const historyRecord = {
+            sku,
+            rak,
+            sub_rak: rak,
+            nama_barang: sku,
+            nama_produk: sku,
+            packing: item.packing || '',
+            jumlah: totalQty,
+            boxCount: barcodeCount,
+            user_name: item.user_name || item.user || user?.email || userName || 'User',
+            tgl: tgl_scan || now.toISOString().split('T')[0],
+            waktu: waktu || now.toLocaleTimeString('id-ID'),
+            tgl_scan: tgl_scan || now.toISOString().split('T')[0],
+            created_at: now.toISOString(),
+            status: 'PRINTED'
+        };
+
+        try {
+            await DatabaseService.insertPrintHistory([historyRecord], writeMode);
+        } catch (e) {
+            console.warn('insertPrintHistory error:', e);
+        }
+
+        // 2. Remove immediately from finishedLogs queue with 0 latency
+        setFinishedLogs(prev => prev.filter(l => {
+            const lSku = (l.sku || l.nama_barang || l.nama_produk || '').trim().toLowerCase();
+            const lRak = (l.sub_rak || l.rak || '').trim().toUpperCase();
+            return !(lSku === sku.trim().toLowerCase() && lRak === rak.trim().toUpperCase());
+        }));
+
+        // 3. Prepend to printHistoryLogs state
+        setPrintHistoryLogs(prev => [historyRecord, ...prev.filter(h => {
+            const hSku = (h.sku || h.nama_barang || h.nama_produk || '').trim().toLowerCase();
+            const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
+            return !(hSku === sku.trim().toLowerCase() && hRak === rak.trim().toUpperCase());
+        })]);
+
+        setToast({ 
+            isOpen: true, 
+            message: `✅ Label QR "${sku}" selesai dicetak dan dipindahkan ke Tab History!`, 
+            type: 'success' 
+        });
     };
 
     // Print All Finished Items in Batch (Grouped up to 3 items per thermal page: 1 item=1 label, 2 items=2 labels, 3 items=3 labels)
-    const handlePrintBatchThermalLabels = () => {
+    const handlePrintBatchThermalLabels = async () => {
         const targetList = filteredFinishedLogs.length > 0 ? filteredFinishedLogs : finishedLogs;
         if (!targetList || targetList.length === 0) {
             setToast({ isOpen: true, message: 'Tidak ada data selesai yang dapat dicetak.', type: 'info' });
@@ -2588,6 +2713,100 @@ export function CekRak2() {
             mode: 'batch',
             batchItems
         });
+
+        // 1. Build and save batch print history records (Supabase + Firestore + LocalStorage)
+        const now = new Date();
+        const historyRecords = targetList.map((log, idx) => {
+            const sku = log.sku || log.nama_barang || log.nama_produk || '-';
+            const rak = log.sub_rak || log.rak || '-';
+            const tgl_scan = log.tgl_scan || log.tgl || '';
+            const waktu = log.waktu || '';
+            const rawQty = Number(log.jumlah ?? log.qty ?? 0);
+            return {
+                sku,
+                rak,
+                sub_rak: rak,
+                nama_barang: sku,
+                nama_produk: sku,
+                packing: log.packing || '',
+                jumlah: rawQty > 0 ? rawQty : 1,
+                boxCount: log.boxCount || 1,
+                user_name: log.user_name || user?.email || userName || 'User',
+                tgl: tgl_scan || now.toISOString().split('T')[0],
+                waktu: waktu || now.toLocaleTimeString('id-ID'),
+                tgl_scan: tgl_scan || now.toISOString().split('T')[0],
+                created_at: new Date(now.getTime() - idx * 100).toISOString(),
+                status: 'PRINTED'
+            };
+        });
+
+        try {
+            await DatabaseService.insertPrintHistory(historyRecords, writeMode);
+        } catch (e) {
+            console.warn('insertPrintHistory batch error:', e);
+        }
+
+        // 2. Remove all batch items from finishedLogs queue with 0 latency
+        const batchKeys = new Set(targetList.map(l => {
+            const s = (l.sku || l.nama_barang || l.nama_produk || '').trim().toLowerCase();
+            const r = (l.sub_rak || l.rak || '').trim().toUpperCase();
+            return `${s}:::${r}`;
+        }));
+
+        setFinishedLogs(prev => prev.filter(l => {
+            const s = (l.sku || l.nama_barang || l.nama_produk || '').trim().toLowerCase();
+            const r = (l.sub_rak || l.rak || '').trim().toUpperCase();
+            return !batchKeys.has(`${s}:::${r}`);
+        }));
+
+        // 3. Prepend to printHistoryLogs state
+        setPrintHistoryLogs(prev => [...historyRecords, ...prev]);
+
+        setToast({ 
+            isOpen: true, 
+            message: `✅ Seluruh (${historyRecords.length}) item berhasil dicetak & dipindahkan ke Tab History!`, 
+            type: 'success' 
+        });
+    };
+
+    // Revert an item from Print History back to active "Data Selesai Diproses" queue (Admin/Dev only)
+    const handleRevertPrintHistory = async (historyItem: any) => {
+        if (!isAdminOrDev) {
+            setToast({
+                isOpen: true,
+                message: '❌ Hanya Admin/Developer yang dapat mengembalikan data dari History.',
+                type: 'error'
+            });
+            return;
+        }
+
+        const sku = historyItem.sku || historyItem.nama_barang || historyItem.nama_produk || '';
+        const rak = historyItem.sub_rak || historyItem.rak || '';
+
+        if (!window.confirm(`Kembalikan item "${sku}" di Rak ${rak} dari History ke antrian "Data Selesai Diproses"?`)) {
+            return;
+        }
+
+        try {
+            await DatabaseService.deletePrintHistory(historyItem, writeMode);
+
+            setPrintHistoryLogs(prev => prev.filter(h => {
+                const hSku = (h.sku || h.nama_barang || '').trim().toLowerCase();
+                const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
+                return !(hSku === sku.trim().toLowerCase() && hRak === rak.trim().toUpperCase());
+            }));
+
+            await fetchAllFinishedItems();
+
+            setToast({
+                isOpen: true,
+                message: `✅ "${sku}" berhasil dikembalikan ke antrian Data Selesai Diproses!`,
+                type: 'success'
+            });
+        } catch (err: any) {
+            console.error('Error reverting print history:', err);
+            setToast({ isOpen: true, message: 'Gagal mengembalikan data history', type: 'error' });
+        }
     };
 
     const handleSelectRackFromSearch = (targetRak: string) => {
@@ -4856,9 +5075,9 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         </div>
                     )}
 
-                    {/* MAIN NAVIGATION TABS (OPNAME RAK vs DATA SELESAI PROSES) */}
+                    {/* MAIN NAVIGATION TABS (OPNAME RAK vs DATA SELESAI PROSES vs HISTORY PRINT) */}
                     <div className="flex items-center justify-between flex-wrap gap-2.5 bg-white p-2 sm:p-2.5 rounded-2xl sm:rounded-3xl border border-slate-200/90 shadow-xl shadow-slate-900/5">
-                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                        <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap sm:flex-nowrap">
                             <button
                                 type="button"
                                 onClick={() => setActiveMainTab('opname_rak')}
@@ -4902,6 +5121,29 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     {finishedLogs.length}
                                 </span>
                             </button>
+
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setActiveMainTab('history_print');
+                                    fetchPrintHistoryData();
+                                }}
+                                className={cn(
+                                    "h-11 px-4 sm:px-5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm relative active:scale-95",
+                                    activeMainTab === 'history_print'
+                                        ? "bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-md shadow-amber-500/25"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                )}
+                            >
+                                <History className="w-4 h-4 flex-shrink-0" />
+                                <span>History Print</span>
+                                <span className={cn(
+                                    "px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1",
+                                    activeMainTab === 'history_print' ? "bg-white/20 text-white" : "bg-amber-100 text-amber-800"
+                                )}>
+                                    {printHistoryLogs.length}
+                                </span>
+                            </button>
                         </div>
 
                         {activeMainTab === 'selesai_proses' && (
@@ -4939,11 +5181,24 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 </button>
                             </div>
                         )}
+
+                        {activeMainTab === 'history_print' && (
+                            <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
+                                <button
+                                    type="button"
+                                    onClick={fetchPrintHistoryData}
+                                    className="h-11 px-3.5 sm:px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider border border-slate-200 transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95 flex-1 sm:flex-none"
+                                    title="Segarkan Riwayat Cetak"
+                                >
+                                    <RefreshCw className={cn("h-4 w-4 text-slate-600 flex-shrink-0", isLoadingPrintHistory && "animate-spin")} />
+                                    <span className="whitespace-nowrap">Refresh History</span>
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     {activeMainTab === 'opname_rak' ? (
                         <>
-
                     {/* DUAL SEARCH & CONTROL HUB (2 Columns on Desktop) */}
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5">
                         
@@ -5963,7 +6218,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         </div>
                     )}
                     </>
-                ) : (
+                ) : activeMainTab === 'selesai_proses' ? (
                         /* ======================================================== */
                         /* TAB 2: DATA SELESAI DIPROSES (REAL-TIME LIVE TABLE) */
                         /* ======================================================== */
@@ -6015,7 +6270,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                 Daftar Riwayat Data Selesai Diproses (Real-Time Live)
                                             </h3>
                                             <p className="text-xs font-medium text-slate-500 mt-0.5">
-                                                Menampilkan seluruh item barang dan rak yang telah selesai dikonfirmasi / diverifikasi stok fisiknya.
+                                                Menampilkan seluruh item barang dan rak yang telah selesai dikonfirmasi / diverifikasi stok fisiknya dan siap dicetak.
                                             </p>
                                         </div>
 
@@ -6050,9 +6305,9 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     ) : filteredFinishedLogs.length === 0 ? (
                                         <div className="flex flex-col items-center justify-center py-16 text-center bg-slate-50/50 rounded-2xl border border-dashed border-slate-200 p-6">
                                             <CheckCircle2 className="w-12 h-12 text-slate-300 mb-3" />
-                                            <h4 className="font-black text-sm text-slate-700 uppercase">Belum Ada Data Terkonfirmasi</h4>
+                                            <h4 className="font-black text-sm text-slate-700 uppercase">Belum Ada Antrian Cetak Baru</h4>
                                             <p className="text-xs text-slate-500 mt-1 max-w-sm">
-                                                {finishedSearchTerm ? 'Tidak ditemukan data yang cocok dengan pencarian.' : 'Barang yang telah dikonfirmasi di menu Cek & Scan Rak akan langsung otomatis muncul di sini secara real-time.'}
+                                                {finishedSearchTerm ? 'Tidak ditemukan data yang cocok dengan pencarian.' : 'Barang yang telah dikonfirmasi di menu Cek & Scan Rak akan muncul di sini. Setelah dicetak, data akan otomatis dipindahkan ke tab History Print.'}
                                             </p>
                                         </div>
                                     ) : (
@@ -6146,7 +6401,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                         type="button"
                                                                         onClick={() => handlePrintThermalLabel(log)}
                                                                         className="px-3 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black text-[11px] uppercase tracking-wider rounded-xl shadow-sm hover:shadow active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
-                                                                        title="Print QR Label Thermal (58mm/80mm)"
+                                                                        title="Print QR Label Thermal (58mm/80mm) & Pindahkan ke Tab History"
                                                                     >
                                                                         <Printer className="w-3.5 h-3.5" />
                                                                         <span>Print QR</span>
@@ -6161,6 +6416,200 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                         >
                                                                             <XCircle className="w-3.5 h-3.5 text-rose-600" />
                                                                             <span>Batal</span>
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+                                </CardContent>
+                            </Card>
+                        </div>
+                    ) : (
+                        /* ======================================================== */
+                        /* TAB 3: RIWAYAT CETAK QR / HISTORY PRINT (REAL-TIME PERSISTENT) */
+                        /* ======================================================== */
+                        <div className="space-y-5 sm:space-y-6 animate-in fade-in duration-300">
+                            {/* Summary Metric Cards */}
+                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-center gap-4">
+                                    <div className="p-3.5 bg-amber-50 text-amber-600 rounded-2xl">
+                                        <History className="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Item Dicetak</p>
+                                        <p className="text-2xl font-black text-slate-900">{printHistoryLogs.length} <span className="text-xs font-bold text-slate-500">Baris</span></p>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-center gap-4">
+                                    <div className="p-3.5 bg-blue-50 text-blue-600 rounded-2xl">
+                                        <Box className="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Fisik Dicetak</p>
+                                        <p className="text-2xl font-black text-blue-600">
+                                            {printHistoryLogs.reduce((sum, item) => sum + (Number(item.jumlah) || 0), 0).toLocaleString()} <span className="text-xs font-bold text-slate-500">PCS</span>
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-center gap-4">
+                                    <div className="p-3.5 bg-indigo-50 text-indigo-600 rounded-2xl">
+                                        <QrCode className="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Lembar / Barcode</p>
+                                        <p className="text-2xl font-black text-indigo-600">
+                                            {printHistoryLogs.reduce((sum, item) => sum + (Number(item.boxCount) || 1), 0).toLocaleString()} <span className="text-xs font-bold text-slate-500">Label</span>
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-center gap-4">
+                                    <div className="p-3.5 bg-emerald-50 text-emerald-600 rounded-2xl">
+                                        <MapPin className="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Lokasi Rak</p>
+                                        <p className="text-2xl font-black text-emerald-600">
+                                            {new Set(printHistoryLogs.map(l => l.sub_rak || l.rak).filter(Boolean)).size} <span className="text-xs font-bold text-slate-500">Rak</span>
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Table Container */}
+                            <Card className="rounded-3xl shadow-xl shadow-slate-900/5 border border-slate-200/90 bg-white overflow-hidden">
+                                <CardContent className="p-4 sm:p-6 space-y-4">
+                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                                        <div>
+                                            <h3 className="text-base sm:text-lg font-black text-slate-900 uppercase tracking-tight flex items-center gap-2">
+                                                <Printer className="w-5 h-5 text-amber-600" />
+                                                Daftar Riwayat Cetak Barcode QR (History Print)
+                                            </h3>
+                                            <p className="text-xs font-medium text-slate-500 mt-0.5">
+                                                Menampilkan seluruh item barang dan rak yang telah selesai dicetak label QR barcode thermal-nya.
+                                            </p>
+                                        </div>
+
+                                        {/* Filter / Search inside history table */}
+                                        <div className="relative w-full sm:w-72">
+                                            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                                            <input
+                                                type="text"
+                                                value={printHistorySearchTerm}
+                                                onChange={(e) => setPrintHistorySearchTerm(e.target.value)}
+                                                placeholder="Cari SKU, Rak, Petugas..."
+                                                className="w-full pl-10 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-amber-500 focus:bg-white transition-all uppercase"
+                                            />
+                                            {printHistorySearchTerm && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setPrintHistorySearchTerm('')}
+                                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                                >
+                                                    <X className="w-3.5 h-3.5" />
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Table */}
+                                    {isLoadingPrintHistory ? (
+                                        <div className="flex flex-col items-center justify-center py-16 text-slate-500">
+                                            <RefreshCw className="w-8 h-8 animate-spin text-amber-500 mb-3" />
+                                            <p className="text-xs font-bold">Memuat riwayat cetak...</p>
+                                        </div>
+                                    ) : filteredPrintHistoryLogs.length === 0 ? (
+                                        <div className="flex flex-col items-center justify-center py-16 text-center bg-slate-50/50 rounded-2xl border border-dashed border-slate-200 p-6">
+                                            <Printer className="w-12 h-12 text-slate-300 mb-3" />
+                                            <h4 className="font-black text-sm text-slate-700 uppercase">Belum Ada Riwayat Cetak</h4>
+                                            <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                                                {printHistorySearchTerm ? 'Tidak ditemukan data history yang cocok dengan pencarian.' : 'Barang yang telah dicetak dari tab "Data Selesai Diproses" akan otomatis tersimpan ke Supabase & Firestore dan masuk ke sini.'}
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <div className="overflow-x-auto rounded-2xl border border-slate-100">
+                                            <table className="w-full text-left border-collapse">
+                                                <thead>
+                                                    <tr className="bg-slate-100/80 text-[11px] font-black uppercase tracking-wider text-slate-600 border-b border-slate-200">
+                                                        <th className="py-3 px-4 text-center w-12">No</th>
+                                                        <th className="py-3 px-4">Waktu / Tgl Cetak</th>
+                                                        <th className="py-3 px-4">Lokasi Rak</th>
+                                                        <th className="py-3 px-4">SKU / Nama Produk</th>
+                                                        <th className="py-3 px-4 text-right">Qty Fisik</th>
+                                                        <th className="py-3 px-4 text-center">Jml Barcode</th>
+                                                        <th className="py-3 px-4">Petugas / PIC</th>
+                                                        <th className="py-3 px-4 text-center">Status</th>
+                                                        <th className="py-3 px-4 text-center">Aksi</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-100 text-xs">
+                                                    {filteredPrintHistoryLogs.map((log, idx) => (
+                                                        <tr key={log.id || `${log.sku}-${log.rak}-${idx}`} className="hover:bg-slate-50/80 transition-colors">
+                                                            <td className="py-3 px-4 text-center font-bold text-slate-400">
+                                                                {idx + 1}
+                                                            </td>
+                                                            <td className="py-3 px-4 font-bold text-slate-700 whitespace-nowrap">
+                                                                <div>{log.tgl_scan || log.tgl || '-'}</div>
+                                                                <div className="text-[10px] text-slate-400 font-normal">{log.waktu || ''}</div>
+                                                            </td>
+                                                            <td className="py-3 px-4 font-black text-blue-700 whitespace-nowrap">
+                                                                <span className="px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200 text-xs">
+                                                                    {log.sub_rak || log.rak || '-'}
+                                                                </span>
+                                                            </td>
+                                                            <td className="py-3 px-4 font-black text-slate-900 uppercase">
+                                                                <div>{log.sku || log.nama_barang || log.nama_produk || '-'}</div>
+                                                                {log.packing && (
+                                                                    <span className="text-[10px] font-bold text-slate-400 uppercase">
+                                                                        Packing: {log.packing}
+                                                                    </span>
+                                                                )}
+                                                            </td>
+                                                            <td className="py-3 px-4 text-right font-black text-blue-600 text-sm whitespace-nowrap">
+                                                                {(Number(log.jumlah) || 0).toLocaleString()} <span className="text-[10px] text-slate-500 font-bold">PCS</span>
+                                                            </td>
+                                                            <td className="py-3 px-4 text-center whitespace-nowrap">
+                                                                <span className="px-2.5 py-1 rounded-xl text-[11px] font-black uppercase inline-flex items-center gap-1.5 shadow-sm bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                                                    <QrCode className="w-3.5 h-3.5" />
+                                                                    <span>{log.boxCount || 1} Barcode</span>
+                                                                </span>
+                                                            </td>
+                                                            <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
+                                                                {log.user_name || log.user || '-'}
+                                                            </td>
+                                                            <td className="py-3 px-4 text-center whitespace-nowrap">
+                                                                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-100 text-amber-800 border border-amber-200">
+                                                                    ✓ Selesai Dicetak
+                                                                </span>
+                                                            </td>
+                                                            <td className="py-3 px-4 text-center whitespace-nowrap">
+                                                                <div className="flex items-center justify-center gap-2 mx-auto">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handlePrintThermalLabel(log)}
+                                                                        className="px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-black text-[11px] uppercase tracking-wider rounded-xl shadow-sm hover:shadow active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
+                                                                        title="Cetak Ulang Label QR Thermal"
+                                                                    >
+                                                                        <Printer className="w-3.5 h-3.5" />
+                                                                        <span>Print Ulang</span>
+                                                                    </button>
+
+                                                                    {isAdminOrDev && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => handleRevertPrintHistory(log)}
+                                                                            className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-black text-[11px] uppercase tracking-wider rounded-xl border border-blue-200 shadow-sm active:scale-95 transition-all flex items-center gap-1 cursor-pointer"
+                                                                            title="Kembalikan ke antrian Data Selesai Diproses (Khusus Dev/Admin)"
+                                                                        >
+                                                                            <ArrowRightLeft className="w-3.5 h-3.5 text-blue-600" />
+                                                                            <span>Kembalikan</span>
                                                                         </button>
                                                                     )}
                                                                 </div>

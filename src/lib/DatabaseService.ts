@@ -1482,6 +1482,183 @@ export const DatabaseService = {
     } catch (e) {
       // Ignore
     }
+  },
+
+  async insertPrintHistory(items: any | any[], mode: DatabaseWriteMode = 'both') {
+    const list = Array.isArray(items) ? items : [items];
+    if (list.length === 0) return { data: [], error: null };
+
+    const formattedList = list.map(item => {
+      const cleanSku = (item.sku || item.nama_barang || item.nama_produk || '').trim().toUpperCase();
+      const cleanRak = (item.sub_rak || item.rak || '').trim().toUpperCase();
+      const docId = item.id || (`pr_${cleanRak}_${cleanSku}_${Date.now()}`.toLowerCase().replace(/[^a-z0-9_-]/g, '_'));
+      return {
+        id: docId,
+        sku: cleanSku,
+        nama_produk: item.nama_produk || item.nama_barang || cleanSku,
+        rak: cleanRak,
+        sub_rak: cleanRak,
+        jumlah: Number(item.jumlah || item.qty || 0),
+        box_count: Number(item.box_count || item.boxCount || 1),
+        user_name: item.user_name || item.user || 'User',
+        tgl: item.tgl || new Date().toISOString().split('T')[0],
+        waktu: item.waktu || new Date().toLocaleTimeString('id-ID'),
+        tgl_scan: item.tgl_scan || item.tgl || new Date().toISOString().split('T')[0],
+        status: 'PRINTED',
+        created_at: item.created_at || new Date().toISOString()
+      };
+    });
+
+    // 1. Save to LocalStorage immediately for instant UI reactivity
+    if (typeof window !== 'undefined') {
+      try {
+        const rawLocal = localStorage.getItem('opname_print_history_items');
+        const localList = rawLocal ? JSON.parse(rawLocal) : [];
+        const seenKeys = new Set(formattedList.map(x => `${x.sku.toLowerCase()}:::${x.rak.toUpperCase()}`));
+        const filtered = Array.isArray(localList)
+          ? localList.filter((x: any) => !seenKeys.has(`${(x.sku || '').toLowerCase()}:::${(x.rak || '').toUpperCase()}`))
+          : [];
+        filtered.unshift(...formattedList);
+        localStorage.setItem('opname_print_history_items', JSON.stringify(filtered));
+
+        // Mark individual keys for fast lookup
+        formattedList.forEach(x => {
+          localStorage.setItem(`printed_opname_${x.rak.toUpperCase()}_${x.sku.toLowerCase()}`, String(Date.now()));
+        });
+      } catch (lsErr) {
+        console.warn('LocalStorage save print history warning:', lsErr);
+      }
+    }
+
+    // 2. Supabase insert into 'opname_print_history'
+    if (mode === 'supabase' || mode === 'both') {
+      try {
+        const { error } = await supabase
+          .from('opname_print_history')
+          .upsert(formattedList, { onConflict: 'id' });
+        if (error) {
+          console.warn('Supabase opname_print_history notice:', error.message || error);
+        }
+      } catch (err) {
+        console.warn('Supabase insertPrintHistory exception:', err);
+      }
+    }
+
+    // 3. Firestore collection 'opname_print_history'
+    try {
+      for (const item of formattedList) {
+        const docRef = doc(db, 'opname_print_history', String(item.id));
+        await setDoc(docRef, item, { merge: true }).catch(() => {});
+      }
+    } catch (fbErr) {
+      // Ignored if permissions not configured
+    }
+
+    return { data: formattedList, error: null };
+  },
+
+  async fetchPrintHistory(mode: DatabaseReadMode = 'supabase') {
+    const itemMap = new Map<string, any>();
+
+    // 1. Supabase fetch from 'opname_print_history'
+    if (mode === 'supabase') {
+      try {
+        const { data, error } = await supabase
+          .from('opname_print_history')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(1000);
+
+        if (!error && data && data.length > 0) {
+          data.forEach(item => {
+            const key = `${(item.sku || '').trim().toLowerCase()}:::${(item.rak || '').trim().toUpperCase()}`;
+            if (!itemMap.has(key)) {
+              itemMap.set(key, item);
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('fetchPrintHistory Supabase exception:', err);
+      }
+    }
+
+    // 2. Fallback / Merge from Firestore
+    try {
+      const colRef = collection(db, 'opname_print_history');
+      const q = firestoreQuery(colRef, orderBy('created_at', 'desc'), limit(1000));
+      const snap = await getDocs(q);
+      snap.docs.forEach(d => {
+        const item = d.data();
+        const key = `${(item.sku || '').trim().toLowerCase()}:::${(item.rak || '').trim().toUpperCase()}`;
+        if (!itemMap.has(key)) {
+          itemMap.set(key, { ...item, id: d.id });
+        }
+      });
+    } catch (fbErr) {
+      // Ignored
+    }
+
+    // 3. Fallback / Merge from LocalStorage
+    if (typeof window !== 'undefined') {
+      try {
+        const rawLocal = localStorage.getItem('opname_print_history_items');
+        if (rawLocal) {
+          const parsed = JSON.parse(rawLocal);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(item => {
+              const key = `${(item.sku || '').trim().toLowerCase()}:::${(item.rak || '').trim().toUpperCase()}`;
+              if (!itemMap.has(key)) {
+                itemMap.set(key, item);
+              }
+            });
+          }
+        }
+      } catch (lsErr) {}
+    }
+
+    return Array.from(itemMap.values());
+  },
+
+  async deletePrintHistory(itemOrId: any, mode: DatabaseWriteMode = 'both') {
+    const id = typeof itemOrId === 'string' ? itemOrId : itemOrId?.id;
+    const sku = itemOrId?.sku || itemOrId?.nama_barang || '';
+    const rak = itemOrId?.sub_rak || itemOrId?.rak || '';
+
+    // 1. LocalStorage cleanup
+    if (typeof window !== 'undefined') {
+      try {
+        const rawLocal = localStorage.getItem('opname_print_history_items');
+        if (rawLocal) {
+          const parsed = JSON.parse(rawLocal);
+          if (Array.isArray(parsed)) {
+            const filtered = parsed.filter(x => x.id !== id && !((x.sku || '').toLowerCase() === sku.toLowerCase() && (x.rak || '').toUpperCase() === rak.toUpperCase()));
+            localStorage.setItem('opname_print_history_items', JSON.stringify(filtered));
+          }
+        }
+        if (rak && sku) {
+          localStorage.removeItem(`printed_opname_${rak.toUpperCase()}_${sku.toLowerCase()}`);
+        }
+      } catch (e) {}
+    }
+
+    // 2. Supabase delete
+    if (mode === 'supabase' || mode === 'both') {
+      try {
+        if (id) {
+          await supabase.from('opname_print_history').delete().eq('id', id);
+        }
+        if (sku && rak) {
+          await supabase.from('opname_print_history').delete().ilike('sku', sku).ilike('rak', rak);
+        }
+      } catch (e) {}
+    }
+
+    // 3. Firestore delete
+    try {
+      if (id) {
+        await deleteDoc(doc(db, 'opname_print_history', String(id))).catch(() => {});
+      }
+    } catch (e) {}
   }
 };
 
