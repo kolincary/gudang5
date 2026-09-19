@@ -323,8 +323,6 @@ export function Dashboard() {
   }, [selectedProduct]);
 
   useEffect(() => {
-    if (!dataLoaded) return;
-
     let subscriptionActive = false;
 
     const setupSubscription = () => {
@@ -337,7 +335,19 @@ export function Dashboard() {
         })
         .on('postgres_changes',
           { event: '*', schema: 'public', table: 'stock_items' },
-          async (payload) => {
+          async (payload: any) => {
+            // Real-time: Jika ada SKU baru di-insert, tambahkan ke dropdown produk seketika
+            if (payload.eventType === 'INSERT' && payload.new?.nama_produk) {
+              const newName = String(payload.new.nama_produk).trim();
+              setAllProducts(prev => {
+                if (prev.some(p => p.nama.toLowerCase() === newName.toLowerCase())) return prev;
+                const updated = [...prev, { nama: newName }].sort((a, b) => a.nama.localeCompare(b.nama));
+                try { localStorage.setItem(CACHE_PRODUCTS_KEY, JSON.stringify(updated)); } catch (e) {}
+                return updated;
+              });
+            }
+
+            // Real-time: Update stok produk yang sedang dibuka
             const currentProduct = selectedProductRef.current;
             if (currentProduct) {
               queryOptimizer.invalidateProductCache(currentProduct);
@@ -348,7 +358,8 @@ export function Dashboard() {
         )
         .on('postgres_changes',
           { event: '*', schema: 'public', table: 'database_log' },
-          async (payload) => {
+          async () => {
+            // Real-time: Saat terjadi mutasi transaksi/scan (IN, OUT, MOVE, TRANSFER)
             const currentProduct = selectedProductRef.current;
             if (currentProduct) {
               setLogCache(new Map());
@@ -387,7 +398,7 @@ export function Dashboard() {
       supabase.removeChannel(channel);
       subscriptionActive = false;
     };
-  }, [dataLoaded]);
+  }, []);
 
   // Update product stocks when selected product changes
   // useEffect ini sekarang hanya bergantung pada selectedProduct, bukan searchTerm
