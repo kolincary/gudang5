@@ -1533,9 +1533,18 @@ export const DatabaseService = {
     // 2. Supabase insert into 'opname_print_history'
     if (mode === 'supabase' || mode === 'both') {
       try {
+        for (const item of formattedList) {
+          if (item.sku && item.rak) {
+            await supabase
+              .from('opname_print_history')
+              .delete()
+              .ilike('sku', item.sku)
+              .ilike('rak', item.rak);
+          }
+        }
         const { error } = await supabase
           .from('opname_print_history')
-          .upsert(formattedList, { onConflict: 'id' });
+          .insert(formattedList);
         if (error) {
           console.warn('Supabase opname_print_history notice:', error.message || error);
         }

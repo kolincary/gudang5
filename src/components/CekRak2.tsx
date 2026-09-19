@@ -527,17 +527,34 @@ export function CekRak2() {
                 } catch (lsPErr) {}
             }
 
-            // 1. Fetch from Supabase database_log with fast indexed query (include TRANSFER to catch BOX_COUNT)
-            const { data, error } = await supabase
-                .from('database_log')
-                .select('id, sku, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah, log_update_user')
-                .in('gudang', ['VERIFY', 'UNVERIFY', 'TRANSFER'])
-                .order('created_at', { ascending: false })
-                .limit(3000);
+            // 1. Fetch from Supabase database_log with fast indexed query + stock_items for true physical sub-total
+            const [logRes, stockRes] = await Promise.all([
+                supabase
+                    .from('database_log')
+                    .select('id, sku, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah, log_update_user')
+                    .in('gudang', ['VERIFY', 'UNVERIFY', 'TRANSFER'])
+                    .order('created_at', { ascending: false })
+                    .limit(3000),
+                supabase
+                    .from('stock_items')
+                    .select('nama_produk, rak, sub_rak, tersedia, satuan, packing')
+                    .eq('status', 'Aktif')
+            ]);
 
-            if (error) {
-                console.warn('Error fetching verify logs from DB:', error);
+            const data = logRes.data;
+            if (logRes.error) {
+                console.warn('Error fetching verify logs from DB:', logRes.error);
             }
+
+            const stockItems = stockRes.data || [];
+            const stockMap = new Map<string, any>();
+            stockItems.forEach((stk: any) => {
+                const s = (stk.nama_produk || '').trim().toLowerCase();
+                const r = (stk.sub_rak || stk.rak || '').trim().toUpperCase();
+                if (s && r) {
+                    stockMap.set(`${s}:::${r}`, stk);
+                }
+            });
 
             // Build map of custom barcode box count from all logs
             const boxCountFromLogs = new Map<string, number>();
@@ -579,7 +596,7 @@ export function CekRak2() {
                     excludedKeys.add(pairKey);
                 } else if (gudangUpper === 'VERIFY' || typeUpper === 'VERIFY' || log.status === 'VERIFIED') {
                     let resolvedBoxCount = boxCountFromLogs.get(pairKey) || 1;
-                    if (resolvedBoxCount === 1 && typeof window !== 'undefined') {
+                    if (typeof window !== 'undefined') {
                         const cached = localStorage.getItem(`box_count_${rak}_${sku}`);
                         if (cached) {
                             const parsed = parseInt(cached, 10);
@@ -587,11 +604,19 @@ export function CekRak2() {
                         }
                     }
 
+                    const stockItem = stockMap.get(pairKey);
+                    const finalJumlah = (stockItem && stockItem.tersedia !== undefined && stockItem.tersedia > 0)
+                        ? stockItem.tersedia
+                        : (Number(log.jumlah) || 0);
+
                     seenMap.set(pairKey, {
                         ...log,
                         sku: log.sku || log.nama_barang || log.nama_produk,
                         rak: rak,
                         sub_rak: rak,
+                        jumlah: finalJumlah,
+                        packing: log.packing || stockItem?.packing || '',
+                        satuan: log.satuan || stockItem?.satuan || 'PCS',
                         boxCount: resolvedBoxCount,
                         box_count: resolvedBoxCount,
                         log_update_user: log.log_update_user || (resolvedBoxCount > 1 ? `BOX_COUNT:${resolvedBoxCount}` : undefined)
@@ -623,6 +648,11 @@ export function CekRak2() {
                                                 if (!isNaN(parsed) && parsed > 0) resolvedBoxCount = parsed;
                                             }
 
+                                            const stockItem = stockMap.get(pairKey);
+                                            const finalJumlah = (stockItem && stockItem.tersedia !== undefined && stockItem.tersedia > 0)
+                                                ? stockItem.tersedia
+                                                : 0;
+
                                             seenMap.set(pairKey, {
                                                 id: `local-${rak}-${cleanP}`,
                                                 sku: pName.toUpperCase(),
@@ -630,6 +660,9 @@ export function CekRak2() {
                                                 nama_produk: pName.toUpperCase(),
                                                 rak: rak,
                                                 sub_rak: rak,
+                                                jumlah: finalJumlah,
+                                                packing: stockItem?.packing || '',
+                                                satuan: stockItem?.satuan || 'PCS',
                                                 gudang: 'VERIFY',
                                                 type: 'MOVE',
                                                 boxCount: resolvedBoxCount,
@@ -3778,8 +3811,20 @@ export function CekRak2() {
                 const filteredUnverified = existingUnverified.filter((name: string) => name.trim().toLowerCase() !== prodName);
                 localStorage.setItem(unverifiedKey, JSON.stringify(filteredUnverified));
                 
-                if (countNum && typeof window !== 'undefined') {
-                    localStorage.setItem(`box_count_${cleanRak}_${prodName}`, String(countNum));
+                // Determine accumulated box count across multiple pulls
+                let existingBoxCount = 0;
+                if (typeof window !== 'undefined') {
+                    const cached = localStorage.getItem(`box_count_${cleanRak}_${prodName}`);
+                    if (cached) {
+                        const parsed = parseInt(cached, 10);
+                        if (!isNaN(parsed) && parsed > 0) existingBoxCount = parsed;
+                    }
+                }
+                const thisPullBoxCount = (countNum && countNum > 0) ? countNum : 1;
+                const totalAccumBoxCount = (existingBoxCount > 0 ? existingBoxCount : 0) + thisPullBoxCount;
+
+                if (typeof window !== 'undefined') {
+                    localStorage.setItem(`box_count_${cleanRak}_${prodName}`, String(totalAccumBoxCount));
                 }
 
                 // Clean up any old UNVERIFY records for this item in this rack so VERIFY is cleanly recorded
@@ -3794,19 +3839,24 @@ export function CekRak2() {
                     console.warn('Could not cleanup UNVERIFY logs:', delErr);
                 }
 
+                // Calculate destination's total accumulated available stock in this rack
+                const totalDestTersedia = targetStock
+                    ? Math.max(0, (targetStock.stok_awal || 0) + (targetStock.masuk || 0) + pullQty - (targetStock.keluar || 0))
+                    : pullQty;
+
                 // Insert VERIFY log inheriting realtime todayTgl & nowWaktu
                 await DatabaseService.insertLogs([{
                     tgl: todayTgl,
                     waktu: nowWaktu,
                     sku: pullItem.nama_produk,
-                    jumlah: pullQty,
+                    jumlah: totalDestTersedia,
                     type: 'MOVE',
                     gudang: 'VERIFY',
                     rak: cleanRak,
                     tgl_scan: todayTgl,
                     user_name: user?.email || userName || 'System (Tarik Fisik)',
                     sub_rak: cleanRak,
-                    log_update_user: countNum ? `BOX_COUNT:${countNum}` : undefined
+                    log_update_user: `BOX_COUNT:${totalAccumBoxCount}`
                 }], writeMode);
 
                 // Ensure it gets marked visually right away
