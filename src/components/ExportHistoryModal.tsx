@@ -160,9 +160,11 @@ export function ExportHistoryModal({ isOpen, onClose }: ExportHistoryModalProps)
   };
 
   const openCalendar = () => {
-    if (dateInputRef.current) {
-      dateInputRef.current.showPicker?.();
-    }
+    try {
+      if (dateInputRef.current) {
+        dateInputRef.current.showPicker?.();
+      }
+    } catch (_) {}
   };
 
   if (!isOpen) return null;

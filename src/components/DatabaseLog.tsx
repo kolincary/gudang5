@@ -4360,7 +4360,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                 <div className="bg-blue-600 text-white px-3 py-2 rounded-t-md">
                   <span className="font-medium">Tanggal</span>
                 </div>
-                <div className="relative" onClick={() => tanggalInputRef.current?.showPicker()}>
+                <div className="relative" onClick={() => { try { tanggalInputRef.current?.showPicker(); } catch (_) {} }}>
                   <input
                     type="text"
                     value={filters.tanggal}
@@ -4419,7 +4419,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                 <div className="bg-blue-600 text-white px-3 py-2 rounded-t-md">
                   <span className="font-medium">Tgl Scan</span>
                 </div>
-                <div className="relative" onClick={() => tglScanInputRef.current?.showPicker()}>
+                <div className="relative" onClick={() => { try { tglScanInputRef.current?.showPicker(); } catch (_) {} }}>
                   <input
                     type="text"
                     value={filters.tglScan}

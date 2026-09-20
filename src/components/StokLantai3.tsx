@@ -2357,11 +2357,9 @@ export function StokLantai3() {
                   value={selectedDate}
                   onChange={(e) => setSelectedDate(e.target.value)}
                   onClick={(e) => {
-                    e.currentTarget.showPicker?.();
-                  }}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.showPicker?.();
+                    try {
+                      e.currentTarget.showPicker?.();
+                    } catch (_) {}
                   }}
                   onKeyDown={(e) => e.preventDefault()}
                   className="w-full px-3.5 py-2.5 border-2 border-slate-200 hover:border-blue-300 focus:border-blue-600 focus:ring-4 focus:ring-blue-100 rounded-xl font-bold text-sm text-slate-900 bg-white transition-all shadow-sm cursor-pointer select-none caret-transparent"
@@ -2716,11 +2714,9 @@ export function StokLantai3() {
                   }
                 }}
                 onClick={(e) => {
-                  e.currentTarget.showPicker?.();
-                }}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.currentTarget.showPicker?.();
+                  try {
+                    e.currentTarget.showPicker?.();
+                  } catch (_) {}
                 }}
                 onKeyDown={(e) => e.preventDefault()}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 text-gray-600 cursor-pointer select-none caret-transparent"

@@ -2363,13 +2363,7 @@ export function UpdateLokasi() {
                     />
                   </div>
 
-                  <div
-                    className="cursor-pointer"
-                    onClick={(e) => {
-                      const input = e.currentTarget.querySelector('input[type="date"]') as any;
-                      if (input) input.showPicker?.();
-                    }}
-                  >
+                  <div>
                     <label className="flex items-center text-xs font-bold uppercase tracking-wider text-gray-500 mb-2 ml-1 cursor-pointer">
                       <Calendar className="w-3.5 h-3.5 mr-1.5 text-blue-500" />
                       Tanggal Masuk
@@ -2382,11 +2376,9 @@ export function UpdateLokasi() {
                         setCurrentPage(1);
                       }}
                       onClick={(e) => {
-                        e.currentTarget.showPicker?.();
-                      }}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        e.currentTarget.showPicker?.();
+                        try {
+                          e.currentTarget.showPicker?.();
+                        } catch (_) {}
                       }}
                       onKeyDown={(e) => e.preventDefault()}
                       className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all duration-200 cursor-pointer select-none caret-transparent"
@@ -2612,11 +2604,9 @@ export function UpdateLokasi() {
                   min={new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}
                   onChange={(e) => setScanModalTglMasuk(e.target.value)}
                   onClick={(e) => {
-                    e.currentTarget.showPicker?.();
-                  }}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.showPicker?.();
+                    try {
+                      e.currentTarget.showPicker?.();
+                    } catch (_) {}
                   }}
                   onKeyDown={(e) => e.preventDefault()}
                   className="w-full pl-12 pr-4 py-4 bg-white border-2 border-gray-100 rounded-2xl text-lg font-black text-blue-900 shadow-sm focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all cursor-pointer select-none caret-transparent"
@@ -2844,11 +2834,9 @@ export function UpdateLokasi() {
                   max={new Date().toISOString().split('T')[0]}
                   onChange={(e) => setManualTgl(e.target.value)}
                   onClick={(e) => {
-                    e.currentTarget.showPicker?.();
-                  }}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.showPicker?.();
+                    try {
+                      e.currentTarget.showPicker?.();
+                    } catch (_) {}
                   }}
                   onKeyDown={(e) => e.preventDefault()}
                   className="w-full pl-12 pr-4 py-4 bg-white border-2 border-gray-100 rounded-2xl text-lg font-black text-blue-900 shadow-sm focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all cursor-pointer select-none caret-transparent"
@@ -3173,11 +3161,9 @@ export function UpdateLokasi() {
                 fetchVerificationStats(e.target.value);
               }}
               onClick={(e) => {
-                e.currentTarget.showPicker?.();
-              }}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                e.currentTarget.showPicker?.();
+                try {
+                  e.currentTarget.showPicker?.();
+                } catch (_) {}
               }}
               onKeyDown={(e) => e.preventDefault()}
               className="w-full px-4 py-2.5 border-2 border-blue-200 rounded-xl text-sm font-bold text-gray-800 focus:outline-none focus:border-blue-500 transition-all cursor-pointer select-none caret-transparent"
