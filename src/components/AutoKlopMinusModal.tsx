@@ -70,8 +70,27 @@ export const getRackBatchKey = (rakName: string): string => {
     if (clean.startsWith('TEMP')) return 'TEMP';
     if (clean.startsWith('LANTAI 4') || clean.startsWith('LT4') || clean.startsWith('LANTAI4')) return 'LANTAI 4';
     if (clean.startsWith('LANTAI 2') || clean.startsWith('LT2') || clean.startsWith('LANTAI2')) return 'LANTAI 2';
-    if (clean.startsWith('ECER')) return 'ECER';
+    
+    // Check for LORONG (e.g. LORONG-1, LORONG-2, LORONG-3, LORONG 1, LORONG 2, LORONG-UTAMA, LOR, etc.)
+    const lorMatch = clean.match(/^LOR(?:ONG)?\s*[-_.]?\s*(\d+|UTAMA|[A-Z0-9]+)?$/i);
+    if (lorMatch && lorMatch[1]) {
+        return `LORONG-${lorMatch[1].toUpperCase()}`;
+    }
+    if (clean.startsWith('LORONG') || clean === 'LOR') {
+        const after = clean.replace(/^LOR(?:ONG)?\s*[-_.]?\s*/, '').trim();
+        return after ? `LORONG-${after}` : 'LORONG';
+    }
+
     if (clean.startsWith('BLOK-I') || clean.startsWith('BLOK I')) return 'BLOK-I';
+    const blokMatch = clean.match(/^BLOK\s*[-_.]?\s*([A-Z0-9]+)/i);
+    if (blokMatch) return `BLOK-${blokMatch[1].toUpperCase()}`;
+
+    if (clean.startsWith('ECER')) {
+        const ecerMatch = clean.match(/^ECER\s*[-_.]?\s*([A-Z0-9]+)/i);
+        if (ecerMatch) return `ECER-${ecerMatch[1].toUpperCase()}`;
+        return 'ECER';
+    }
+
     if (clean.startsWith('UTAMA') || clean === 'MAIN') return 'UTAMA';
     
     // Check for single letter prefixes followed by numbers (e.g. A1, A2, B1, C12, D05, J21, etc.)
@@ -90,8 +109,9 @@ export const getRackBatchLabel = (batchKey: string): string => {
     if (batchKey === 'TEMP') return 'Batch Rak TEMP';
     if (batchKey === 'LANTAI 4') return 'Batch Rak Lantai 4';
     if (batchKey === 'LANTAI 2') return 'Batch Rak Lantai 2';
-    if (batchKey === 'ECER') return 'Batch Rak Eceran (ECER)';
-    if (batchKey === 'BLOK-I') return 'Batch Rak Blok-I';
+    if (batchKey.startsWith('LORONG')) return `Batch Rak ${batchKey}`;
+    if (batchKey.startsWith('BLOK')) return `Batch Rak ${batchKey}`;
+    if (batchKey.startsWith('ECER')) return `Batch Rak ${batchKey}`;
     return `Batch Rak ${batchKey}`;
 };
 
@@ -218,14 +238,26 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
             totalMinusUnits: stat.totalMinusUnits
         }));
 
-        // Sort: single letters A-Z first, then others
+        // Sort: single letters A-Z first, then LORONG batches, then others, and LAINNYA last
         return list.sort((a, b) => {
             const isSingleA = a.key.length === 1 && a.key >= 'A' && a.key <= 'Z';
             const isSingleB = b.key.length === 1 && b.key >= 'A' && b.key <= 'Z';
             if (isSingleA && isSingleB) return a.key.localeCompare(b.key);
             if (isSingleA) return -1;
             if (isSingleB) return 1;
-            return a.key.localeCompare(b.key);
+
+            const aIsLorong = a.key.startsWith('LORONG');
+            const bIsLorong = b.key.startsWith('LORONG');
+            if (aIsLorong && bIsLorong) {
+                return a.key.localeCompare(b.key, undefined, { numeric: true, sensitivity: 'base' });
+            }
+            if (aIsLorong) return -1;
+            if (bIsLorong) return 1;
+
+            if (a.key === 'LAINNYA') return 1;
+            if (b.key === 'LAINNYA') return -1;
+
+            return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
         });
     }, [skuBatchMap]);
 

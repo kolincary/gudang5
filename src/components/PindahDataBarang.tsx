@@ -332,10 +332,27 @@ export function PindahDataBarang() {
     });
 
     const list = Array.from(map.values()).sort((a, b) => {
-      if (a.key.length === 1 && b.key.length === 1) return a.key.localeCompare(b.key);
-      if (a.key.length === 1) return -1;
-      if (b.key.length === 1) return 1;
-      return a.label.localeCompare(b.label);
+      // 1. Single letter batches A-Z first
+      const isSingleA = a.key.length === 1 && a.key >= 'A' && a.key <= 'Z';
+      const isSingleB = b.key.length === 1 && b.key >= 'A' && b.key <= 'Z';
+      if (isSingleA && isSingleB) return a.key.localeCompare(b.key);
+      if (isSingleA) return -1;
+      if (isSingleB) return 1;
+
+      // 2. LORONG batches next (LORONG-1, LORONG-2, ..., LORONG-7, LORONG-UTAMA)
+      const aIsLorong = a.key.startsWith('LORONG');
+      const bIsLorong = b.key.startsWith('LORONG');
+      if (aIsLorong && bIsLorong) {
+        return a.key.localeCompare(b.key, undefined, { numeric: true, sensitivity: 'base' });
+      }
+      if (aIsLorong) return -1;
+      if (bIsLorong) return 1;
+
+      // 3. LAINNYA always last
+      if (a.key === 'LAINNYA') return 1;
+      if (b.key === 'LAINNYA') return -1;
+
+      return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
     });
 
     const totalCount = itemsWithStock.length;
@@ -1976,7 +1993,7 @@ export function PindahDataBarang() {
       />
 
       {operationProgress.isVisible && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 pointer-events-none">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-[80] pointer-events-none p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 pointer-events-auto shadow-lg">
             <div className="flex items-center space-x-3 mb-6">
               <Loader className="h-5 w-5 animate-spin text-blue-600" />
@@ -2023,22 +2040,22 @@ export function PindahDataBarang() {
 
       {/* Real-Time Transfer Modal for Developer & Admin */}
       {showRealtimeModal && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-purple-100 overflow-hidden flex flex-col max-h-[92vh]">
+        <div className="fixed inset-0 bg-slate-900/75 backdrop-blur-sm flex items-center justify-center z-[70] p-2 sm:p-4 overflow-y-auto animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl sm:rounded-3xl max-w-4xl w-full shadow-2xl border border-purple-100 overflow-hidden flex flex-col max-h-[94vh] sm:max-h-[90vh] my-auto">
             {/* Modal Header */}
-            <div className="bg-gradient-to-r from-purple-700 via-indigo-800 to-slate-900 text-white p-6 relative overflow-hidden shrink-0">
+            <div className="bg-gradient-to-r from-purple-700 via-indigo-800 to-slate-900 text-white p-4 sm:p-6 relative overflow-hidden shrink-0">
               <div className="absolute -right-8 -top-8 text-white/5 pointer-events-none">
                 <Zap className="w-48 h-48" />
               </div>
-              <div className="relative z-10 flex items-start justify-between">
+              <div className="relative z-10 flex items-start justify-between gap-3">
                 <div>
-                  <div className="inline-flex items-center gap-2 px-3 py-1 bg-amber-400/20 border border-amber-300/30 rounded-full text-amber-300 text-[11px] font-black tracking-wider uppercase mb-2">
+                  <div className="inline-flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-0.5 sm:py-1 bg-amber-400/20 border border-amber-300/30 rounded-full text-amber-300 text-[10px] sm:text-[11px] font-black tracking-wider uppercase mb-1.5 sm:mb-2">
                     <Zap className="w-3.5 h-3.5 fill-amber-300" /> Khusus Developer & Admin
                   </div>
-                  <h3 className="text-2xl font-black tracking-tight text-white flex items-center gap-2">
-                    Pindah Stok Real-Time <span className="text-purple-300 text-base font-bold">(Tgl Hari Ini & Rak Tujuan TEMP)</span>
+                  <h3 className="text-lg sm:text-2xl font-black tracking-tight text-white flex flex-wrap items-center gap-1.5 sm:gap-2">
+                    Pindah Stok Real-Time <span className="text-purple-300 text-xs sm:text-base font-bold">(Tgl Hari Ini & Rak Tujuan TEMP)</span>
                   </h3>
-                  <p className="text-purple-200/80 text-xs mt-1 max-w-xl leading-relaxed">
+                  <p className="text-purple-200/80 text-[11px] sm:text-xs mt-1 max-w-xl leading-relaxed">
                     Memindahkan stok murni seketika dengan <span className="underline font-bold text-amber-200">tanggal & jam hari ini</span> ke lokasi rak penampung sementara (<strong className="text-white">TEMP-A s/d TEMP-F</strong>).
                   </p>
                 </div>
@@ -2051,7 +2068,7 @@ export function PindahDataBarang() {
                     setModalJumlahPindah('');
                     setIsModalRakValidated(false);
                   }}
-                  className="p-2 rounded-2xl bg-white/10 hover:bg-white/20 text-white transition-all cursor-pointer"
+                  className="p-1.5 sm:p-2 rounded-xl sm:rounded-2xl bg-white/10 hover:bg-white/20 text-white transition-all cursor-pointer shrink-0 ml-2"
                   aria-label="Tutup modal"
                 >
                   <X className="w-5 h-5" />
@@ -2059,11 +2076,11 @@ export function PindahDataBarang() {
               </div>
 
               {/* Mode Switcher Tabs */}
-              <div className="relative z-10 flex items-center gap-2 mt-4 pt-3 border-t border-white/10">
+              <div className="relative z-10 flex flex-wrap items-center gap-2 mt-3 sm:mt-4 pt-2.5 sm:pt-3 border-t border-white/10">
                 <button
                   type="button"
                   onClick={() => setRealtimeModalMode('SINGLE')}
-                  className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 cursor-pointer ${
+                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 sm:gap-2 cursor-pointer ${
                     realtimeModalMode === 'SINGLE'
                       ? 'bg-white text-purple-900 shadow-md'
                       : 'bg-white/10 text-purple-200 hover:bg-white/20'
@@ -2075,7 +2092,7 @@ export function PindahDataBarang() {
                 <button
                   type="button"
                   onClick={() => setRealtimeModalMode('BATCH')}
-                  className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-2 cursor-pointer ${
+                  className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 sm:gap-2 cursor-pointer ${
                     realtimeModalMode === 'BATCH'
                       ? 'bg-white text-purple-900 shadow-md'
                       : 'bg-white/10 text-purple-200 hover:bg-white/20'
@@ -2088,7 +2105,7 @@ export function PindahDataBarang() {
             </div>
 
             {/* Modal Body */}
-            <div className="p-6 space-y-5 overflow-y-auto flex-1">
+            <div className="p-3.5 sm:p-6 space-y-4 sm:space-y-5 overflow-y-auto flex-1">
               {realtimeModalMode === 'SINGLE' ? (
                 /* Mode 1: Single SKU Transfer */
                 <>
@@ -2114,7 +2131,7 @@ export function PindahDataBarang() {
                           setModalHighlightedSkuIndex(0);
                         }}
                         onKeyDown={handleModalSkuKeyDown}
-                        className="w-full h-12 px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
+                        className="w-full h-11 sm:h-12 px-3.5 sm:px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-xl sm:rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-xs sm:text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
                         placeholder="Ketik nama SKU barang... contoh: BOOK-1PACK/CLBK-3501"
                       />
                       {modalSkuSearch && (
@@ -2148,35 +2165,26 @@ export function PindahDataBarang() {
                                 }`}
                               >
                                 <div className="flex items-center justify-between gap-2">
-                                  <span className="font-bold text-sm tracking-tight text-slate-900">
-                                    {skuItem.nama_produk}
+                                  <span className="font-bold text-xs">{skuItem.nama_produk}</span>
+                                  <span className={`text-[11px] font-black px-2 py-0.5 rounded-full ${
+                                    skuItem.totalTersedia > 0
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-amber-100 text-amber-800'
+                                  }`}>
+                                    Surplus {skuItem.totalTersedia} {skuItem.satuan}
                                   </span>
-                                  <div className="flex items-center gap-1.5">
-                                    {skuItem.minusLocations.length > 0 && (
-                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-200">
-                                        Rak Minus: -{skuItem.totalMinus}
-                                      </span>
-                                    )}
-                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-black border ${
-                                      skuItem.totalTersedia > 0 
-                                        ? 'bg-emerald-100 text-emerald-800 border-emerald-200' 
-                                        : 'bg-slate-100 text-slate-600 border-slate-200'
-                                    }`}>
-                                      Net: {skuItem.totalTersedia} {skuItem.satuan}
-                                    </span>
-                                  </div>
                                 </div>
-                                <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1.5">
-                                  <span>Tersebar di {skuItem.locations.length} lokasi rak:</span>
-                                  <span className="font-medium text-purple-700">
-                                    {skuItem.locations.map(l => `${l.rak} (${l.tersedia})`).join(', ')}
-                                  </span>
+                                <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-2">
+                                  <span>Plus: <strong className="text-emerald-600">+{skuItem.totalPlus}</strong> ({skuItem.plusLocations.length} rak)</span>
+                                  {skuItem.totalMinus > 0 && (
+                                    <span>Minus: <strong className="text-red-600">-{skuItem.totalMinus}</strong> ({skuItem.minusLocations.length} rak)</span>
+                                  )}
                                 </div>
                               </div>
                             ))
                           ) : (
-                            <div className="p-4 text-center text-xs text-slate-400 font-medium">
-                              {modalSkuSearch ? 'Tidak ada SKU yang cocok dengan pencarian' : 'Ketik untuk mencari SKU...'}
+                            <div className="p-4 text-center text-xs text-slate-400">
+                              Tidak ada SKU yang cocok
                             </div>
                           )}
                         </div>
@@ -2184,223 +2192,169 @@ export function PindahDataBarang() {
                     </div>
                   </div>
 
-                  {/* Selected SKU Highlight Box */}
+                  {/* SKU Stock Detail Card */}
                   {selectedSkuAggregate && (
-                    <div className="p-4 bg-gradient-to-br from-purple-50 via-indigo-50/50 to-slate-50 border border-purple-200 rounded-2xl space-y-3">
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <span className="text-[10px] font-black text-purple-700 uppercase tracking-wider">SKU Terpilih</span>
-                          <h4 className="font-black text-slate-900 text-base">{selectedSkuAggregate.nama_produk}</h4>
-                          <p className="text-xs text-slate-500">Packing: {selectedSkuAggregate.packing || '-'}</p>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-[10px] font-black text-emerald-700 uppercase tracking-wider">Total Sisa Bersih</span>
-                          <div className="text-xl font-black text-emerald-700">
-                            {selectedSkuAggregate.totalTersedia} <span className="text-xs font-bold">{selectedSkuAggregate.satuan}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div>
-                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider block mb-1.5">
-                          Rincian Stok Tiap Rak ({selectedSkuAggregate.locations.length} Lokasi):
+                    <div className="bg-purple-50/60 border border-purple-200 rounded-2xl p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black text-purple-900 uppercase">Detail Stok SKU Terpilih</span>
+                        <span className="text-xs font-bold text-purple-700">
+                          {selectedSkuAggregate.packing ? `Packing: ${selectedSkuAggregate.packing}` : `Satuan: ${selectedSkuAggregate.satuan}`}
                         </span>
-                        <div className="flex flex-wrap gap-1.5">
-                          {selectedSkuAggregate.locations.map((loc, idx) => (
-                            <span
-                              key={idx}
-                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold shadow-2xs border ${
-                                loc.tersedia < 0
-                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                  : loc.tersedia > 0
-                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                                  : 'bg-white text-slate-500 border-slate-200'
-                              }`}
-                            >
-                              <span className="opacity-70 font-normal">Rak</span> {loc.rak}:{' '}
-                              <span className="font-black">{loc.tersedia} {selectedSkuAggregate.satuan}</span>
-                            </span>
-                          ))}
+                      </div>
+
+                      {/* Stock Summary Metrics */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="bg-white p-2.5 rounded-xl border border-purple-100 text-center">
+                          <div className="text-[10px] font-bold text-slate-400 uppercase">Total Plus</div>
+                          <div className="text-sm font-black text-emerald-600">+{selectedSkuAggregate.totalPlus}</div>
+                        </div>
+                        <div className="bg-white p-2.5 rounded-xl border border-purple-100 text-center">
+                          <div className="text-[10px] font-bold text-slate-400 uppercase">Total Minus</div>
+                          <div className="text-sm font-black text-red-500">-{selectedSkuAggregate.totalMinus}</div>
+                        </div>
+                        <div className="bg-white p-2.5 rounded-xl border border-purple-200 text-center shadow-xs">
+                          <div className="text-[10px] font-bold text-purple-700 uppercase">Stok Tersedia</div>
+                          <div className="text-base font-black text-purple-900">{selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan}</div>
                         </div>
                       </div>
 
-                      {/* Auto-Klop Alert if Minus Racks Detected */}
-                      {selectedSkuAggregate.minusLocations.length > 0 && (
-                        <div className="p-3.5 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl flex flex-col gap-2.5 shadow-xs animate-fade-in">
-                          <div className="flex items-center justify-between gap-2 flex-wrap">
-                            <div className="flex items-center gap-2">
-                              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                              <span className="text-xs font-black text-amber-950">
-                                Terdeteksi {selectedSkuAggregate.minusLocations.length} Rak Minus ({selectedSkuAggregate.totalMinus} {selectedSkuAggregate.satuan})
-                              </span>
-                            </div>
-                            {selectedSkuAggregate.pairPlans.length > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => handleExecuteSingleKlop(selectedSkuAggregate)}
-                                disabled={submitting}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white rounded-xl text-[11px] font-black shadow-sm transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-                                title="Klopkan sekarang untuk menolkan rak minus pada SKU ini saja"
-                              >
-                                <Scale className="w-3.5 h-3.5" />
-                                <span>Auto-Klop SKU Ini Saja</span>
-                              </button>
-                            )}
+                      {/* Auto-Balancing Suggestions if any */}
+                      {selectedSkuAggregate.pairPlans.length > 0 && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                          <div className="flex items-center gap-1.5 text-amber-800 text-xs font-black mb-1">
+                            <Scale className="w-3.5 h-3.5" />
+                            <span>Rekomendasi Auto-Klop ({selectedSkuAggregate.pairPlans.length} transfer):</span>
                           </div>
-
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
-                            <div className="bg-white/80 p-2 rounded-xl border border-amber-100">
-                              <span className="text-rose-600 font-extrabold uppercase text-[10px] block mb-1">Rak Minus:</span>
-                              <div className="flex flex-wrap gap-1">
-                                {selectedSkuAggregate.minusLocations.map((m, idx) => (
-                                  <span key={idx} className="bg-rose-50 text-rose-700 font-bold px-1.5 py-0.5 rounded border border-rose-200">
-                                    {m.rak}: {m.tersedia} {selectedSkuAggregate.satuan}
-                                  </span>
-                                ))}
+                          <div className="space-y-1 text-[11px] text-amber-900">
+                            {selectedSkuAggregate.pairPlans.map((plan, idx) => (
+                              <div key={idx} className="flex items-center justify-between">
+                                <span>Dari <strong>{plan.sourceRak}</strong> ke <strong>{plan.targetRak}</strong></span>
+                                <span className="font-bold text-amber-800">+{plan.qty} {selectedSkuAggregate.satuan}</span>
                               </div>
-                            </div>
-
-                            <div className="bg-white/80 p-2 rounded-xl border border-amber-100">
-                              <span className="text-emerald-600 font-extrabold uppercase text-[10px] block mb-1">Rak Donor Penyeimbang:</span>
-                              <div className="flex flex-wrap gap-1">
-                                {selectedSkuAggregate.plusLocations.map((p, idx) => (
-                                  <span key={idx} className="bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded border border-emerald-200">
-                                    {p.rak}: +{p.tersedia} {selectedSkuAggregate.satuan}
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
+                            ))}
                           </div>
                         </div>
                       )}
                     </div>
                   )}
 
-                  {/* 2. Destination Rack Selection (ONLY TEMP Racks) */}
-                  {selectedSkuAggregate && (
-                    <div className="modal-rak-dropdown-container">
-                      <div className="flex items-center justify-between mb-2">
-                        <label className="block text-xs font-black text-slate-700 tracking-wider uppercase">
-                          2. Pilih Rak Tujuan (Khusus Rak TEMP)
-                        </label>
-                        <span className="text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-lg border border-purple-200">
-                          Hanya Rak TEMP-A s/d TEMP-F
-                        </span>
-                      </div>
-                      <div className="relative">
-                        <input
-                          ref={modalRakInputRef}
-                          type="text"
-                          value={modalRakTujuan}
-                          onChange={(e) => {
-                            const upperVal = e.target.value.toUpperCase().trimEnd();
-                            setModalRakTujuan(upperVal);
-                            setModalShowRakDropdown(true);
+                  {/* 2. Pure TEMP Destination Selection */}
+                  <div className="modal-rak-dropdown-container">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs font-black text-slate-700 tracking-wider uppercase">
+                        2. Pilih Rak Tujuan TEMP
+                      </label>
+                      <span className="text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-lg border border-purple-200">
+                        Khusus Rak TEMP
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        ref={modalRakInputRef}
+                        type="text"
+                        value={modalRakTujuan}
+                        onChange={(e) => {
+                          const upperVal = e.target.value.toUpperCase().trimEnd();
+                          setModalRakTujuan(upperVal);
+                          setModalShowRakDropdown(true);
+                          setIsModalRakValidated(false);
+                        }}
+                        onFocus={() => {
+                          setModalShowRakDropdown(true);
+                          setModalHighlightedRakIndex(0);
+                        }}
+                        onKeyDown={handleModalRakKeyDown}
+                        className="w-full h-11 sm:h-12 px-3.5 sm:px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-xl sm:rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-xs sm:text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
+                        placeholder="Pilih rak penampung... contoh: TEMP-A, TEMP-B, TEMP-C"
+                      />
+                      {modalRakTujuan && (
+                        <button
+                          onClick={() => {
+                            setModalRakTujuan('');
+                            setModalShowRakDropdown(false);
                             setIsModalRakValidated(false);
                           }}
-                          onFocus={() => {
-                            setModalShowRakDropdown(true);
-                            setModalHighlightedRakIndex(0);
-                          }}
-                          onKeyDown={handleModalRakKeyDown}
-                          className="w-full h-12 px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
-                          placeholder="Pilih rak penampung... contoh: TEMP-A, TEMP-B, TEMP-C"
-                        />
-                        {modalRakTujuan && (
-                          <button
-                            onClick={() => {
-                              setModalRakTujuan('');
-                              setModalShowRakDropdown(false);
-                              setIsModalRakValidated(false);
-                            }}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        )}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
 
-                        {/* Rak Dropdown List */}
-                        {modalShowRakDropdown && (
-                          <div
-                            ref={modalRakDropdownRef}
-                            className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 max-h-48 overflow-y-auto p-1.5 divide-y divide-slate-100"
-                          >
-                            {modalFilteredRacks.length > 0 ? (
-                              modalFilteredRacks.map((rack, index) => (
-                                <div
-                                  key={rack.id}
-                                  onClick={() => handleModalRakSelect(rack.nama)}
-                                  className={`px-3 py-2.5 rounded-xl cursor-pointer text-sm transition-all flex items-center justify-between ${
-                                    index === modalHighlightedRakIndex
-                                      ? 'bg-purple-100 text-purple-950 font-bold'
-                                      : 'hover:bg-purple-50 text-slate-800'
-                                  }`}
-                                >
-                                  <span>Rak <strong className="text-slate-900">{rack.nama}</strong></span>
-                                  <span className="text-[10px] font-bold px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full border border-purple-200">
-                                    Lokasi TEMP
-                                  </span>
-                                </div>
-                              ))
-                            ) : (
-                              <div className="p-3 text-center text-xs text-slate-400">
-                                {modalRakTujuan ? 'Tidak ada rak TEMP yang cocok' : 'Ketik untuk mencari rak TEMP...'}
+                      {/* Dropdown List */}
+                      {modalShowRakDropdown && (
+                        <div
+                          ref={modalRakDropdownRef}
+                          className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 max-h-48 overflow-y-auto p-1.5 divide-y divide-slate-100"
+                        >
+                          {modalFilteredRacks.length > 0 ? (
+                            modalFilteredRacks.map((rack, index) => (
+                              <div
+                                key={rack.id}
+                                onClick={() => handleModalRakSelect(rack.nama)}
+                                className={`px-3 py-2.5 rounded-xl cursor-pointer text-sm transition-all flex items-center justify-between ${
+                                  index === modalHighlightedRakIndex
+                                    ? 'bg-purple-100 text-purple-950 font-bold'
+                                    : 'hover:bg-purple-50 text-slate-800'
+                                }`}
+                              >
+                                <span>Rak <strong className="text-slate-900">{rack.nama}</strong></span>
+                                <span className="text-[10px] font-bold px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full border border-purple-200">
+                                  Lokasi TEMP
+                                </span>
                               </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      {isModalRakValidated && (
-                        <p className="text-[11px] font-bold text-emerald-600 mt-1 flex items-center gap-1">
-                          <CheckCircle className="w-3.5 h-3.5" /> Rak Tujuan valid: {modalRakTujuan}
-                        </p>
+                            ))
+                          ) : (
+                            <div className="p-3 text-center text-xs text-slate-400">
+                              {modalRakTujuan ? 'Tidak ada rak TEMP yang cocok' : 'Ketik untuk mencari rak TEMP...'}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
-                  )}
+                    {isModalRakValidated && (
+                      <p className="text-[11px] font-bold text-emerald-600 mt-1 flex items-center gap-1">
+                        <CheckCircle className="w-3.5 h-3.5" /> Rak Tujuan valid: {modalRakTujuan}
+                      </p>
+                    )}
+                  </div>
 
-                  {/* 3. Transfer Quantity */}
-                  {selectedSkuAggregate && (
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <label className="block text-xs font-black text-slate-700 tracking-wider uppercase">
-                          3. Jumlah Pindah
-                        </label>
+                  {/* 3. Pure Quantity to Move */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs font-black text-slate-700 tracking-wider uppercase">
+                        3. Jumlah Pindah ({selectedSkuAggregate?.satuan || 'PCS'})
+                      </label>
+                      {selectedSkuAggregate && (
                         <button
                           type="button"
                           onClick={() => setModalJumlahPindah(selectedSkuAggregate.totalTersedia)}
-                          className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-lg text-xs font-bold transition-all cursor-pointer active:scale-95 flex items-center gap-1"
+                          className="text-[11px] font-black text-purple-700 hover:text-purple-900 bg-purple-100 hover:bg-purple-200 px-2.5 py-0.5 rounded-lg transition-colors cursor-pointer"
                         >
-                          <Zap className="w-3 h-3 text-purple-700" />
-                          <span>Pindah Semua ({selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan})</span>
+                          Pindah Semua ({selectedSkuAggregate.totalTersedia})
                         </button>
-                      </div>
+                      )}
+                    </div>
+                    <div className="relative">
                       <input
                         type="number"
                         min="1"
-                        max={selectedSkuAggregate.totalTersedia}
+                        max={selectedSkuAggregate?.totalTersedia || undefined}
                         value={modalJumlahPindah}
                         onChange={(e) => {
                           const val = e.target.value;
-                          if (val === '') {
-                            setModalJumlahPindah('');
-                          } else {
-                            const num = parseInt(val);
-                            setModalJumlahPindah(isNaN(num) ? '' : num);
-                          }
+                          setModalJumlahPindah(val === '' ? '' : Math.max(0, parseInt(val) || 0));
                         }}
-                        className="w-full h-12 px-4 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
-                        placeholder={`Masukkan jumlah pindah (1 - ${selectedSkuAggregate.totalTersedia})...`}
+                        className="w-full h-11 sm:h-12 px-3.5 sm:px-4 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-xl sm:rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
+                        placeholder={selectedSkuAggregate ? `Maksimal: ${selectedSkuAggregate.totalTersedia}` : 'Pilih SKU terlebih dahulu'}
+                        disabled={!selectedSkuAggregate}
                       />
-                      <div className="flex justify-between items-center text-xs text-slate-500 mt-1">
-                        <span>Maksimal tersedia: <strong className="text-slate-800">{selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan}</strong></span>
-                        {typeof modalJumlahPindah === 'number' && modalJumlahPindah > 0 && (
-                          <span className="font-bold text-purple-700">
-                            Sisa setelah transfer: {Math.max(0, selectedSkuAggregate.totalTersedia - modalJumlahPindah)} {selectedSkuAggregate.satuan}
-                          </span>
-                        )}
-                      </div>
                     </div>
-                  )}
+                    {selectedSkuAggregate && Number(modalJumlahPindah) > selectedSkuAggregate.totalTersedia && (
+                      <p className="text-[11px] font-bold text-red-500 mt-1">
+                        Jumlah melebihi stok tersedia ({selectedSkuAggregate.totalTersedia} {selectedSkuAggregate.satuan})
+                      </p>
+                    )}
+                  </div>
                 </>
               ) : (
                 /* Mode 2: Mass Batch Real-Time Transfer */
@@ -2410,11 +2364,11 @@ export function PindahDataBarang() {
                     <label className="block text-xs font-black text-slate-700 tracking-wider uppercase mb-2">
                       1. Pilih Batch Rak Asal
                     </label>
-                    <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                    <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-2 scrollbar-thin">
                       <button
                         type="button"
                         onClick={() => setBatchSelectedKey('ALL')}
-                        className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                        className={`px-3 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
                           batchSelectedKey === 'ALL'
                             ? 'bg-purple-700 text-white shadow-md shadow-purple-600/20'
                             : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
@@ -2428,7 +2382,7 @@ export function PindahDataBarang() {
                           key={batch.key}
                           type="button"
                           onClick={() => setBatchSelectedKey(batch.key)}
-                          className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                          className={`px-3 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
                             batchSelectedKey === batch.key
                               ? 'bg-purple-700 text-white shadow-md shadow-purple-600/20'
                               : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
@@ -2488,10 +2442,10 @@ export function PindahDataBarang() {
                   )}
 
                   {/* Batch Items Controls & List */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 sm:p-4 space-y-3">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-3">
                       {/* Search Bar inside Batch */}
-                      <div className="relative flex-1 min-w-[240px]">
+                      <div className="relative flex-1 min-w-0">
                         <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                         <input
                           type="text"
@@ -2506,7 +2460,7 @@ export function PindahDataBarang() {
                       <button
                         type="button"
                         onClick={handleBatchSelectAllDisplayed}
-                        className="px-3 py-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-black text-slate-700 transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+                        className="px-3 py-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-black text-slate-700 transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 shrink-0"
                       >
                         {batchDisplayedItems.length > 0 && batchDisplayedItems.every(i => batchSelectedItems.has(i.id)) ? (
                           <>
@@ -2523,7 +2477,7 @@ export function PindahDataBarang() {
                     </div>
 
                     {/* Items Scrollable List */}
-                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl bg-white shadow-xs">
+                    <div className="max-h-56 sm:max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl bg-white shadow-xs">
                       {batchDisplayedItems.length > 0 ? (
                         batchDisplayedItems.map((item) => {
                           const isSelected = batchSelectedItems.has(item.id);
@@ -2531,11 +2485,11 @@ export function PindahDataBarang() {
                             <div
                               key={item.id}
                               onClick={() => handleBatchToggleItem(item.id)}
-                              className={`p-3 flex items-center justify-between gap-3 cursor-pointer transition-colors ${
+                              className={`p-2.5 sm:p-3 flex items-center justify-between gap-2 sm:gap-3 cursor-pointer transition-colors ${
                                 isSelected ? 'bg-purple-50/70 hover:bg-purple-50' : 'hover:bg-slate-50'
                               }`}
                             >
-                              <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
                                 <div className="text-purple-600 shrink-0">
                                   {isSelected ? (
                                     <CheckSquare className="w-5 h-5 text-purple-600" />
@@ -2543,15 +2497,15 @@ export function PindahDataBarang() {
                                     <Square className="w-5 h-5 text-slate-300" />
                                   )}
                                 </div>
-                                <div>
-                                  <div className="font-black text-xs text-slate-900">{item.nama_produk}</div>
-                                  <div className="text-[11px] text-slate-500 mt-0.5">
+                                <div className="min-w-0">
+                                  <div className="font-black text-xs text-slate-900 truncate sm:whitespace-normal">{item.nama_produk}</div>
+                                  <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 truncate sm:whitespace-normal">
                                     Rak: <strong className="text-purple-700">{item.rak}</strong> (Sub: {item.sub_rak || item.rak}) {item.packing ? `| ${item.packing}` : ''}
                                   </div>
                                 </div>
                               </div>
                               <div className="text-right shrink-0">
-                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                <span className="inline-flex items-center px-2 sm:px-2.5 py-0.5 rounded-full text-[11px] sm:text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-200">
                                   +{item.tersedia} {item.satuan}
                                 </span>
                               </div>
@@ -2592,7 +2546,7 @@ export function PindahDataBarang() {
                           setBatchHighlightedRakIndex(0);
                         }}
                         onKeyDown={handleBatchRakKeyDown}
-                        className="w-full h-12 px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
+                        className="w-full h-11 sm:h-12 px-3.5 sm:px-4 pr-10 bg-slate-50 border border-slate-300 focus:border-purple-500 focus:bg-white rounded-xl sm:rounded-2xl focus:outline-none focus:ring-4 focus:ring-purple-500/10 text-xs sm:text-sm font-semibold text-slate-800 transition-all placeholder:text-slate-400"
                         placeholder="Pilih rak penampung... contoh: TEMP-A, TEMP-B, TEMP-C"
                       />
                       {batchDestRak && (
@@ -2661,8 +2615,8 @@ export function PindahDataBarang() {
             </div>
 
             {/* Modal Footer */}
-            <div className="p-6 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-3 shrink-0">
-              <div className="text-xs text-slate-500 font-medium">
+            <div className="p-3.5 sm:p-6 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shrink-0">
+              <div className="text-xs text-slate-500 font-medium text-center sm:text-left">
                 {realtimeModalMode === 'BATCH' && (
                   <span>
                     Terpilih: <strong className="text-purple-700 font-black">{batchSelectedItems.size} Item</strong> (
@@ -2674,7 +2628,7 @@ export function PindahDataBarang() {
                 )}
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 sm:gap-3 justify-end">
                 <button
                   type="button"
                   onClick={() => {
@@ -2686,7 +2640,7 @@ export function PindahDataBarang() {
                     setIsModalRakValidated(false);
                   }}
                   disabled={submitting}
-                  className="px-5 h-11 bg-white hover:bg-slate-100 text-slate-700 font-bold rounded-xl border border-slate-200 transition-all cursor-pointer active:scale-95 disabled:opacity-50 text-xs uppercase tracking-wider"
+                  className="flex-1 sm:flex-initial px-4 sm:px-5 h-10 sm:h-11 bg-white hover:bg-slate-100 text-slate-700 font-bold rounded-xl border border-slate-200 transition-all cursor-pointer active:scale-95 disabled:opacity-50 text-xs uppercase tracking-wider"
                 >
                   Batal
                 </button>
@@ -2704,7 +2658,7 @@ export function PindahDataBarang() {
                       Number(modalJumlahPindah) <= 0 ||
                       Number(modalJumlahPindah) > (selectedSkuAggregate?.totalTersedia || 0)
                     }
-                    className="px-6 h-11 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-700 text-white font-black rounded-xl shadow-lg shadow-purple-500/25 transition-all active:scale-95 flex items-center gap-2 cursor-pointer disabled:opacity-50 text-xs uppercase tracking-wider"
+                    className="flex-1 sm:flex-initial px-5 sm:px-6 h-10 sm:h-11 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-700 text-white font-black rounded-xl shadow-lg shadow-purple-500/25 transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 text-xs uppercase tracking-wider"
                   >
                     {submitting ? (
                       <>
@@ -2728,7 +2682,7 @@ export function PindahDataBarang() {
                       !batchDestRak ||
                       !isBatchRakValidated
                     }
-                    className="px-6 h-11 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-700 text-white font-black rounded-xl shadow-lg shadow-purple-500/25 transition-all active:scale-95 flex items-center gap-2 cursor-pointer disabled:opacity-50 text-xs uppercase tracking-wider"
+                    className="flex-1 sm:flex-initial px-5 sm:px-6 h-10 sm:h-11 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-700 text-white font-black rounded-xl shadow-lg shadow-purple-500/25 transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 text-xs uppercase tracking-wider"
                   >
                     {submitting ? (
                       <>
