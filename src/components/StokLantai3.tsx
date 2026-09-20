@@ -660,8 +660,140 @@ export function StokLantai3() {
 
 
 
+  const parseFirestoreTransaksiDocs = useCallback((docs: Array<{ id: string; data: () => any }>) => {
+    const formattedData: TransaksiLantai3[] = [];
+
+    docs.forEach(docSnap => {
+      const data = docSnap.data();
+      const rawSku = (data.nama_produk || '').trim();
+      const upperSku = rawSku.toUpperCase();
+      const conv = conversionMap.get(upperSku) || skuConversionService.findConversion(rawSku);
+      const mult = conv ? Number(conv.qty) || 1 : 1;
+      const displaySku = conv?.sku_pcs || rawSku;
+
+      if (data.harian) {
+        Object.keys(data.harian).forEach(dateKey => {
+          const dayData = data.harian[dateKey];
+          if (dayData.in && dayData.in > 0) {
+            formattedData.push({
+              id: `${docSnap.id}_${dateKey}_in`,
+              doc_id: docSnap.id,
+              out_key: 'in',
+              nama_produk: displaySku,
+              qty: dayData.in * mult,
+              tipe: 'transfer_masuk',
+              gudang: GUDANG_LABEL,
+              rak: '',
+              sub_rak: '',
+              keterangan: `Masuk dari Gudang Utama`,
+              tanggal: dateKey,
+              waktu: '',
+              user_name: '',
+              created_at: data.created_at || ''
+            });
+          }
+          if (dayData.retur && dayData.retur > 0) {
+            formattedData.push({
+              id: `${docSnap.id}_${dateKey}_retur`,
+              doc_id: docSnap.id,
+              out_key: 'retur',
+              nama_produk: displaySku,
+              qty: dayData.retur * mult,
+              tipe: 'retur',
+              gudang: GUDANG_LABEL,
+              rak: '',
+              sub_rak: '',
+              keterangan: `Retur Customer`,
+              tanggal: dateKey,
+              waktu: '',
+              user_name: '',
+              created_at: data.created_at || ''
+            });
+          }
+          if (dayData.cancel && dayData.cancel > 0) {
+            formattedData.push({
+              id: `${docSnap.id}_${dateKey}_cancel`,
+              doc_id: docSnap.id,
+              out_key: 'retur',
+              nama_produk: displaySku,
+              qty: dayData.cancel * mult,
+              tipe: 'cancel',
+              gudang: GUDANG_LABEL,
+              rak: '',
+              sub_rak: '',
+              keterangan: `Order Cancel`,
+              tanggal: dateKey,
+              waktu: '',
+              user_name: '',
+              created_at: data.created_at || ''
+            });
+          }
+          if (dayData.out && dayData.out > 0) {
+            formattedData.push({
+              id: `${docSnap.id}_${dateKey}_out`,
+              doc_id: docSnap.id,
+              out_key: 'out',
+              nama_produk: displaySku,
+              qty: -dayData.out * mult,
+              tipe: 'pembelian_customer',
+              gudang: GUDANG_LABEL,
+              rak: '',
+              sub_rak: '',
+              keterangan: `Order Keluar`,
+              tanggal: dateKey,
+              waktu: '',
+              user_name: '',
+              created_at: data.created_at || ''
+            });
+          }
+          if (dayData.sisa_stok && dayData.sisa_stok > 0) {
+            formattedData.push({
+              id: `${docSnap.id}_${dateKey}_sisa_stok`,
+              doc_id: docSnap.id,
+              out_key: 'sisa_stok',
+              nama_produk: displaySku,
+              qty: dayData.sisa_stok * mult,
+              tipe: 'sisa_stok',
+              gudang: GUDANG_LABEL,
+              rak: '',
+              sub_rak: '',
+              keterangan: `Sisa Stok Awal`,
+              tanggal: dateKey,
+              waktu: '',
+              user_name: '',
+              created_at: data.created_at || ''
+            });
+          }
+          if (dayData.adjustment && (dayData.adjustment > 0 || dayData.adjustment < 0)) {
+            formattedData.push({
+              id: `${docSnap.id}_${dateKey}_adjustment`,
+              doc_id: docSnap.id,
+              out_key: 'in',
+              nama_produk: displaySku,
+              qty: dayData.adjustment * mult,
+              tipe: 'adjustment',
+              gudang: GUDANG_LABEL,
+              rak: '',
+              sub_rak: '',
+              keterangan: `Adjustment Stok`,
+              tanggal: dateKey,
+              waktu: '',
+              user_name: '',
+              created_at: data.created_at || ''
+            });
+          }
+        });
+      }
+    });
+
+    // Sort by tanggal descending
+    formattedData.sort((a, b) => b.tanggal.localeCompare(a.tanggal));
+    return formattedData;
+  }, [conversionMap]);
+
   const loadTransaksiData = async (monthVal = selectedHistoryMonth, forceRefresh = false) => {
     try {
+      if (!monthVal) return;
       if (!forceRefresh && monthTrxCacheRef.current.has(monthVal)) {
         setTransaksiData(monthTrxCacheRef.current.get(monthVal)!);
         return;
@@ -670,124 +802,34 @@ export function StokLantai3() {
       
       const q = query(collection(db, TRX_COL), where("bulan", "==", monthVal));
       const snapshot = await getDocs(q);
-      const formattedData: TransaksiLantai3[] = [];
+      const formattedData = parseFirestoreTransaksiDocs(snapshot.docs);
 
-      snapshot.docs.forEach(docSnap => {
-        const data = docSnap.data();
-        const rawSku = (data.nama_produk || '').trim();
-        const upperSku = rawSku.toUpperCase();
-        const conv = conversionMap.get(upperSku) || skuConversionService.findConversion(rawSku);
-        const mult = conv ? Number(conv.qty) || 1 : 1;
-        const displaySku = conv?.sku_pcs || rawSku;
-
-        if (data.harian) {
-          Object.keys(data.harian).forEach(dateKey => {
-            const dayData = data.harian[dateKey];
-            if (dayData.in && dayData.in > 0) {
-              formattedData.push({
-                id: `${docSnap.id}_${dateKey}_in`,
-                doc_id: docSnap.id,
-                out_key: 'in',
-                nama_produk: displaySku,
-                qty: dayData.in * mult,
-                tipe: 'transfer_masuk',
-                gudang: GUDANG_LABEL,
-                rak: '',
-                sub_rak: '',
-                keterangan: `Masuk dari Gudang Utama`,
-                tanggal: dateKey,
-                waktu: '',
-                user_name: '',
-                created_at: data.created_at || ''
-              });
-            }
-            if (dayData.retur && dayData.retur > 0) {
-              formattedData.push({
-                id: `${docSnap.id}_${dateKey}_retur`,
-                doc_id: docSnap.id,
-                out_key: 'retur',
-                nama_produk: displaySku,
-                qty: dayData.retur * mult,
-                tipe: 'retur',
-                gudang: GUDANG_LABEL,
-                rak: '',
-                sub_rak: '',
-                keterangan: `Retur Customer`,
-                tanggal: dateKey,
-                waktu: '',
-                user_name: '',
-                created_at: data.created_at || ''
-              });
-            }
-            if (dayData.cancel && dayData.cancel > 0) {
-              formattedData.push({
-                id: `${docSnap.id}_${dateKey}_cancel`,
-                doc_id: docSnap.id,
-                out_key: 'retur',
-                nama_produk: displaySku,
-                qty: dayData.cancel * mult,
-                tipe: 'cancel',
-                gudang: GUDANG_LABEL,
-                rak: '',
-                sub_rak: '',
-                keterangan: `Order Cancel`,
-                tanggal: dateKey,
-                waktu: '',
-                user_name: '',
-                created_at: data.created_at || ''
-              });
-            }
-            if (dayData.out && dayData.out > 0) {
-              formattedData.push({
-                id: `${docSnap.id}_${dateKey}_out`,
-                doc_id: docSnap.id,
-                out_key: 'out',
-                nama_produk: displaySku,
-                qty: -dayData.out * mult,
-                tipe: 'pembelian_customer',
-                gudang: GUDANG_LABEL,
-                rak: '',
-                sub_rak: '',
-                keterangan: `Order Keluar`,
-                tanggal: dateKey,
-                waktu: '',
-                user_name: '',
-                created_at: data.created_at || ''
-              });
-            }
-            if (dayData.sisa_stok && dayData.sisa_stok > 0) {
-              formattedData.push({
-                id: `${docSnap.id}_${dateKey}_sisa_stok`,
-                doc_id: docSnap.id,
-                out_key: 'sisa_stok',
-                nama_produk: displaySku,
-                qty: dayData.sisa_stok * mult,
-                tipe: 'sisa_stok',
-                gudang: GUDANG_LABEL,
-                rak: '',
-                sub_rak: '',
-                keterangan: `Sisa Stok Awal`,
-                tanggal: dateKey,
-                waktu: '',
-                user_name: '',
-                created_at: data.created_at || ''
-              });
-            }
-          });
-        }
-      });
-
-      // Sort by tanggal descending
-      formattedData.sort((a, b) => b.tanggal.localeCompare(a.tanggal));
       monthTrxCacheRef.current.set(monthVal, formattedData);
       setTransaksiData(formattedData);
-      console.log(`✅ Loaded ${formattedData.length} transaksi docs from Firestore transaksi_lantai3`);
+      console.log(`✅ Loaded ${formattedData.length} transaksi docs from Firestore transaksi_lantai3 for ${monthVal}`);
     } catch (error) {
       console.error('Error loading transaksi data:', error);
     } finally {
       setLoadingHistory(false);
     }
   };
+
+  // Realtime listener for transaction history when history modal is active
+  useEffect(() => {
+    if (!showHistoryModal || !selectedHistoryMonth) return;
+
+    const q = query(collection(db, TRX_COL), where("bulan", "==", selectedHistoryMonth));
+    const unsubTrx = onSnapshot(q, (snapshot) => {
+      const formattedData = parseFirestoreTransaksiDocs(snapshot.docs);
+      monthTrxCacheRef.current.set(selectedHistoryMonth, formattedData);
+      setTransaksiData(formattedData);
+      console.log(`⚡ Realtime update: ${formattedData.length} transaksi items for ${selectedHistoryMonth}`);
+    }, (error) => {
+      console.error('Error in realtime transaksi snapshot:', error);
+    });
+
+    return () => unsubTrx();
+  }, [showHistoryModal, selectedHistoryMonth, parseFirestoreTransaksiDocs]);
 
   const getStatus = (item: StokLantai3Item): string => {
     const info = getConvertedInfo(item);
@@ -970,9 +1012,10 @@ export function StokLantai3() {
       }
       
       showToast(`Semua data ${colName} berhasil dihapus!`, 'success');
+      monthTrxCacheRef.current.clear();
       if (activeTab === targetTab) {
         loadStokData(true);
-        loadTransaksiData();
+        loadTransaksiData(selectedHistoryMonth, true);
       }
     } catch (error: any) {
       console.error('Error deleting data:', error);
@@ -985,8 +1028,14 @@ export function StokLantai3() {
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      showToast('Data sudah tersinkronisasi realtime', 'success');
+      monthTrxCacheRef.current.clear();
+      await Promise.all([
+        loadStokData(true),
+        selectedHistoryMonth ? loadTransaksiData(selectedHistoryMonth, true) : Promise.resolve()
+      ]);
+      showToast('Data berhasil dimuat ulang & tersinkronisasi', 'success');
+    } catch (err) {
+      console.error('Error refreshing data:', err);
     } finally {
       setIsRefreshing(false);
     }
@@ -1016,7 +1065,7 @@ export function StokLantai3() {
 
           const harian = data.harian || {};
           for (const [dateKey, values] of Object.entries(harian)) {
-            const dayData = values as { in?: number; out?: number; retur?: number; cancel?: number; sisa_stok?: number };
+            const dayData = values as { in?: number; out?: number; retur?: number; cancel?: number; sisa_stok?: number; adjustment?: number };
             if (dayData.in && dayData.in > 0) {
               formattedData.push({
                 id: `${docSnap.id}_${dateKey}_in`,
@@ -1092,6 +1141,22 @@ export function StokLantai3() {
                 gudang: GUDANG_LABEL,
                 rak: '', sub_rak: '',
                 keterangan: `Sisa Stok Awal`,
+                tanggal: dateKey,
+                waktu: '', user_name: '',
+                created_at: data.created_at || ''
+              });
+            }
+            if (dayData.adjustment && (dayData.adjustment > 0 || dayData.adjustment < 0)) {
+              formattedData.push({
+                id: `${docSnap.id}_${dateKey}_adjustment`,
+                doc_id: docSnap.id,
+                out_key: 'in',
+                nama_produk: displaySku,
+                qty: dayData.adjustment * mult,
+                tipe: 'adjustment',
+                gudang: GUDANG_LABEL,
+                rak: '', sub_rak: '',
+                keterangan: `Adjustment Stok`,
                 tanggal: dateKey,
                 waktu: '', user_name: '',
                 created_at: data.created_at || ''
@@ -1332,10 +1397,12 @@ export function StokLantai3() {
         setImportText('');
         setTransactionType('');
         setShowImportModal(false);
+        monthTrxCacheRef.current.clear();
+        setSelectedHistoryMonth(yearMonth);
         // Load data asynchronously in the background so the UI doesn't freeze
         Promise.all([
           loadStokData(true),
-          loadTransaksiData()
+          loadTransaksiData(yearMonth, true)
         ]).catch(console.error);
       }
     } catch (error) {
@@ -1460,12 +1527,13 @@ export function StokLantai3() {
 
       await batch.commit();
       
+      monthTrxCacheRef.current.clear();
       setSelectedHistoryIds(new Set());
       showToast(`Berhasil menghapus ${itemsToDelete.length} riwayat transaksi`, 'success');
       
       Promise.all([
         loadStokData(true),
-        loadTransaksiData()
+        selectedHistoryMonth ? loadTransaksiData(selectedHistoryMonth, true) : Promise.resolve()
       ]).catch(console.error);
     } catch (error) {
       console.error('Error deleting history:', error);
@@ -1647,9 +1715,10 @@ export function StokLantai3() {
       handleCancelEditHistory();
       showToast('Perubahan riwayat berhasil disimpan', 'success');
       
+      monthTrxCacheRef.current.clear();
       Promise.all([
         loadStokData(true),
-        loadTransaksiData()
+        selectedHistoryMonth ? loadTransaksiData(selectedHistoryMonth, true) : Promise.resolve()
       ]).catch(console.error);
 
     } catch (error: any) {
@@ -1882,8 +1951,11 @@ export function StokLantai3() {
               </Button>
               <Button
                 onClick={() => {
-                  setSelectedHistoryMonth('');
-                  setTransaksiData([]);
+                  const now = new Date();
+                  const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+                  const targetMonth = selectedHistoryMonth || curMonth;
+                  setSelectedHistoryMonth(targetMonth);
+                  loadTransaksiData(targetMonth, true);
                   setShowHistoryModal(true);
                 }}
                 variant="secondary"
@@ -2602,7 +2674,7 @@ export function StokLantai3() {
                   const val = e.target.value;
                   setSelectedHistoryMonth(val);
                   if (val) {
-                    loadTransaksiData(val);
+                    loadTransaksiData(val, true);
                   } else {
                     setTransaksiData([]);
                   }
@@ -2639,7 +2711,7 @@ export function StokLantai3() {
                     const yearMonth = `${year}-${month}`;
                     if (yearMonth !== selectedHistoryMonth) {
                       setSelectedHistoryMonth(yearMonth);
-                      loadTransaksiData(yearMonth);
+                      loadTransaksiData(yearMonth, true);
                     }
                   }
                 }}
@@ -2689,6 +2761,19 @@ export function StokLantai3() {
               </div>
             </div>
             <div className="w-full md:w-auto flex items-center gap-2">
+              <Button
+                onClick={() => {
+                  if (selectedHistoryMonth) {
+                    loadTransaksiData(selectedHistoryMonth, true);
+                  }
+                }}
+                variant="secondary"
+                disabled={loadingHistory || !selectedHistoryMonth}
+                title="Refresh Riwayat Transaksi"
+                className="px-3"
+              >
+                <RefreshCw className={`h-4 w-4 ${loadingHistory ? 'animate-spin' : ''}`} />
+              </Button>
               <Button 
                 onClick={() => {
                   setHistorySearch('');
