@@ -10,6 +10,7 @@ import { Modal } from './ui/Modal';
 import { BarcodeScanner } from './ui/BarcodeScanner';
 import { cn } from '../lib/utils';
 import { CustomDropdown } from './ui/CustomDropdown';
+import { useAuth } from '../lib/AuthContext';
 
 interface TransactionItem {
   id: string;
@@ -468,9 +469,9 @@ export function UpdateLokasi() {
         : parseDateFlexible(selectedDate);
       const possibleFormatsStats = parsedStatsDate ? formatDateForSearch(parsedStatsDate) : [selectedDate];
 
-      const { data: officeData, count: officeCount, error: oErr } = await supabase
+      const { data: officeData, error: oErr } = await supabase
         .from('database_log')
-        .select('id, sku, tgl, tgl_scan, unique_code, status, gudang', { count: 'exact' })
+        .select('id, sku, tgl, tgl_scan, unique_code, status, gudang')
         .eq('type', 'IN')
         .neq('gudang', 'TRANSFER')
         .in('tgl', possibleFormatsStats)
@@ -481,9 +482,9 @@ export function UpdateLokasi() {
       if (oErr) {
         console.warn('[VerStats] matched_log_id filter error (kolom mungkin belum ada):', oErr.message);
         // Fallback: fetch all IN records for the date
-        const { data: fallbackData, count: fallbackCount } = await supabase
+        const { data: fallbackData } = await supabase
           .from('database_log')
-          .select('id, sku, tgl, tgl_scan, unique_code, status, gudang', { count: 'exact' })
+          .select('id, sku, tgl, tgl_scan, unique_code, status, gudang')
           .eq('type', 'IN')
           .neq('gudang', 'TRANSFER')
           .in('tgl', possibleFormatsStats)
@@ -504,7 +505,7 @@ export function UpdateLokasi() {
       });
       setPendingManualData(manualData || []);
       setPendingOfficeData(cleanOfficeData);
-      console.log(`📊 [VerStats] Manual: ${manualCount}, Office: ${officeCount} (Date: ${selectedDate})`);
+      console.log(`📊 [VerStats] Manual: ${manualCount}, Office: ${cleanOfficeData.length} (Date: ${selectedDate})`);
     } catch (err) {
       console.error('Error fetching stats:', err);
     }
