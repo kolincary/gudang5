@@ -18,6 +18,9 @@ interface StockItem {
   rak: string;
   sub_rak: string;
   satuan: string;
+  stok_awal?: number;
+  masuk?: number;
+  keluar?: number;
   tersedia: number;
   status: string;
 }
@@ -605,9 +608,18 @@ export function PindahDataBarang() {
       const aggregatedMap = new Map<string, StockItem>();
       activeStockItems.forEach(item => {
         const key = `${item.nama_produk}-${item.rak}`;
+        // Formula stok fisik murni: (stok_awal || 0) + (masuk || 0) - (keluar || 0)
+        const formulaTersedia = (Number(item.stok_awal) || 0) + (Number(item.masuk) || 0) - (Number(item.keluar) || 0);
+        // Jika kolom masuk/keluar terisi, utamakan formula matematis agar data corrupt di database otomatis terkoreksi
+        const verifiedTersedia = (item.masuk !== undefined && item.keluar !== undefined && (Number(item.masuk) > 0 || Number(item.keluar) > 0 || (Number(item.stok_awal) || 0) > 0))
+          ? formulaTersedia
+          : (Number(item.tersedia) || 0);
+
         if (aggregatedMap.has(key)) {
             const existing = aggregatedMap.get(key)!;
-            existing.tersedia += item.tersedia;
+            existing.tersedia += verifiedTersedia;
+            existing.masuk = (existing.masuk || 0) + (Number(item.masuk) || 0);
+            existing.keluar = (existing.keluar || 0) + (Number(item.keluar) || 0);
         } else {
             aggregatedMap.set(key, {
                 id: item.id,
@@ -616,7 +628,10 @@ export function PindahDataBarang() {
                 rak: item.rak,
                 sub_rak: item.sub_rak || item.rak,
                 satuan: item.satuan,
-                tersedia: item.tersedia, // Trust the database value
+                stok_awal: Number(item.stok_awal) || 0,
+                masuk: Number(item.masuk) || 0,
+                keluar: Number(item.keluar) || 0,
+                tersedia: verifiedTersedia,
                 status: item.status
             });
         }
@@ -1069,45 +1084,75 @@ export function PindahDataBarang() {
 
       updateProgress(operationSteps[4], 4);
 
-      // 3. Update stock_items for auto-klopped locations
+      // 3. Update stock_items with consolidated deltas across Auto-Klop & transfers
+      const locationDeltas = new Map<string, {
+        id: string;
+        rak: string;
+        deltaMasuk: number;
+        deltaKeluar: number;
+      }>();
+
+      const getOrInitDelta = (id: string, rak: string) => {
+        if (!locationDeltas.has(id)) {
+          locationDeltas.set(id, { id, rak, deltaMasuk: 0, deltaKeluar: 0 });
+        }
+        return locationDeltas.get(id)!;
+      };
+
+      // Catat delta dari pairPlans (Auto-Klop)
       if (selectedSkuAggregate.pairPlans && selectedSkuAggregate.pairPlans.length > 0) {
         for (const plan of selectedSkuAggregate.pairPlans) {
           const donorLoc = selectedSkuAggregate.plusLocations.find(p => p.rak === plan.sourceRak && (p.sub_rak || p.rak) === plan.sourceSubRak);
           if (donorLoc && donorLoc.id) {
-            await DatabaseService.updateStockItem(
-              donorLoc.id,
-              { tersedia: Math.max(0, donorLoc.tersedia - plan.qty) },
-              writeMode
-            );
-            donorLoc.tersedia = Math.max(0, donorLoc.tersedia - plan.qty);
+            getOrInitDelta(donorLoc.id, donorLoc.rak).deltaKeluar += plan.qty;
           }
           const minusLoc = selectedSkuAggregate.minusLocations.find(m => m.rak === plan.targetRak && (m.sub_rak || m.rak) === plan.targetSubRak);
           if (minusLoc && minusLoc.id) {
-            await DatabaseService.updateStockItem(
-              minusLoc.id,
-              { tersedia: minusLoc.tersedia + plan.qty },
-              writeMode
-            );
-            minusLoc.tersedia = minusLoc.tersedia + plan.qty;
+            getOrInitDelta(minusLoc.id, minusLoc.rak).deltaMasuk += plan.qty;
           }
         }
       }
 
-      // 4. Update stock_items for deducted origin locations
+      // Catat delta dari transfer sisa fisik ke rak tujuan
       for (const d of deductedLocations) {
         if (d.id) {
-          await DatabaseService.updateStockItem(
-            d.id,
-            { tersedia: Math.max(0, d.currentTersedia - d.qty) },
-            writeMode
-          );
+          getOrInitDelta(d.id, d.rak).deltaKeluar += d.qty;
         }
       }
 
-      // 5. Query and update/create destination stock item in TEMP-*
+      // Update seluruh stock_items lokasi asal yang terpotong/klop secara akurat
+      for (const delta of locationDeltas.values()) {
+        try {
+          const { data: curItem } = await supabase
+            .from('stock_items')
+            .select('id, stok_awal, masuk, keluar, tersedia')
+            .eq('id', delta.id)
+            .maybeSingle();
+
+          if (curItem) {
+            const newMasuk = (curItem.masuk || 0) + delta.deltaMasuk;
+            const newKeluar = (curItem.keluar || 0) + delta.deltaKeluar;
+            const newTersedia = (curItem.stok_awal || 0) + newMasuk - newKeluar;
+
+            await DatabaseService.updateStockItem(
+              curItem.id,
+              {
+                masuk: newMasuk,
+                keluar: newKeluar,
+                tersedia: newTersedia
+              },
+              writeMode
+            );
+          }
+        } catch (err) {
+          console.error(`Error updating stock item ${delta.id}:`, err);
+        }
+      }
+
+      // 4. Query and update/create destination stock item in TEMP-*
       const { data: existingStock, error: checkError } = await supabase
         .from('stock_items')
-        .select('id, tersedia, masuk')
+        .select('id, stok_awal, masuk, keluar, tersedia')
         .eq('nama_produk', selectedSkuAggregate.nama_produk)
         .eq('rak', rakTujuanUpper)
         .maybeSingle();
@@ -1119,11 +1164,13 @@ export function PindahDataBarang() {
       let stockItemCreated = false;
 
       if (existingStock && existingStock.id) {
+        const newMasuk = (existingStock.masuk || 0) + transferQty;
+        const currentKeluar = existingStock.keluar || 0;
         await DatabaseService.updateStockItem(
           existingStock.id,
           {
-            masuk: (existingStock.masuk || 0) + transferQty,
-            tersedia: (existingStock.tersedia || 0) + transferQty
+            masuk: newMasuk,
+            tersedia: (existingStock.stok_awal || 0) + newMasuk - currentKeluar
           },
           writeMode
         );
@@ -2751,7 +2798,10 @@ export function PindahDataBarang() {
                 {/* Dedicated Real-Time Transfer Button for Dev & Admin */}
                 {isDevOrAdmin && (
                   <button
-                    onClick={() => setShowRealtimeModal(true)}
+                    onClick={() => {
+                      loadInitialData();
+                      setShowRealtimeModal(true);
+                    }}
                     className="h-12 px-5 bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-600 hover:from-purple-600 hover:to-indigo-600 text-white font-black rounded-2xl shadow-lg shadow-purple-900/30 transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-purple-300/30 cursor-pointer"
                     title="Buka Modal Pindah Real-Time: Hitung sisa riil IN-OUT per SKU dan pindahkan dengan tanggal hari ini ke rak TEMP"
                   >
