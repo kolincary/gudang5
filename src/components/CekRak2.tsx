@@ -93,6 +93,7 @@ export function CekRak2() {
     const [globalSearchResults, setGlobalSearchResults] = useState<StockItem[]>([]);
     const [isGlobalSearching, setIsGlobalSearching] = useState(false);
     const [showGlobalResults, setShowGlobalResults] = useState(false);
+    const [searchTab, setSearchTab] = useState<'rak' | 'sku'>('rak');
 
     // Pull Modal State
     const [showPullModal, setShowPullModal] = useState(false);
@@ -5072,65 +5073,49 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
             {/* MAIN CONTENT AREA */}
             <main className="flex-1 flex flex-col relative min-w-0 w-full pb-16">
                 {/* ======================================================== */}
-                {/* PREMIUM RESPONSIVE HEADER & ACTIONS (Mobile & Desktop) */}
+                {/* COMPACT MINIMALIST HEADER (Mobile & Desktop) */}
                 {/* ======================================================== */}
-                <div className="flex flex-col mb-4 sm:mb-6">
-                    {/* Full Immersive Background Banner with Floating Shapes */}
-                    <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 pt-[88px] sm:pt-[96px] lg:pt-[100px] pb-6 sm:pb-8 lg:pb-10 px-4 sm:px-8 lg:px-12 rounded-b-[32px] lg:rounded-b-[44px] shadow-2xl shadow-blue-950/30 relative overflow-hidden transition-all duration-500 flex flex-col justify-center border-b border-blue-900/30">
-
-                        {/* Decorative Background Icon & Ambient Glows */}
-                        <div className="absolute -top-10 -right-10 text-blue-500 opacity-5 pointer-events-none">
-                            <MapPin className="w-72 h-72 lg:w-96 lg:h-96" />
-                        </div>
-                        <div className="absolute top-0 right-1/4 w-72 h-72 bg-blue-500/10 rounded-full blur-3xl pointer-events-none animate-pulse"></div>
-                        <div className="absolute bottom-0 left-1/3 w-56 h-56 bg-indigo-500/15 rounded-full blur-2xl pointer-events-none"></div>
-
-                        {/* Text Content */}
-                        <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 lg:gap-6">
-                            <div className="max-w-2xl">
-                                <div className="flex flex-wrap items-center gap-2 mb-1.5 opacity-90">
-                                    <span className="px-2.5 py-0.5 rounded-md bg-blue-500/20 border border-blue-400/30 text-[10px] lg:text-[11px] font-black tracking-[0.2em] text-blue-200 uppercase flex items-center gap-1.5">
-                                        <Sparkles className="w-3 h-3 text-cyan-400" />
-                                        Inventory Tool V5 • Stock Opname
-                                    </span>
-                                    {isDeveloper && (
-                                        <span className="px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/30 text-[10px] font-black tracking-wider text-amber-200 uppercase">
-                                            DevMode
-                                        </span>
-                                    )}
+                <div className="flex flex-col mb-3 sm:mb-4">
+                    <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 pt-[80px] sm:pt-[90px] pb-4 sm:pb-5 px-4 sm:px-6 lg:px-8 rounded-b-2xl sm:rounded-b-3xl shadow-md border-b border-slate-800/80">
+                        <div className="max-w-7xl mx-auto w-full flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
+                            {/* Left Title & Status */}
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-xl bg-blue-600/30 border border-blue-400/30 flex items-center justify-center text-blue-300 shrink-0">
+                                    <Package className="w-5 h-5" />
                                 </div>
-                                <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black text-white tracking-tight leading-tight uppercase flex items-center gap-2.5">
-                                    Stock <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-300 via-indigo-200 to-cyan-300">Opname</span>
-                                </h1>
-                                <p className="text-blue-100/80 font-medium text-xs sm:text-sm leading-relaxed mt-1 flex items-center gap-2">
-                                    <span className="relative flex h-2.5 w-2.5 shrink-0">
-                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                                    </span>
-                                    <span><strong className="text-white font-bold">Real-Time Monitoring</strong> — Cek stok fisik, konfirmasi barang, scan barcode, dan cari lokasi produk</span>
-                                </p>
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight uppercase">
+                                            Stock <span className="text-blue-400">Opname</span>
+                                        </h1>
+                                        {isDeveloper && (
+                                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/40 text-[10px] font-black tracking-wider text-amber-300 uppercase">
+                                                DevMode
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-2 text-xs text-slate-300 font-medium mt-0.5">
+                                        <span className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                            Real-Time Sync
+                                        </span>
+                                        <span>•</span>
+                                        <span className="text-slate-400 hidden sm:inline">Cek fisik & kelola stok barang gudang</span>
+                                        <span className="text-slate-400 sm:hidden">Cek stok rak gudang</span>
+                                    </div>
+                                </div>
                             </div>
 
-                            {/* Top Stats Overview */}
-                            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                                <div className="px-4 py-2.5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/15 flex items-center gap-3 shadow-inner">
-                                    <div className="p-2 bg-blue-500/30 rounded-xl">
-                                        <MapPin className="w-4 h-4 text-blue-200" />
-                                    </div>
-                                    <div>
-                                        <p className="text-[9px] font-black uppercase tracking-wider text-blue-200">Total Rak</p>
-                                        <p className="text-base sm:text-lg font-black leading-none text-white">{rackOptions.length} <span className="text-[10px] font-normal text-blue-200">Lokasi</span></p>
-                                    </div>
+                            {/* Right Quick Badges */}
+                            <div className="flex items-center gap-2 self-start sm:self-center">
+                                <div className="px-3 py-1.5 bg-white/10 backdrop-blur-sm rounded-xl border border-white/15 text-xs font-bold text-slate-200 flex items-center gap-2">
+                                    <MapPin className="w-3.5 h-3.5 text-blue-400" />
+                                    <span><strong>{rackOptions.length}</strong> Lokasi Rak</span>
                                 </div>
                                 {lastScanned && (
-                                    <div className="px-4 py-2.5 bg-emerald-500/20 backdrop-blur-md rounded-2xl border border-emerald-400/30 flex items-center gap-3 shadow-inner animate-in fade-in">
-                                        <div className="p-2 bg-emerald-500/30 rounded-xl">
-                                            <Package className="w-4 h-4 text-emerald-200" />
-                                        </div>
-                                        <div>
-                                            <p className="text-[9px] font-black uppercase tracking-wider text-emerald-200">Rak Aktif</p>
-                                            <p className="text-base sm:text-lg font-black leading-none text-white">{lastScanned} <span className="text-[10px] font-normal text-emerald-200">({items.length} item)</span></p>
-                                        </div>
+                                    <div className="px-3 py-1.5 bg-emerald-500/20 backdrop-blur-sm rounded-xl border border-emerald-400/40 text-xs font-bold text-emerald-300 flex items-center gap-1.5 animate-in fade-in">
+                                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                        <span>Rak Aktif: <strong>{lastScanned}</strong></span>
                                     </div>
                                 )}
                             </div>
@@ -5139,55 +5124,47 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 </div>
 
                 {/* MAIN CONTENT CONTAINER */}
-                <div className="max-w-7xl mx-auto w-full px-3.5 sm:px-6 lg:px-8 mt-4 sm:mt-6 lg:mt-8 relative z-20 space-y-5 sm:space-y-6">
+                <div className="max-w-7xl mx-auto w-full px-3 sm:px-6 lg:px-8 space-y-4 sm:space-y-5">
 
-                    {/* UNIVERSAL ACTIVE OPNAME ZONES REAL-TIME BANNER */}
+                    {/* COMPACT ACTIVE OPNAME ZONES ALERT (REAL-TIME BANNER) */}
                     {Object.entries(activeOpnameZones).filter(([_, s]) => s && s.active).length > 0 && (
-                        <div className="bg-gradient-to-r from-amber-950/90 via-slate-900 to-indigo-950 border-2 border-amber-500/40 rounded-3xl p-4 sm:p-5 text-white shadow-2xl shadow-amber-950/30 relative overflow-hidden animate-in fade-in slide-in-from-top-3 duration-300">
-                            <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/10 rounded-full blur-3xl pointer-events-none"></div>
-                            <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-                                <div className="space-y-1.5 max-w-3xl">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/40 text-[11px] font-black tracking-widest text-amber-300 uppercase flex items-center gap-1.5 shadow-sm">
-                                            <span className="relative flex h-2 w-2">
-                                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                                                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                        <div className="bg-amber-950/80 border border-amber-500/40 rounded-2xl p-3 sm:p-4 text-white shadow-sm relative overflow-hidden animate-in fade-in duration-300">
+                            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div className="flex items-center gap-2.5">
+                                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping shrink-0" />
+                                    <div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <span className="text-xs font-black text-amber-300 uppercase tracking-wide">
+                                                ⚡ Sesi Opname Zona Aktif (Auto-Bridge ke TEMP)
                                             </span>
-                                            ⚡ Sesi Opname Zona Aktif (Auto-Bridge Real-Time)
-                                        </span>
-                                        <span className="text-[11px] font-bold text-amber-200/80">
-                                            {Object.entries(activeOpnameZones).filter(([_, s]) => s && s.active).length} Zona Sedang Berjalan
-                                        </span>
+                                            <span className="text-[11px] text-amber-200/80 font-semibold">
+                                                ({Object.entries(activeOpnameZones).filter(([_, s]) => s && s.active).length} Zona)
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-slate-300 mt-0.5">
+                                            Barcode fisik pada zona aktif otomatis dialihkan ke rak transit TEMP tanpa error stok.
+                                        </p>
                                     </div>
-                                    <p className="text-xs sm:text-sm text-slate-200 font-medium leading-relaxed">
-                                        Operasional pemotongan stok keluar tetap berjalan lancar. Barcode lama pada box fisik rak yang sedang di-opname <strong className="text-amber-300">otomatis dialihkan ke rak transit TEMP</strong> tanpa error stok / minus.
-                                    </p>
                                 </div>
 
-                                {/* Active Zone Badges & Quick End Buttons */}
                                 <div className="flex flex-wrap items-center gap-2">
                                     {Object.entries(activeOpnameZones)
                                         .filter(([_, s]) => s && s.active)
                                         .map(([prefix, session]) => (
                                             <div 
                                                 key={prefix} 
-                                                className="px-3.5 py-2 rounded-2xl bg-white/10 backdrop-blur-md border border-amber-400/30 flex items-center gap-2.5 shadow-inner"
+                                                className="px-3 py-1.5 rounded-xl bg-white/10 backdrop-blur-sm border border-amber-400/30 flex items-center gap-2 text-xs"
                                             >
-                                                <div className="text-left">
-                                                    <p className="text-xs font-black uppercase text-amber-300">
-                                                        Zona {prefix} ({session.racks_range || `${prefix}1-${prefix}999`}) ➔ {session.temp_rack || `TEMP-${prefix}`}
-                                                    </p>
-                                                    <p className="text-[10px] text-slate-300 font-medium">
-                                                        Mulai: {session.started_at ? new Date(session.started_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '-'} • Oleh: {session.started_by?.split('@')[0] || 'admin'}
-                                                    </p>
-                                                </div>
+                                                <span className="font-bold text-amber-300">
+                                                    Zona {prefix} ➔ {session.temp_rack || `TEMP-${prefix}`}
+                                                </span>
                                                 {isDeveloper && (
                                                     <button
                                                         type="button"
                                                         onClick={() => handleToggleZoneSession(prefix, false)}
                                                         disabled={isTogglingZone === prefix}
-                                                        className="px-2.5 py-1 bg-rose-600/90 hover:bg-rose-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all active:scale-95 cursor-pointer flex items-center gap-1 shadow-sm"
-                                                        title={`Selesaikan sesi opname Zona ${prefix} dan kembalikan validasi normal`}
+                                                        className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-black uppercase transition-all active:scale-95 cursor-pointer flex items-center gap-1"
+                                                        title={`Selesaikan sesi opname Zona ${prefix}`}
                                                     >
                                                         <XCircle className="w-3 h-3" />
                                                         <span>Selesai</span>
@@ -5200,64 +5177,51 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         </div>
                     )}
 
-                    {/* DEDICATED DEVMODE STOCK OPNAME ZONE CONTROLLER CARD (COLLAPSIBLE / ACCORDION) */}
+                    {/* DEDICATED DEVMODE OPNAME ZONE CONTROLLER CARD (COLLAPSIBLE) */}
                     {isDeveloper && (
-                        <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xl shadow-slate-900/5 transition-all duration-300 overflow-hidden">
-                            {/* Accordion Toggle Header */}
+                        <div className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200 shadow-sm transition-all overflow-hidden">
                             <button
                                 type="button"
                                 onClick={() => setIsZonePanelExpanded(!isZonePanelExpanded)}
-                                className="w-full p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left hover:bg-slate-50/80 transition-colors cursor-pointer"
+                                className="w-full p-3.5 sm:p-4 flex items-center justify-between gap-3 text-left hover:bg-slate-50 transition-colors cursor-pointer"
                             >
-                                <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center text-white shadow-md shadow-amber-500/20 shrink-0">
-                                        <Sparkles className="w-5 h-5" />
+                                <div className="flex items-center gap-2.5">
+                                    <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-sm">
+                                        <Sparkles className="w-4 h-4" />
                                     </div>
                                     <div>
-                                        <div className="flex flex-wrap items-center gap-2">
-                                            <h3 className="text-sm sm:text-base font-black text-slate-900 uppercase tracking-tight">
-                                                Panel Kontrol Sesi Opname Zona (Khusus Developer)
+                                        <div className="flex items-center gap-2">
+                                            <h3 className="text-xs sm:text-sm font-black text-slate-900 uppercase">
+                                                Panel Kontrol Sesi Opname Zona
                                             </h3>
-                                            <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 text-[10px] font-black border border-amber-300">
-                                                DEVMODE ONLY
+                                            <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9px] font-black border border-amber-300">
+                                                DEVMODE
                                             </span>
                                         </div>
-                                        <p className="text-xs text-slate-500 font-medium mt-0.5">
-                                            {isZonePanelExpanded 
-                                                ? "Aktifkan sesi per zona untuk memindahkan stok ke rak transit TEMP dan mengarahkan auto-bridge pemotongan stok barang keluar."
-                                                : "Klik untuk membuka & mengatur sesi opname zona aktif (Auto-Bridge ke TEMP)"}
+                                        <p className="text-[11px] text-slate-500">
+                                            {isZonePanelExpanded ? 'Klik untuk menutup panel zona' : 'Atur sesi opname per zona (Auto-Bridge ke TEMP)'}
                                         </p>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-center">
+                                <div className="flex items-center gap-2">
                                     <span className={cn(
-                                        "text-xs px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5",
+                                        "text-xs px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5",
                                         Object.values(activeOpnameZones).filter(s => s && s.active).length > 0
-                                            ? "bg-amber-500 text-white font-black shadow-sm"
+                                            ? "bg-amber-500 text-white font-black"
                                             : "text-slate-600 bg-slate-100"
                                     )}>
-                                        {Object.values(activeOpnameZones).filter(s => s && s.active).length > 0 && (
-                                            <span className="relative flex h-2 w-2">
-                                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
-                                                <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
-                                            </span>
-                                        )}
                                         {Object.values(activeOpnameZones).filter(s => s && s.active).length} Zona Aktif
                                     </span>
-                                    <div className="p-1.5 bg-slate-100 rounded-xl text-slate-600">
-                                        <ChevronDown className={cn(
-                                            "w-5 h-5 transition-transform duration-300",
-                                            isZonePanelExpanded && "rotate-180 text-amber-600"
-                                        )} />
-                                    </div>
+                                    <ChevronDown className={cn(
+                                        "w-4 h-4 text-slate-400 transition-transform duration-200",
+                                        isZonePanelExpanded && "rotate-180 text-amber-600"
+                                    )} />
                                 </div>
                             </button>
 
-                            {/* Collapsible Content (Opens Downwards / Closes Upwards) */}
                             {isZonePanelExpanded && (
-                                <div className="p-4 sm:p-5 pt-0 sm:pt-0 border-t border-slate-100 space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                                    {/* Zone Grid Cards */}
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 pt-4">
+                                <div className="p-3.5 sm:p-4 pt-0 border-t border-slate-100 space-y-3 animate-in fade-in duration-200">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 pt-3">
                                         {availablePrefixes.map(prefix => {
                                             const isRunning = !!activeOpnameZones[prefix]?.active;
                                             const session = activeOpnameZones[prefix];
@@ -5266,36 +5230,36 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                 <div
                                                     key={prefix}
                                                     className={cn(
-                                                        "p-3.5 rounded-2xl border transition-all flex flex-col justify-between gap-3",
+                                                        "p-3 rounded-xl border transition-all flex flex-col justify-between gap-2.5",
                                                         isRunning
-                                                            ? "bg-gradient-to-br from-amber-50 to-orange-50/70 border-amber-300 shadow-sm ring-1 ring-amber-200"
+                                                            ? "bg-amber-50/70 border-amber-300 ring-1 ring-amber-200"
                                                             : "bg-slate-50 hover:bg-slate-100/80 border-slate-200"
                                                     )}
                                                 >
                                                     <div className="flex items-center justify-between">
                                                         <div className="flex items-center gap-2">
                                                             <span className={cn(
-                                                                "w-8 h-8 rounded-xl font-black text-xs flex items-center justify-center shadow-sm",
-                                                                isRunning ? "bg-amber-500 text-white animate-pulse" : "bg-white text-slate-800 border border-slate-200"
+                                                                "w-7 h-7 rounded-lg font-black text-xs flex items-center justify-center shadow-xs",
+                                                                isRunning ? "bg-amber-500 text-white" : "bg-white text-slate-800 border border-slate-200"
                                                             )}>
                                                                 {prefix}
                                                             </span>
                                                             <div>
                                                                 <h4 className="text-xs font-black text-slate-900 uppercase">Blok {prefix}</h4>
-                                                                <p className="text-[10px] text-slate-500 font-medium">{rackCount} sub-rak</p>
+                                                                <p className="text-[10px] text-slate-500">{rackCount} sub-rak</p>
                                                             </div>
                                                         </div>
                                                         <span className={cn(
-                                                            "px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider",
-                                                            isRunning ? "bg-amber-500 text-white shadow-xs" : "bg-slate-200 text-slate-600"
+                                                            "px-1.5 py-0.5 rounded text-[9px] font-black uppercase",
+                                                            isRunning ? "bg-amber-500 text-white" : "bg-slate-200 text-slate-600"
                                                         )}>
                                                             {isRunning ? "⚡ AKTIF" : "NORMAL"}
                                                         </span>
                                                     </div>
 
                                                     {isRunning && (
-                                                        <div className="text-[11px] text-amber-900 font-bold bg-amber-100/60 p-2 rounded-xl border border-amber-200">
-                                                            ➔ Transit: <strong className="text-amber-800">{session?.temp_rack || `TEMP-${prefix}`}</strong>
+                                                        <div className="text-[10px] text-amber-900 font-bold bg-amber-100/60 p-1.5 rounded-lg border border-amber-200">
+                                                            ➔ Transit: <strong>{session?.temp_rack || `TEMP-${prefix}`}</strong>
                                                         </div>
                                                     )}
 
@@ -5304,23 +5268,23 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                         onClick={() => handleToggleZoneSession(prefix, !isRunning)}
                                                         disabled={isTogglingZone === prefix}
                                                         className={cn(
-                                                            "w-full py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 shadow-sm active:scale-95 cursor-pointer",
+                                                            "w-full py-1.5 px-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1 shadow-xs active:scale-95 cursor-pointer",
                                                             isRunning
-                                                                ? "bg-rose-600 hover:bg-rose-700 text-white shadow-rose-500/20"
-                                                                : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-blue-500/20"
+                                                                ? "bg-rose-600 hover:bg-rose-700 text-white"
+                                                                : "bg-blue-600 hover:bg-blue-700 text-white"
                                                         )}
                                                     >
                                                         {isTogglingZone === prefix ? (
-                                                            <span className="animate-spin text-[11px]">⏳ Memproses...</span>
+                                                            <span className="animate-spin text-[10px]">Memproses...</span>
                                                         ) : isRunning ? (
                                                             <>
-                                                                <XCircle className="w-3.5 h-3.5" />
-                                                                <span>Selesaikan Sesi</span>
+                                                                <XCircle className="w-3 h-3" />
+                                                                <span>Selesai Sesi</span>
                                                             </>
                                                         ) : (
                                                             <>
-                                                                <Sparkles className="w-3.5 h-3.5" />
-                                                                <span>Mulai Opname Zona</span>
+                                                                <Sparkles className="w-3 h-3" />
+                                                                <span>Mulai Sesi</span>
                                                             </>
                                                         )}
                                                     </button>
@@ -5333,23 +5297,23 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         </div>
                     )}
 
-                    {/* MAIN NAVIGATION TABS (OPNAME RAK vs DATA SELESAI PROSES vs HISTORY PRINT) */}
-                    <div className="flex items-center justify-between flex-wrap gap-2.5 bg-white p-2 sm:p-2.5 rounded-2xl sm:rounded-3xl border border-slate-200/90 shadow-xl shadow-slate-900/5">
-                        <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap sm:flex-nowrap">
+                    {/* MODERN SEGMENTED NAVIGATION TABS */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-white p-2 sm:p-2.5 rounded-2xl sm:rounded-3xl border border-slate-200 shadow-sm">
+                        <div className="grid grid-cols-3 sm:flex items-center gap-1 sm:gap-2 w-full sm:w-auto">
                             <button
                                 type="button"
                                 onClick={() => setActiveMainTab('opname_rak')}
                                 className={cn(
-                                    "h-11 px-4 sm:px-5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-95",
+                                    "h-10 sm:h-11 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer active:scale-95",
                                     activeMainTab === 'opname_rak'
-                                        ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/25"
-                                        : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                        ? "bg-blue-600 text-white shadow-sm"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-700"
                                 )}
                             >
-                                <MapPin className="w-4 h-4 flex-shrink-0" />
-                                <span>Cek & Scan Rak</span>
+                                <MapPin className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                                <span className="truncate">Cek Rak</span>
                                 <span className={cn(
-                                    "px-2 py-0.5 rounded-full text-[10px] font-bold",
+                                    "px-1.5 py-0.2 rounded-full text-[10px] font-bold hidden sm:inline",
                                     activeMainTab === 'opname_rak' ? "bg-white/20 text-white" : "bg-slate-200 text-slate-700"
                                 )}>
                                     {rackOptions.length}
@@ -5363,19 +5327,18 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     fetchAllFinishedItems();
                                 }}
                                 className={cn(
-                                    "h-11 px-4 sm:px-5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm relative active:scale-95",
+                                    "h-10 sm:h-11 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer active:scale-95",
                                     activeMainTab === 'selesai_proses'
-                                        ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-500/25"
-                                        : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                        ? "bg-emerald-600 text-white shadow-sm"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-700"
                                 )}
                             >
-                                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-                                <span>Data Selesai Diproses</span>
+                                <CheckCircle2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                                <span className="truncate">Selesai</span>
                                 <span className={cn(
-                                    "px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1",
+                                    "px-1.5 py-0.2 rounded-full text-[10px] font-bold",
                                     activeMainTab === 'selesai_proses' ? "bg-white/20 text-white" : "bg-emerald-100 text-emerald-800"
                                 )}>
-                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                                     {finishedLogs.length}
                                 </span>
                             </button>
@@ -5387,16 +5350,16 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     fetchPrintHistoryData();
                                 }}
                                 className={cn(
-                                    "h-11 px-4 sm:px-5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm relative active:scale-95",
+                                    "h-10 sm:h-11 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer active:scale-95",
                                     activeMainTab === 'history_print'
-                                        ? "bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-md shadow-amber-500/25"
-                                        : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                                        ? "bg-amber-600 text-white shadow-sm"
+                                        : "bg-slate-100 hover:bg-slate-200 text-slate-700"
                                 )}
                             >
-                                <History className="w-4 h-4 flex-shrink-0" />
-                                <span>History Print</span>
+                                <History className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                                <span className="truncate">History</span>
                                 <span className={cn(
-                                    "px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1",
+                                    "px-1.5 py-0.2 rounded-full text-[10px] font-bold",
                                     activeMainTab === 'history_print' ? "bg-white/20 text-white" : "bg-amber-100 text-amber-800"
                                 )}>
                                     {printHistoryLogs.length}
@@ -5404,63 +5367,65 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                             </button>
                         </div>
 
+                        {/* Action buttons for Selesai tab */}
                         {activeMainTab === 'selesai_proses' && (
-                            <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
+                            <div className="flex items-center gap-1.5 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
                                 {isAdminOrDev && finishedLogs.length > 0 && (
                                     <button
                                         type="button"
                                         onClick={handleClearAllFinishedPrompt}
-                                        className="h-11 px-3.5 sm:px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 font-black rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider border border-rose-200/80 transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95 flex-1 sm:flex-none"
-                                        title="Batal dan reset seluruh data selesai di semua rak (Khusus Dev/Admin)"
+                                        className="h-9 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl text-xs uppercase tracking-wider border border-rose-200 transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 flex-1 sm:flex-none"
+                                        title="Batal dan reset seluruh data selesai di semua rak"
                                     >
-                                        <XCircle className="h-4 w-4 text-rose-600 flex-shrink-0" />
-                                        <span className="whitespace-nowrap">Batal Semua Selesai</span>
+                                        <XCircle className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+                                        <span>Batal Semua</span>
                                     </button>
                                 )}
                                 {finishedLogs.length > 0 && (
                                     <button
                                         type="button"
                                         onClick={handlePrintBatchThermalLabels}
-                                        className="h-11 px-4 sm:px-5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider shadow-sm flex items-center justify-center gap-2 cursor-pointer transition-all hover:shadow-md hover:shadow-blue-500/20 active:scale-95 flex-1 sm:flex-none"
-                                        title="Print QR seluruh data selesai (3 label per halaman thermal)"
+                                        className="h-9 px-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider shadow-sm flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95 flex-1 sm:flex-none"
+                                        title="Print QR seluruh data selesai"
                                     >
-                                        <Printer className="h-4 w-4 flex-shrink-0" />
-                                        <span className="whitespace-nowrap">Print Semua QR</span>
+                                        <Printer className="h-3.5 w-3.5 shrink-0" />
+                                        <span>Print Semua QR</span>
                                     </button>
                                 )}
                                 <button
                                     type="button"
                                     onClick={fetchAllFinishedItems}
-                                    className="h-11 px-3.5 sm:px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider border border-slate-200 transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95 flex-1 sm:flex-none"
+                                    className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider border border-slate-200 transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 flex-1 sm:flex-none"
                                     title="Segarkan Data Selesai"
                                 >
-                                    <RefreshCw className={cn("h-4 w-4 text-slate-600 flex-shrink-0", isLoadingFinished && "animate-spin")} />
-                                    <span className="whitespace-nowrap">Refresh Data</span>
+                                    <RefreshCw className={cn("h-3.5 w-3.5 text-slate-600 shrink-0", isLoadingFinished && "animate-spin")} />
+                                    <span>Refresh</span>
                                 </button>
                             </div>
                         )}
 
+                        {/* Action buttons for History tab */}
                         {activeMainTab === 'history_print' && (
-                            <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
+                            <div className="flex items-center gap-1.5 w-full sm:w-auto justify-end flex-wrap sm:flex-nowrap">
                                 {isDeveloper && printHistoryLogs.length > 0 && (
                                     <button
                                         type="button"
                                         onClick={handleClearAllPrintHistory}
-                                        className="h-11 px-3.5 sm:px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 font-black rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider border border-rose-200/80 transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95 flex-1 sm:flex-none"
-                                        title="Hapus seluruh riwayat cetak (Khusus Developer)"
+                                        className="h-9 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl text-xs uppercase tracking-wider border border-rose-200 transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 flex-1 sm:flex-none"
+                                        title="Hapus seluruh riwayat cetak"
                                     >
-                                        <Trash2 className="h-4 w-4 text-rose-600 flex-shrink-0" />
-                                        <span className="whitespace-nowrap">Hapus Semua History</span>
+                                        <Trash2 className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+                                        <span>Hapus Semua</span>
                                     </button>
                                 )}
                                 <button
                                     type="button"
                                     onClick={fetchPrintHistoryData}
-                                    className="h-11 px-3.5 sm:px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl sm:rounded-2xl text-xs uppercase tracking-wider border border-slate-200 transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95 flex-1 sm:flex-none"
+                                    className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider border border-slate-200 transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 flex-1 sm:flex-none"
                                     title="Segarkan Riwayat Cetak"
                                 >
-                                    <RefreshCw className={cn("h-4 w-4 text-slate-600 flex-shrink-0", isLoadingPrintHistory && "animate-spin")} />
-                                    <span className="whitespace-nowrap">Refresh History</span>
+                                    <RefreshCw className={cn("h-3.5 w-3.5 text-slate-600 shrink-0", isLoadingPrintHistory && "animate-spin")} />
+                                    <span>Refresh</span>
                                 </button>
                             </div>
                         )}
@@ -5468,231 +5433,262 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
 
                     {activeMainTab === 'opname_rak' ? (
                         <>
-                    {/* DUAL SEARCH & CONTROL HUB (2 Columns on Desktop) */}
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5">
-                        
-                        {/* LEFT COLUMN: RAK SELECTOR (7 Cols on LG) */}
-                        <div className="lg:col-span-7 relative z-40">
-                            <Card className="rounded-3xl shadow-xl shadow-slate-900/5 border border-slate-200/90 bg-white overflow-visible transition-all duration-300 hover:shadow-2xl hover:border-blue-300 relative">
-                                <CardContent className="p-4 sm:p-6 overflow-visible">
-                                    <div className="space-y-3.5 sm:space-y-4">
-                                        <div className="flex items-center justify-between">
-                                            <label className="text-xs font-black text-slate-800 uppercase tracking-[0.15em] flex items-center gap-2">
-                                                <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
-                                                    <MapPin className="w-4 h-4" />
-                                                </div>
-                                                <span>Filter & Scan Lokasi Rak</span>
-                                            </label>
-                                            <span className="text-[10px] font-extrabold text-blue-700 bg-blue-50 border border-blue-100 px-2.5 py-1 rounded-full uppercase tracking-wider">
-                                                {rackOptions.length} Rak Terdaftar
-                                            </span>
-                                        </div>
+                    {/* UNIFIED SMART SEARCH HUB (1 Clean Card with Segmented Switcher) */}
+                    <div className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200 shadow-sm p-3.5 sm:p-5 relative z-30 transition-all">
+                        {/* Search Mode Switcher Tabs */}
+                        <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3 mb-3.5">
+                            <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                                <button
+                                    type="button"
+                                    onClick={() => setSearchTab('rak')}
+                                    className={cn(
+                                        "px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer",
+                                        searchTab === 'rak'
+                                            ? "bg-blue-600 text-white shadow-xs"
+                                            : "text-slate-600 hover:text-slate-900"
+                                    )}
+                                >
+                                    <MapPin className="w-3.5 h-3.5" />
+                                    <span>Cari / Scan Rak</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setSearchTab('sku')}
+                                    className={cn(
+                                        "px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer",
+                                        searchTab === 'sku'
+                                            ? "bg-emerald-600 text-white shadow-xs"
+                                            : "text-slate-600 hover:text-slate-900"
+                                    )}
+                                >
+                                    <SearchCode className="w-3.5 h-3.5" />
+                                    <span>Cari Posisi SKU</span>
+                                </button>
+                            </div>
 
-                                        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2.5 items-stretch">
-                                            <div className="relative flex-1">
-                                                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none z-10">
-                                                    <Search className="h-5 w-5 text-blue-600" />
-                                                </div>
-                                                <CustomDropdown
-                                                    value={rackId}
-                                                    onChange={(e) => setRackId(e.target.value)}
-                                                    options={rackOptions}
-                                                    placeholder="PILIH ATAU KETIK LOKASI RAK..."
-                                                    className="pl-11 h-12 sm:h-13 text-sm sm:text-base font-black shadow-none w-full border-2 border-slate-200 bg-slate-50/50 hover:bg-white focus-within:border-blue-600 focus-within:ring-4 focus-within:ring-blue-100 rounded-2xl transition-all"
-                                                    showClearButton={true}
-                                                    forceUppercase={true}
-                                                    onOptionSelect={() => {
-                                                        setTimeout(() => {
-                                                            submitButtonRef.current?.click();
-                                                        }, 100);
-                                                    }}
-                                                />
-                                            </div>
-                                            <div className="flex gap-2 shrink-0">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setShowScanner(true)}
-                                                    className="flex-1 sm:flex-none px-4 sm:px-5 py-2 text-blue-600 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 border-2 border-blue-200/80 rounded-2xl active:scale-95 transition-all h-12 sm:h-13 flex items-center justify-center gap-2 shadow-sm font-black text-xs uppercase tracking-wider cursor-pointer"
-                                                    title="Scan QR / Barcode Kamera"
-                                                >
-                                                    <Camera className="h-5 w-5 text-blue-600" />
-                                                    <span>Scan</span>
-                                                </button>
-                                                <button
-                                                    ref={submitButtonRef}
-                                                    type="submit"
-                                                    className="flex-1 sm:flex-none px-6 py-2 text-xs sm:text-sm font-black text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-2xl shadow-lg shadow-blue-500/25 active:scale-95 transition-all h-12 sm:h-13 uppercase tracking-widest flex items-center justify-center gap-2 cursor-pointer"
-                                                >
-                                                    <span>Cari</span>
-                                                    <ChevronRight className="w-4 h-4" />
-                                                </button>
-                                            </div>
-                                        </form>
-
-                                        {/* SECRET DEVMODE TRIGGER: Hanya muncul ketika user mengetik 'devmode' di input rak */}
-                                        {isDevModeTyped && (
-                                            <div className="pt-3.5 border-t border-rose-100 flex justify-center animate-in fade-in slide-in-from-top-2 duration-300">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setShowBulkUnverifyModal(true)}
-                                                    className="w-full px-4 py-3 bg-gradient-to-r from-rose-500 via-red-600 to-rose-700 hover:from-rose-600 hover:to-rose-800 text-white font-black rounded-2xl text-xs sm:text-sm uppercase tracking-wider transition-all border border-rose-400/50 shadow-lg shadow-rose-500/25 active:scale-98 flex items-center justify-center gap-2 group cursor-pointer"
-                                                    title="DevMode Terbuka: Klik untuk Batal Konfirmasi Massal"
-                                                >
-                                                    <XCircle className="w-4 h-4 text-rose-200 group-hover:rotate-90 transition-transform duration-200" />
-                                                    <span>⚡ Batal Konfirmasi Massal (DevMode Unlocked)</span>
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                </CardContent>
-                            </Card>
+                            <span className="text-[11px] font-bold text-slate-400 hidden sm:inline">
+                                {searchTab === 'rak' ? `${rackOptions.length} Lokasi Terdaftar` : 'Pencarian di Seluruh Rak'}
+                            </span>
                         </div>
 
-                        {/* RIGHT COLUMN: GLOBAL PRODUCT SEARCH (5 Cols on LG) */}
-                        <div className="lg:col-span-5 relative z-30">
-                            <Card className="rounded-3xl shadow-xl shadow-slate-900/5 border border-slate-200/90 bg-white overflow-visible transition-all duration-300 hover:shadow-2xl hover:border-emerald-300 relative">
-                                <CardContent className="p-4 sm:p-6">
-                                    <div className="space-y-3.5 sm:space-y-4">
-                                        <div className="flex items-center justify-between">
-                                            <label className="text-xs font-black text-slate-800 uppercase tracking-[0.15em] flex items-center gap-2">
-                                                <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg">
-                                                    <SearchCode className="w-4 h-4" />
-                                                </div>
-                                                <span>Cari Posisi Barang / SKU</span>
-                                            </label>
-                                            <span className="text-[10px] font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-full uppercase tracking-wider">
-                                                Semua Rak
+                        {/* MODE 1: SEARCH / SCAN RAK */}
+                        {searchTab === 'rak' && (
+                            <div className="space-y-3">
+                                <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2 items-stretch">
+                                    <div className="relative flex-1">
+                                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none z-10">
+                                            <Search className="h-4 w-4 text-blue-600" />
+                                        </div>
+                                        <CustomDropdown
+                                            value={rackId}
+                                            onChange={(e) => setRackId(e.target.value)}
+                                            options={rackOptions}
+                                            placeholder="PILIH ATAU KETIK LOKASI RAK..."
+                                            className="pl-10 h-11 sm:h-12 text-sm font-black shadow-none w-full border border-slate-200 bg-slate-50 hover:bg-white focus-within:border-blue-600 focus-within:ring-2 focus-within:ring-blue-100 rounded-xl transition-all"
+                                            showClearButton={true}
+                                            forceUppercase={true}
+                                            onOptionSelect={() => {
+                                                setTimeout(() => {
+                                                    submitButtonRef.current?.click();
+                                                }, 100);
+                                            }}
+                                        />
+                                    </div>
+                                    <div className="flex gap-2 shrink-0">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowScanner(true)}
+                                            className="flex-1 sm:flex-none px-3.5 sm:px-4 py-2 text-blue-600 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 border border-blue-200 rounded-xl active:scale-95 transition-all h-11 sm:h-12 flex items-center justify-center gap-1.5 font-black text-xs uppercase tracking-wider cursor-pointer"
+                                            title="Scan QR / Barcode Kamera"
+                                        >
+                                            <Camera className="h-4 w-4 text-blue-600" />
+                                            <span>Scan</span>
+                                        </button>
+                                        <button
+                                            ref={submitButtonRef}
+                                            type="submit"
+                                            className="flex-1 sm:flex-none px-5 py-2 text-xs sm:text-sm font-black text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-sm active:scale-95 transition-all h-11 sm:h-12 uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer"
+                                        >
+                                            <span>Buka Rak</span>
+                                            <ChevronRight className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                </form>
+
+                                {/* Quick Access Recent Racks Bar */}
+                                {recentRacks.length > 0 && (
+                                    <div className="flex items-center gap-2 pt-1 flex-wrap">
+                                        <span className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
+                                            <History className="w-3 h-3 text-slate-400" />
+                                            Riwayat:
+                                        </span>
+                                        {recentRacks.slice(0, 6).map(r => (
+                                            <button
+                                                key={r}
+                                                type="button"
+                                                onClick={() => handleSelectRackFromSearch(r)}
+                                                className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-blue-600 hover:text-white text-slate-700 text-xs font-bold uppercase transition-all cursor-pointer active:scale-95"
+                                            >
+                                                {r}
+                                            </button>
+                                        ))}
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setRecentRacks([]);
+                                                localStorage.removeItem('stock_opname_recent_racks');
+                                                localStorage.removeItem('cek_rak_2_recent_racks');
+                                            }}
+                                            className="text-[10px] text-slate-400 hover:text-rose-500 font-medium ml-auto cursor-pointer"
+                                        >
+                                            Hapus
+                                        </button>
+                                    </div>
+                                )}
+
+                                {/* SECRET DEVMODE TRIGGER: Hanya muncul ketika user mengetik 'devmode' di input rak */}
+                                {isDevModeTyped && (
+                                    <div className="pt-2 border-t border-rose-100 flex justify-center animate-in fade-in duration-200">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowBulkUnverifyModal(true)}
+                                            className="w-full px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-black rounded-xl text-xs sm:text-sm uppercase tracking-wider transition-all shadow-sm active:scale-98 flex items-center justify-center gap-2 cursor-pointer"
+                                            title="DevMode Terbuka: Klik untuk Batal Konfirmasi Massal"
+                                        >
+                                            <XCircle className="w-4 h-4 text-rose-200" />
+                                            <span>⚡ Batal Konfirmasi Massal (DevMode Unlocked)</span>
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* MODE 2: SEARCH PRODUCT / SKU ACROSS ALL RACKS */}
+                        {searchTab === 'sku' && (
+                            <div className="space-y-3">
+                                <div className="relative">
+                                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                                        {isGlobalSearching ? (
+                                            <Loader className="h-4 w-4 text-emerald-600 animate-spin" />
+                                        ) : (
+                                            <Search className="h-4 w-4 text-emerald-600" />
+                                        )}
+                                    </div>
+                                    <input
+                                        type="text"
+                                        value={globalSearchTerm}
+                                        onChange={(e) => handleGlobalSearch(e.target.value)}
+                                        onFocus={() => { if (globalSearchResults.length > 0 || globalSearchTerm.trim().length >= 1) setShowGlobalResults(true); }}
+                                        placeholder="Ketik nama produk atau SKU barang di sini..."
+                                        className="w-full pl-10 pr-9 h-11 sm:h-12 text-sm font-bold text-slate-900 placeholder:text-slate-400 border border-slate-200 hover:border-emerald-300 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 rounded-xl bg-slate-50 hover:bg-white transition-all"
+                                    />
+                                    {globalSearchTerm && (
+                                        <button
+                                            type="button"
+                                            onClick={() => handleGlobalSearch('')}
+                                            className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                                        >
+                                            <X className="h-4 w-4" />
+                                        </button>
+                                    )}
+                                </div>
+
+                                {/* Global Search Results List Overlay */}
+                                {showGlobalResults && globalSearchTerm.trim().length >= 1 && (
+                                    <div className="bg-white rounded-xl border border-emerald-300 shadow-xl overflow-hidden max-h-80 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-150">
+                                        <div className="p-2.5 bg-emerald-50 border-b border-emerald-100 flex justify-between items-center sticky top-0 backdrop-blur-sm z-10">
+                                            <span className="text-xs font-black text-emerald-900 uppercase tracking-wide flex items-center gap-1.5">
+                                                <Package className="w-3.5 h-3.5 text-emerald-600" />
+                                                Ditemukan {globalSearchResults.length} Lokasi Produk
                                             </span>
+                                            <button
+                                                onClick={() => setShowGlobalResults(false)}
+                                                className="text-xs font-bold text-emerald-700 hover:text-emerald-900 bg-emerald-100/70 px-2 py-0.5 rounded cursor-pointer"
+                                            >
+                                                Tutup ✕
+                                            </button>
                                         </div>
 
-                                        <div className="relative">
-                                            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                                                {isGlobalSearching ? (
-                                                    <Loader className="h-5 w-5 text-emerald-600 animate-spin" />
-                                                ) : (
-                                                    <Search className="h-5 w-5 text-emerald-600" />
-                                                )}
+                                        {globalSearchResults.length === 0 ? (
+                                            <div className="p-5 text-center text-xs font-bold text-slate-500">
+                                                {isGlobalSearching ? 'Mencari di seluruh rak...' : `Tidak ditemukan produk "${globalSearchTerm}" di rak manapun.`}
                                             </div>
-                                            <input
-                                                type="text"
-                                                value={globalSearchTerm}
-                                                onChange={(e) => handleGlobalSearch(e.target.value)}
-                                                onFocus={() => { if (globalSearchResults.length > 0 || globalSearchTerm.trim().length >= 1) setShowGlobalResults(true); }}
-                                                placeholder="Ketik SKU / Nama Barang di sini..."
-                                                className="w-full pl-11 pr-10 h-12 sm:h-13 text-sm font-bold text-slate-900 placeholder:text-slate-400 border-2 border-slate-200 hover:border-emerald-300 focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100 rounded-2xl bg-slate-50/50 hover:bg-white transition-all shadow-sm"
-                                            />
-                                            {globalSearchTerm && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleGlobalSearch('')}
-                                                    className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                                        ) : (
+                                            globalSearchResults.map((gItem) => (
+                                                <div
+                                                    key={`${gItem.id}-${gItem.rak}`}
+                                                    className="p-3 hover:bg-emerald-50/50 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-2 group"
                                                 >
-                                                    <div className="p-1 bg-slate-100 rounded-full hover:bg-slate-200 transition-colors">
-                                                        <X className="h-3.5 w-3.5" />
+                                                    <div className="space-y-0.5">
+                                                        <h4 className="font-black text-xs sm:text-sm text-slate-900 uppercase tracking-tight group-hover:text-emerald-700 transition-colors">
+                                                            {gItem.nama_produk}
+                                                        </h4>
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-blue-600 text-white uppercase tracking-wider">
+                                                                Rak: {gItem.rak}
+                                                            </span>
+                                                            {gItem.sub_rak && gItem.sub_rak !== gItem.rak && (
+                                                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase">
+                                                                    Sub: {gItem.sub_rak}
+                                                                </span>
+                                                            )}
+                                                            <span className="text-xs font-bold text-slate-500">
+                                                                Stok: <strong className="text-emerald-600 font-black">{gItem.tersedia.toLocaleString()}</strong> {gItem.satuan}
+                                                            </span>
+                                                        </div>
                                                     </div>
-                                                </button>
-                                            )}
-                                        </div>
 
-                                        {/* Global Search Results List Overlay */}
-                                        {showGlobalResults && globalSearchTerm.trim().length >= 1 && (
-                                            <div className="absolute top-[105%] left-0 right-0 z-[100] bg-white rounded-2xl border-2 border-emerald-300 shadow-2xl overflow-hidden max-h-96 overflow-y-auto divide-y divide-slate-100 animate-in fade-in zoom-in-95 duration-150 ring-8 ring-black/5">
-                                                <div className="p-3 bg-emerald-50/90 border-b border-emerald-100 flex justify-between items-center sticky top-0 backdrop-blur-sm z-10">
-                                                    <span className="text-xs font-black text-emerald-900 uppercase tracking-wider flex items-center gap-1.5">
-                                                        <Package className="w-3.5 h-3.5 text-emerald-600" />
-                                                        Ditemukan {globalSearchResults.length} Lokasi Produk
-                                                    </span>
                                                     <button
-                                                        onClick={() => setShowGlobalResults(false)}
-                                                        className="text-xs font-black text-emerald-700 hover:text-emerald-900 bg-emerald-100/70 px-2 py-0.5 rounded-lg cursor-pointer"
+                                                        onClick={() => handleSelectRackFromSearch(gItem.rak)}
+                                                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs uppercase tracking-wider shadow-xs transition-all flex items-center justify-center gap-1 shrink-0 cursor-pointer self-end sm:self-center"
                                                     >
-                                                        Tutup ✕
+                                                        <span>Buka Rak</span>
+                                                        <ChevronRight className="w-3.5 h-3.5" />
                                                     </button>
                                                 </div>
-
-                                                {globalSearchResults.length === 0 ? (
-                                                    <div className="p-6 text-center text-sm font-bold text-slate-500">
-                                                        {isGlobalSearching ? 'Mencari di seluruh rak...' : `Tidak ditemukan produk "${globalSearchTerm}" di rak manapun.`}
-                                                    </div>
-                                                ) : (
-                                                    globalSearchResults.map((gItem) => (
-                                                        <div
-                                                            key={`${gItem.id}-${gItem.rak}`}
-                                                            className="p-3.5 hover:bg-emerald-50/50 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
-                                                        >
-                                                            <div className="space-y-1">
-                                                                <h4 className="font-black text-xs sm:text-sm text-slate-900 uppercase tracking-tight group-hover:text-emerald-700 transition-colors">
-                                                                    {gItem.nama_produk}
-                                                                </h4>
-                                                                <div className="flex flex-wrap items-center gap-2">
-                                                                    <span className="px-2 py-0.5 rounded-md text-[11px] font-black bg-blue-600 text-white uppercase tracking-wider flex items-center gap-1">
-                                                                        <Package className="w-3 h-3" />
-                                                                        Rak: {gItem.rak}
-                                                                    </span>
-                                                                    {gItem.sub_rak && gItem.sub_rak !== gItem.rak && (
-                                                                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase">
-                                                                            Sub: {gItem.sub_rak}
-                                                                        </span>
-                                                                    )}
-                                                                    <span className="text-xs font-bold text-slate-500">
-                                                                        Stok: <strong className="text-emerald-600 font-black">{gItem.tersedia.toLocaleString()}</strong> {gItem.satuan}
-                                                                    </span>
-                                                                </div>
-                                                            </div>
-
-                                                            <button
-                                                                onClick={() => handleSelectRackFromSearch(gItem.rak)}
-                                                                className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-wider shadow-sm hover:shadow transition-all flex items-center justify-center gap-1 shrink-0 cursor-pointer"
-                                                            >
-                                                                <span>Buka Rak</span>
-                                                                <ChevronRight className="w-3.5 h-3.5" />
-                                                            </button>
-                                                        </div>
-                                                    ))
-                                                )}
-                                            </div>
+                                            ))
                                         )}
                                     </div>
-                                </CardContent>
-                            </Card>
-                        </div>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     {/* ======================================================== */}
-                    {/* STATE 1: INTERACTIVE RACK EXPLORER & DASHBOARD (WHEN NO RAK IS OPENED) */}
+                    {/* STATE 1: STREAMLINED RACK EXPLORER (WHEN NO RAK IS OPENED) */}
                     {/* ======================================================== */}
                     {!lastScanned && (
-                        <div className="space-y-5 sm:space-y-6 animate-in fade-in duration-300">
-                            {/* QUICK STATS CARDS ROW (4 Clean Informational Cards) */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
-                                <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-sm hover:shadow-md transition-all flex items-center gap-3.5">
-                                    <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
-                                        <Layers className="w-5 h-5 sm:w-6 sm:h-6" />
+                        <div className="space-y-4 sm:space-y-5 animate-in fade-in duration-300">
+                            {/* COMPACT 4-IN-1 METRIC STRIP */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3.5">
+                                <div className="bg-white p-3 sm:p-3.5 rounded-2xl border border-slate-200 shadow-xs flex items-center gap-2.5">
+                                    <div className="p-2 bg-blue-50 text-blue-600 rounded-xl shrink-0">
+                                        <Layers className="w-4 h-4 sm:w-5 sm:h-5" />
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Lokasi</p>
-                                        <p className="text-lg sm:text-xl font-black text-slate-900">{rackOptions.length} <span className="text-xs font-bold text-slate-500">Rak</span></p>
-                                    </div>
-                                </div>
-
-                                <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-sm hover:shadow-md transition-all flex items-center gap-3.5">
-                                    <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl">
-                                        <Compass className="w-5 h-5 sm:w-6 sm:h-6" />
-                                    </div>
-                                    <div>
-                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Zona / Blok</p>
-                                        <p className="text-lg sm:text-xl font-black text-slate-900">{availablePrefixes.length} <span className="text-xs font-bold text-slate-500">Blok</span></p>
+                                    <div className="min-w-0">
+                                        <p className="text-[10px] font-black uppercase text-slate-400 truncate">Total Rak</p>
+                                        <p className="text-sm sm:text-base font-black text-slate-900 truncate">{rackOptions.length} <span className="text-[10px] font-normal text-slate-500">Lokasi</span></p>
                                     </div>
                                 </div>
 
-                                <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-sm hover:shadow-md transition-all flex items-center gap-3.5">
-                                    <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl">
-                                        <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6" />
+                                <div className="bg-white p-3 sm:p-3.5 rounded-2xl border border-slate-200 shadow-xs flex items-center gap-2.5">
+                                    <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl shrink-0">
+                                        <Compass className="w-4 h-4 sm:w-5 sm:h-5" />
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Status Sistem</p>
-                                        <p className="text-sm sm:text-base font-black text-emerald-600 flex items-center gap-1.5">
-                                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                    <div className="min-w-0">
+                                        <p className="text-[10px] font-black uppercase text-slate-400 truncate">Zona / Blok</p>
+                                        <p className="text-sm sm:text-base font-black text-slate-900 truncate">{availablePrefixes.length} <span className="text-[10px] font-normal text-slate-500">Blok</span></p>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white p-3 sm:p-3.5 rounded-2xl border border-slate-200 shadow-xs flex items-center gap-2.5">
+                                    <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl shrink-0">
+                                        <ShieldCheck className="w-4 h-4 sm:w-5 sm:h-5" />
+                                    </div>
+                                    <div className="min-w-0">
+                                        <p className="text-[10px] font-black uppercase text-slate-400 truncate">Status Sistem</p>
+                                        <p className="text-xs sm:text-sm font-black text-emerald-600 flex items-center gap-1 truncate">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                                             Sinkron Aktif
                                         </p>
                                     </div>
@@ -5700,104 +5696,71 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
 
                                 <div 
                                     onClick={() => setShowKarantinaModal(true)}
-                                    className="bg-gradient-to-br from-amber-50 to-orange-50 hover:from-amber-100 hover:to-orange-100 p-4 sm:p-5 rounded-3xl border border-amber-200/90 shadow-sm hover:shadow-md transition-all flex items-center gap-3.5 cursor-pointer group"
+                                    className="bg-amber-50/70 hover:bg-amber-100/80 p-3 sm:p-3.5 rounded-2xl border border-amber-200 shadow-xs flex items-center gap-2.5 cursor-pointer transition-colors group"
                                 >
-                                    <div className="p-3 bg-amber-500 text-white rounded-2xl shadow-sm shadow-amber-500/20 group-hover:scale-105 transition-transform relative">
-                                        <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6" />
+                                    <div className="p-2 bg-amber-500 text-white rounded-xl shadow-xs shrink-0 relative">
+                                        <ShieldCheck className="w-4 h-4 sm:w-5 sm:h-5" />
                                         {pendingKarantinaCount > 0 && (
-                                            <span className="w-2.5 h-2.5 bg-rose-500 rounded-full absolute -top-0.5 -right-0.5 ring-2 ring-white animate-pulse" />
+                                            <span className="w-2 h-2 bg-rose-500 rounded-full absolute -top-0.5 -right-0.5 ring-2 ring-white animate-pulse" />
                                         )}
                                     </div>
-                                    <div>
-                                        <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Wadah Karantina</p>
-                                        <p className="text-lg sm:text-xl font-black text-amber-900 flex items-center gap-1.5">
-                                            <span>{pendingKarantinaCount}</span>
-                                            <span className="text-xs font-bold text-amber-700">Menunggu</span>
+                                    <div className="min-w-0">
+                                        <p className="text-[10px] font-black uppercase text-amber-800 truncate">Karantina</p>
+                                        <p className="text-sm sm:text-base font-black text-amber-900 truncate">
+                                            {pendingKarantinaCount} <span className="text-[10px] font-normal text-amber-700">Menunggu</span>
                                         </p>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* RECENTLY ACCESSED RACKS (RIWAYAT TERAKHIR) */}
-                            {recentRacks.length > 0 && (
-                                <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-sm space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-2">
-                                            <History className="w-4 h-4 text-blue-600" />
-                                            Rak Terakhir Diakses:
-                                        </span>
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                setRecentRacks([]);
-                                                localStorage.removeItem('cek_rak_2_recent_racks');
-                                            }}
-                                            className="text-[11px] font-bold text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
-                                        >
-                                            Bersihkan Riwayat
-                                        </button>
-                                    </div>
-                                    <div className="flex flex-wrap gap-2">
-                                        {recentRacks.map(r => (
-                                            <button
-                                                key={r}
-                                                type="button"
-                                                onClick={() => handleSelectRackFromSearch(r)}
-                                                className="px-3.5 py-1.5 rounded-xl bg-blue-50/80 hover:bg-blue-600 hover:text-white text-blue-700 border border-blue-200 text-xs font-black uppercase tracking-wider transition-all flex items-center gap-1.5 group cursor-pointer shadow-xs active:scale-95"
-                                            >
-                                                <MapPin className="w-3.5 h-3.5 text-blue-500 group-hover:text-white" />
-                                                <span>Rak {r}</span>
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* VISUAL INTERACTIVE RACK EXPLORER */}
-                            <Card className="rounded-3xl shadow-xl shadow-slate-900/5 border border-slate-200/90 bg-white overflow-hidden">
-                                <CardContent className="p-4 sm:p-6 lg:p-7 space-y-5">
-                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
-                                        <div>
-                                            <h3 className="text-base sm:text-lg font-black text-slate-900 uppercase tracking-tight flex items-center gap-2">
-                                                <Grid3X3 className="w-5 h-5 text-blue-600" />
-                                                Jelajahi Lokasi Rak Gudang
-                                            </h3>
-                                            <p className="text-xs font-medium text-slate-500 mt-0.5">
-                                                Klik langsung salah satu kotak rak di bawah untuk memeriksa fisik barang & konfirmasi stok
-                                            </p>
+                            {/* STREAMLINED VISUAL RACK EXPLORER */}
+                            <Card className="rounded-2xl sm:rounded-3xl border border-slate-200 shadow-sm bg-white overflow-hidden">
+                                <CardContent className="p-3.5 sm:p-5 space-y-3.5">
+                                    {/* Explorer Header */}
+                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-100 pb-3">
+                                        <div className="flex items-center gap-2">
+                                            <Grid3X3 className="w-4 h-4 text-blue-600 shrink-0" />
+                                            <div>
+                                                <h3 className="text-xs sm:text-sm font-black text-slate-900 uppercase">
+                                                    Jelajahi Lokasi Rak
+                                                </h3>
+                                                <p className="text-[11px] text-slate-500">
+                                                    Klik kotak rak untuk langsung memeriksa fisik & konfirmasi stok
+                                                </p>
+                                            </div>
                                         </div>
 
                                         {/* Quick Search inside explorer */}
-                                        <div className="relative w-full sm:w-64">
-                                            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                                        <div className="relative w-full sm:w-56">
+                                            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                                             <input
                                                 type="text"
                                                 value={explorerSearch}
                                                 onChange={(e) => setExplorerSearch(e.target.value)}
                                                 placeholder="Filter rak (misal: A1)..."
-                                                className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all uppercase"
+                                                className="w-full pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all uppercase"
                                             />
                                             {explorerSearch && (
                                                 <button
                                                     type="button"
                                                     onClick={() => setExplorerSearch('')}
-                                                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                                                 >
-                                                    <X className="w-3.5 h-3.5" />
+                                                    <X className="w-3 h-3" />
                                                 </button>
                                             )}
                                         </div>
                                     </div>
 
                                     {/* ZONE / PREFIX TABS */}
-                                    <div className="flex items-center gap-1.5 overflow-x-auto pb-2 scrollbar-none">
+                                    <div className="flex items-center gap-1 overflow-x-auto pb-1.5 scrollbar-none">
                                         <button
                                             type="button"
                                             onClick={() => setSelectedPrefixTab('ALL')}
                                             className={cn(
-                                                "px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all shrink-0 cursor-pointer",
+                                                "px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all shrink-0 cursor-pointer",
                                                 selectedPrefixTab === 'ALL'
-                                                    ? "bg-blue-600 text-white shadow-md shadow-blue-500/20"
+                                                    ? "bg-blue-600 text-white shadow-xs"
                                                     : "bg-slate-100 hover:bg-slate-200 text-slate-600"
                                             )}
                                         >
@@ -5813,18 +5776,18 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                     type="button"
                                                     onClick={() => setSelectedPrefixTab(prefix)}
                                                     className={cn(
-                                                        "px-3.5 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all shrink-0 cursor-pointer flex items-center gap-1.5 relative",
+                                                        "px-2.5 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all shrink-0 cursor-pointer flex items-center gap-1 relative",
                                                         isActive
-                                                            ? (isZoneRunning ? "bg-amber-600 text-white shadow-md shadow-amber-500/30 ring-2 ring-amber-300" : "bg-blue-600 text-white shadow-md shadow-blue-500/20")
-                                                            : (isZoneRunning ? "bg-amber-50 text-amber-900 border border-amber-300 hover:bg-amber-100" : "bg-slate-100 hover:bg-slate-200 text-slate-600")
+                                                            ? (isZoneRunning ? "bg-amber-600 text-white shadow-xs" : "bg-blue-600 text-white shadow-xs")
+                                                            : (isZoneRunning ? "bg-amber-50 text-amber-900 border border-amber-300" : "bg-slate-100 hover:bg-slate-200 text-slate-600")
                                                     )}
                                                 >
                                                     {isZoneRunning && (
-                                                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
                                                     )}
                                                     <span>Blok {prefix}</span>
                                                     <span className={cn(
-                                                        "px-1.5 py-0.2 rounded-md text-[10px]",
+                                                        "px-1 py-0.2 rounded text-[9px]",
                                                         isActive ? "bg-white/20 text-white" : "bg-slate-200 text-slate-700"
                                                     )}>
                                                         {count}
@@ -5837,33 +5800,28 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     {/* DEDICATED ZONE OPNAME SESSION ACTION PANEL (WHEN A SPECIFIC BLOCK IS SELECTED) */}
                                     {selectedPrefixTab !== 'ALL' && (
                                         <div className={cn(
-                                            "p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all",
+                                            "p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all text-xs",
                                             activeOpnameZones[selectedPrefixTab]?.active
-                                                ? "bg-gradient-to-r from-amber-50 via-orange-50 to-amber-100/60 border-amber-300 shadow-sm"
-                                                : "bg-slate-50 border-slate-200/80"
+                                                ? "bg-amber-50 border-amber-300"
+                                                : "bg-slate-50 border-slate-200"
                                         )}>
-                                            <div className="flex items-center gap-3">
+                                            <div className="flex items-center gap-2.5">
                                                 <div className={cn(
-                                                    "p-2.5 rounded-xl flex items-center justify-center text-xs font-black shrink-0",
+                                                    "px-2 py-1 rounded-lg text-[10px] font-black shrink-0",
                                                     activeOpnameZones[selectedPrefixTab]?.active
-                                                        ? "bg-amber-500 text-white shadow-sm shadow-amber-500/30 animate-pulse"
+                                                        ? "bg-amber-500 text-white shadow-xs"
                                                         : "bg-blue-100 text-blue-700"
                                                 )}>
                                                     {activeOpnameZones[selectedPrefixTab]?.active ? '⚡ AKTIF' : `ZONA ${selectedPrefixTab}`}
                                                 </div>
                                                 <div>
-                                                    <h4 className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-tight flex items-center gap-2">
-                                                        <span>Status Sesi Stock Opname: Zona {selectedPrefixTab}</span>
-                                                        {activeOpnameZones[selectedPrefixTab]?.active && (
-                                                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-800 text-[10px] font-black border border-amber-300">
-                                                                AUTO-BRIDGE AKTIF
-                                                            </span>
-                                                        )}
+                                                    <h4 className="font-bold text-slate-900">
+                                                        Status Zona {selectedPrefixTab}: {activeOpnameZones[selectedPrefixTab]?.active ? 'Auto-Bridge ke TEMP Aktif' : 'Normal'}
                                                     </h4>
-                                                    <p className="text-[11px] text-slate-600 font-medium mt-0.5">
+                                                    <p className="text-[11px] text-slate-500 mt-0.2">
                                                         {activeOpnameZones[selectedPrefixTab]?.active
-                                                            ? `Pemotongan barang keluar dari rak ${selectedPrefixTab}1-${selectedPrefixTab}999 otomatis diarahkan ke ${activeOpnameZones[selectedPrefixTab]?.temp_rack || `TEMP-${selectedPrefixTab}`}.`
-                                                            : `Sesi belum dimulai. Pemotongan barang keluar memvalidasi stok di sub-rak ${selectedPrefixTab}1-${selectedPrefixTab}999 secara normal.`}
+                                                            ? `Pemotongan barang keluar dari rak ${selectedPrefixTab} dialihkan ke ${activeOpnameZones[selectedPrefixTab]?.temp_rack || `TEMP-${selectedPrefixTab}`}.`
+                                                            : `Sesi belum dimulai. Pemotongan barang memvalidasi sub-rak ${selectedPrefixTab} secara normal.`}
                                                     </p>
                                                 </div>
                                             </div>
@@ -5874,21 +5832,21 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                     onClick={() => handleToggleZoneSession(selectedPrefixTab, !activeOpnameZones[selectedPrefixTab]?.active)}
                                                     disabled={isTogglingZone === selectedPrefixTab}
                                                     className={cn(
-                                                        "px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm active:scale-95 cursor-pointer shrink-0",
+                                                        "px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 shadow-xs active:scale-95 cursor-pointer shrink-0 self-end sm:self-center",
                                                         activeOpnameZones[selectedPrefixTab]?.active
-                                                            ? "bg-rose-600 hover:bg-rose-700 text-white shadow-rose-500/20"
-                                                            : "bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white shadow-amber-500/20"
+                                                            ? "bg-rose-600 hover:bg-rose-700 text-white"
+                                                            : "bg-amber-500 hover:bg-amber-600 text-white"
                                                     )}
                                                 >
                                                     {activeOpnameZones[selectedPrefixTab]?.active ? (
                                                         <>
-                                                            <XCircle className="w-4 h-4" />
-                                                            <span>Selesaikan Sesi Zona {selectedPrefixTab}</span>
+                                                            <XCircle className="w-3.5 h-3.5" />
+                                                            <span>Selesaikan Sesi</span>
                                                         </>
                                                     ) : (
                                                         <>
-                                                            <Sparkles className="w-4 h-4" />
-                                                            <span>Mulai Sesi Opname Zona {selectedPrefixTab}</span>
+                                                            <Sparkles className="w-3.5 h-3.5" />
+                                                            <span>Mulai Sesi Zona {selectedPrefixTab}</span>
                                                         </>
                                                     )}
                                                 </button>
@@ -5896,39 +5854,34 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                         </div>
                                     )}
 
-                                    {/* INTERACTIVE RACK CHIPS GRID */}
-                                    <div className="max-h-96 overflow-y-auto pr-1">
+                                    {/* INTERACTIVE RACK TILES GRID */}
+                                    <div className="max-h-80 overflow-y-auto pr-1">
                                         {explorerFilteredRacks.length === 0 ? (
-                                            <div className="p-8 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                                            <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
                                                 <p className="text-xs font-bold text-slate-500 uppercase">Tidak ada rak yang sesuai dengan filter.</p>
                                                 <button
                                                     onClick={() => {
                                                         setSelectedPrefixTab('ALL');
                                                         setExplorerSearch('');
                                                     }}
-                                                    className="mt-2 text-xs font-black text-blue-600 hover:underline cursor-pointer"
+                                                    className="mt-1.5 text-xs font-black text-blue-600 hover:underline cursor-pointer"
                                                 >
                                                     Reset Filter
                                                 </button>
                                             </div>
                                         ) : (
-                                            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-2.5">
+                                            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
                                                 {explorerFilteredRacks.map((rackName) => (
                                                     <button
                                                         key={rackName}
                                                         type="button"
                                                         onClick={() => handleSelectRackFromSearch(rackName)}
-                                                        className="p-3 bg-slate-50 hover:bg-gradient-to-br hover:from-blue-600 hover:to-indigo-700 hover:text-white rounded-2xl border border-slate-200 hover:border-blue-500 hover:shadow-md hover:shadow-blue-500/20 active:scale-95 transition-all text-left group flex flex-col justify-between h-20 cursor-pointer"
+                                                        className="p-2.5 bg-slate-50 hover:bg-blue-600 hover:text-white rounded-xl border border-slate-200 hover:border-blue-500 active:scale-95 transition-all text-left group flex items-center justify-between h-12 cursor-pointer"
                                                     >
-                                                        <div className="flex items-center justify-between w-full">
-                                                            <span className="text-[10px] font-black uppercase text-slate-400 group-hover:text-blue-200">
-                                                                Lokasi
-                                                            </span>
-                                                            <ArrowUpRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-white transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
-                                                        </div>
-                                                        <div className="font-black text-sm text-slate-900 group-hover:text-white tracking-tight uppercase truncate">
+                                                        <span className="font-black text-xs text-slate-900 group-hover:text-white uppercase truncate">
                                                             {rackName}
-                                                        </div>
+                                                        </span>
+                                                        <ArrowUpRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-white transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 shrink-0" />
                                                     </button>
                                                 ))}
                                             </div>
@@ -5936,45 +5889,6 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     </div>
                                 </CardContent>
                             </Card>
-
-                            {/* QUICK WORKFLOW GUIDE CARDS */}
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-start gap-3.5">
-                                    <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center shrink-0 font-black text-base">
-                                        1
-                                    </div>
-                                    <div>
-                                        <h4 className="font-black text-xs sm:text-sm text-slate-900 uppercase tracking-tight">Pilih / Scan Rak</h4>
-                                        <p className="text-xs text-slate-500 font-medium mt-1 leading-relaxed">
-                                            Gunakan dropdown, ketik nama rak, scan barcode kamera, atau klik chip rak di atas.
-                                        </p>
-                                    </div>
-                                </div>
-
-                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-start gap-3.5">
-                                    <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center shrink-0 font-black text-base">
-                                        2
-                                    </div>
-                                    <div>
-                                        <h4 className="font-black text-xs sm:text-sm text-slate-900 uppercase tracking-tight">Cek Fisik & Konfirmasi</h4>
-                                        <p className="text-xs text-slate-500 font-medium mt-1 leading-relaxed">
-                                            Cocokkan kuantitas fisik di rak. Klik konfirmasi untuk menandai data akurat secara universal.
-                                        </p>
-                                    </div>
-                                </div>
-
-                                <div className="bg-white p-5 rounded-3xl border border-slate-200/90 shadow-sm flex items-start gap-3.5">
-                                    <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center shrink-0 font-black text-base">
-                                        3
-                                    </div>
-                                    <div>
-                                        <h4 className="font-black text-xs sm:text-sm text-slate-900 uppercase tracking-tight">Pindah Rak & Audit</h4>
-                                        <p className="text-xs text-slate-500 font-medium mt-1 leading-relaxed">
-                                            Pindahkan stok yang salah rak atau gunakan mode audit untuk menyusun ulang isi rak dengan mudah.
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
                         </div>
                     )}
 
