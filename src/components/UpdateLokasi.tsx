@@ -598,8 +598,9 @@ export function UpdateLokasi() {
 
       const { data: officeData, count: officeCount, error: oErr } = await supabase
         .from('database_log')
-        .select('id, sku, tgl, tgl_scan, unique_code, status', { count: 'exact' })
+        .select('id, sku, tgl, tgl_scan, unique_code, status, gudang', { count: 'exact' })
         .eq('type', 'IN')
+        .neq('gudang', 'TRANSFER')
         .in('tgl', possibleFormatsStats)
         .is('matched_log_id', null)
         .order('created_at', { ascending: false })
@@ -610,24 +611,27 @@ export function UpdateLokasi() {
         // Fallback: fetch all IN records for the date
         const { data: fallbackData, count: fallbackCount } = await supabase
           .from('database_log')
-          .select('id, sku, tgl, tgl_scan, unique_code, status', { count: 'exact' })
+          .select('id, sku, tgl, tgl_scan, unique_code, status, gudang', { count: 'exact' })
           .eq('type', 'IN')
+          .neq('gudang', 'TRANSFER')
           .in('tgl', possibleFormatsStats)
           .order('created_at', { ascending: false })
           .limit(100);
           
-        setVerificationStats({ pendingManual: manualCount || 0, pendingOffice: fallbackCount || 0 });
+        const cleanFallback = (fallbackData || []).filter(item => item.gudang?.trim().toUpperCase() !== 'TRANSFER');
+        setVerificationStats({ pendingManual: manualCount || 0, pendingOffice: cleanFallback.length || 0 });
         setPendingManualData(manualData || []);
-        setPendingOfficeData(fallbackData || []);
+        setPendingOfficeData(cleanFallback);
         return;
       }
 
+      const cleanOfficeData = (officeData || []).filter(item => item.gudang?.trim().toUpperCase() !== 'TRANSFER');
       setVerificationStats({
         pendingManual: manualCount || 0,
-        pendingOffice: officeCount || 0
+        pendingOffice: cleanOfficeData.length || 0
       });
       setPendingManualData(manualData || []);
-      setPendingOfficeData(officeData || []);
+      setPendingOfficeData(cleanOfficeData);
       console.log(`📊 [VerStats] Manual: ${manualCount}, Office: ${officeCount} (Date: ${selectedDate})`);
     } catch (err) {
       console.error('Error fetching stats:', err);
@@ -719,8 +723,9 @@ export function UpdateLokasi() {
       while (hasMoreLogs) {
         let query = supabase
           .from('database_log')
-          .select('id, sku, rak, tgl, status')
+          .select('id, sku, rak, tgl, status, gudang')
           .eq('type', 'IN')
+          .neq('gudang', 'TRANSFER')
           .in('sku', manualSkus)
           .order('created_at', { ascending: true })
           .range(from, from + 999);
@@ -742,7 +747,8 @@ export function UpdateLokasi() {
              hasMoreLogs = false;
            }
         } else if (chunk && chunk.length > 0) {
-           allUnmatchedLogs = [...allUnmatchedLogs, ...chunk];
+           const cleanChunk = chunk.filter(c => c.gudang?.trim().toUpperCase() !== 'TRANSFER');
+           allUnmatchedLogs = [...allUnmatchedLogs, ...cleanChunk];
            if (chunk.length < 1000) {
              hasMoreLogs = false;
            } else {
@@ -1124,9 +1130,10 @@ export function UpdateLokasi() {
           // Try to find the MOST RECENT entry with this SN and SKU
           const { data: snMatch, error: snError } = await supabase
             .from('database_log')
-            .select('rak, unique_code, status, tgl, tgl_scan')
+            .select('rak, unique_code, status, tgl, tgl_scan, gudang')
             .ilike('sku', sku.trim())
             .eq('type', 'IN')
+            .neq('gudang', 'TRANSFER')
             .or(snFilters)
             .order('created_at', { ascending: false })
             .limit(1);
@@ -1146,9 +1153,10 @@ export function UpdateLokasi() {
         // 2. FALLBACK: If no SN match or no SN provided, search by SKU + Date (TRADITIONAL)
         const { data: dateMatch, error: dateError } = await supabase
           .from('database_log')
-          .select('rak, unique_code, status, tgl, tgl_scan')
+          .select('rak, unique_code, status, tgl, tgl_scan, gudang')
           .ilike('sku', sku.trim())
           .eq('type', 'IN')
+          .neq('gudang', 'TRANSFER')
           .or(dateFilters)
           .order('created_at', { ascending: false })
           .limit(1);
@@ -1536,6 +1544,7 @@ export function UpdateLokasi() {
         .from('database_log')
         .select('*', { count: 'exact' })
         .eq('type', 'IN')
+        .neq('gudang', 'TRANSFER')
         .in('tgl', possibleFormats)
         .order('created_at', { ascending: false })
         .order('id', { ascending: false });
@@ -1559,7 +1568,8 @@ export function UpdateLokasi() {
         return;
       }
 
-      const transactionItems: TransactionItem[] = (data || []).map(item => {
+      const validData = (data || []).filter(item => item.gudang?.trim().toUpperCase() !== 'TRANSFER');
+      const transactionItems: TransactionItem[] = validData.map(item => {
         const thresholdDate = "2026-03-01";
         const tglScan = item.tgl_scan || '';
 
@@ -1663,6 +1673,7 @@ export function UpdateLokasi() {
         .from('warehouses')
         .select('id, nama, status')
         .eq('status', 'Aktif')
+        .neq('nama', 'TRANSFER')
         .order('nama', { ascending: true });
 
       if (error) {
@@ -1670,8 +1681,9 @@ export function UpdateLokasi() {
         return;
       }
 
-      setWarehouses(data || []);
-      return data || [];
+      const activeWarehouses = (data || []).filter(w => w.nama?.trim().toUpperCase() !== 'TRANSFER');
+      setWarehouses(activeWarehouses);
+      return activeWarehouses;
     } catch (error) {
       console.error('Error loading warehouses:', error);
       return [];
