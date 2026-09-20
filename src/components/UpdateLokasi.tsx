@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { ValidationAlert } from './ui/ValidationAlert';
-import { X, Send, RefreshCw, ChevronLeft, ChevronRight, Filter, Calendar, Package, Building, Building2, Layers, ArrowRightLeft, List, Camera, Search, Plus, Check, Pencil, ShieldAlert, CheckCircle, AlertCircle } from 'lucide-react';
+import { X, Send, RefreshCw, ChevronLeft, ChevronRight, Filter, Calendar, Package, Building, Building2, Layers, ArrowRightLeft, List, Camera, Search, Plus, Check, Pencil, ShieldAlert, CheckCircle, AlertCircle, ArrowLeft } from 'lucide-react';
 import { supabase, fetchAllProducts } from '../lib/supabase';
 import { Modal } from './ui/Modal';
 import { BarcodeScanner } from './ui/BarcodeScanner';
@@ -252,9 +253,12 @@ const UpdateLokasiRakDropdown = ({
   const handleInputChange = (value: string) => {
     const upperCaseValue = value.toUpperCase();
     setSearchTerm(upperCaseValue);
-    updateLocation(item.id, 'update_lokasi_rak', upperCaseValue);
     setShowDropdown(true);
     setHighlightedIndex(0);
+    const exactMatch = rackLocations.find(r => r.nama.trim().toUpperCase() === upperCaseValue.trim());
+    if (exactMatch) {
+      updateLocation(item.id, 'update_lokasi_rak', exactMatch.nama.toUpperCase());
+    }
   };
 
   const handleSelect = (rackName: string) => {
@@ -270,6 +274,19 @@ const UpdateLokasiRakDropdown = ({
     setShowDropdown(false);
   };
 
+  const handleBlur = () => {
+    const match = rackLocations.find(r => r.nama.trim().toUpperCase() === searchTerm.trim().toUpperCase());
+    if (match) {
+      updateLocation(item.id, 'update_lokasi_rak', match.nama.toUpperCase());
+      setSearchTerm(match.nama.toUpperCase());
+    } else if (searchTerm.trim() === '') {
+      updateLocation(item.id, 'update_lokasi_rak', '');
+      setSearchTerm('');
+    } else {
+      setSearchTerm(item.update_lokasi_rak || '');
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown' && showDropdown && filteredRacks.length > 0) {
       e.preventDefault();
@@ -282,6 +299,7 @@ const UpdateLokasiRakDropdown = ({
         e.preventDefault();
         handleSelect(filteredRacks[highlightedIndex].nama);
       } else {
+        handleBlur();
         setShowDropdown(false);
         e.preventDefault();
       }
@@ -306,6 +324,7 @@ const UpdateLokasiRakDropdown = ({
       if (dropdownRef.current && !dropdownRef.current.contains(target) &&
         inputRef.current && !inputRef.current.contains(target)) {
         setShowDropdown(false);
+        handleBlur();
       }
     };
 
@@ -313,7 +332,7 @@ const UpdateLokasiRakDropdown = ({
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showDropdown, inputRef]);
+  }, [showDropdown, inputRef, searchTerm, rackLocations, item.update_lokasi_rak]);
 
 
 
@@ -341,6 +360,7 @@ const UpdateLokasiRakDropdown = ({
           type="text"
           value={searchTerm}
           onChange={(e) => handleInputChange(e.target.value)}
+          onBlur={handleBlur}
           onFocus={() => {
             if (!isDisabled) {
               setShowDropdown(true);
@@ -1796,6 +1816,15 @@ export function UpdateLokasi() {
       if (itemsToUpdate.length === 0) {
         showToast('Tidak ada data yang akan diupdate. Silakan isi kolom Update Lokasi Rak terlebih dahulu.', 'warning');
         setSubmitting(false); // Pastikan state submitting di-reset
+        return;
+      }
+
+      // Validasi ketat: Seluruh lokasi rak yang diupdate WAJIB terdaftar di master rak
+      const registeredRackNames = new Set(rackLocations.map(r => r.nama.trim().toUpperCase()));
+      const invalidItems = itemsToUpdate.filter(item => !registeredRackNames.has(item.update_lokasi_rak.trim().toUpperCase()));
+      if (invalidItems.length > 0) {
+        showToast(`Terdapat ${invalidItems.length} item dengan lokasi rak '${invalidItems[0].update_lokasi_rak}' yang tidak terdaftar di master rak!`, 'error');
+        setSubmitting(false);
         return;
       }
 
@@ -3444,141 +3473,109 @@ export function UpdateLokasi() {
         </div>
       </Modal>
 
-      {/* Full Screen Modal Pilih Lokasi Rak Baru */}
-      {selectedItemForRackModal && (
-        <div className="fixed inset-0 z-50 bg-gray-900/80 backdrop-blur-md flex flex-col justify-between animate-fadeIn">
-          {/* Header */}
-          <div className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 px-5 py-4 flex items-center justify-between text-white shadow-lg border-b border-blue-600/30">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-white/10 rounded-xl backdrop-blur-md">
-                <Building className="h-6 w-6 text-amber-400" />
-              </div>
-              <div>
-                <h3 className="font-black text-lg text-white tracking-wide uppercase">Pilih Lokasi Rak Baru</h3>
-                <p className="text-xs text-blue-200">Pilih atau ketik lokasi rak penyimpanan baru</p>
-              </div>
-            </div>
+      {/* Full Screen Modal Pilih Lokasi Rak Baru (Portalled to body, exact Screenshot 2 design) */}
+      {selectedItemForRackModal && createPortal(
+        <div className="fixed inset-0 z-[10000] bg-white flex flex-col animate-in fade-in zoom-in-95 duration-200 font-sans">
+          {/* Mobile Top Header */}
+          <div className="flex items-center gap-2 p-4 border-b border-gray-200 shadow-md bg-white z-10 pt-safe-top">
             <button
-              onClick={() => setSelectedItemForRackModal(null)}
-              className="p-2 bg-white/10 hover:bg-white/20 rounded-xl text-white transition-all active:scale-95 border border-white/20"
+              onClick={() => {
+                setSelectedItemForRackModal(null);
+                setRackSearchTerm('');
+              }}
+              className="p-2 -ml-2 text-gray-600 hover:text-gray-900 active:bg-gray-100 rounded-full flex flex-col items-center"
+              aria-label="Kembali"
             >
-              <X className="h-6 w-6" />
+              <ArrowLeft className="h-6 w-6" />
             </button>
-          </div>
-
-          {/* Context Info Card (Nama Barang/SKU & Lokasi Lama) */}
-          <div className="p-5 bg-white border-b border-gray-200 shadow-sm space-y-3">
-            <div className="bg-gradient-to-br from-blue-50 to-indigo-50/50 p-4 rounded-2xl border border-blue-100/80 space-y-2">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <span className="text-[10px] font-black uppercase tracking-wider text-blue-600">Nama Barang / SKU</span>
-                  <h4 className="font-black text-base md:text-lg text-gray-900 leading-tight">{selectedItemForRackModal.sku}</h4>
-                </div>
-                <span className="px-3 py-1 bg-blue-600 text-white rounded-full text-xs font-black shadow-sm shrink-0">
-                  {selectedItemForRackModal.jumlah} PCS
-                </span>
-              </div>
-
-              <div className="flex items-center gap-4 text-xs pt-1 border-t border-blue-100">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-gray-500 font-bold uppercase text-[10px]">Lokasi Lama:</span>
-                  <span className="font-mono font-black text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-200">
-                    {selectedItemForRackModal.lokasi_penyimpanan || 'UTAMA'}
-                  </span>
-                </div>
-                <div className="text-gray-400">•</div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-gray-500 font-bold uppercase text-[10px]">Gudang:</span>
-                  <span className="font-bold text-gray-800">{selectedItemForRackModal.gudang}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Search Input Box */}
-            <div className="relative">
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
               <input
                 type="text"
                 value={rackSearchTerm}
                 onChange={(e) => setRackSearchTerm(e.target.value.toUpperCase())}
-                placeholder="Cari lokasi rak (contoh: A5, B12, ECER-M)..."
-                className="w-full h-12 px-4 pr-10 border-2 border-blue-500 rounded-xl text-sm font-bold text-gray-900 placeholder-gray-400 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 bg-white"
+                className="w-full pl-9 pr-8 py-3 bg-white border border-gray-300 rounded-full text-base focus:ring-2 focus:ring-blue-500 shadow-sm uppercase font-medium"
+                placeholder="Ketuk untuk mencari..."
                 autoFocus
               />
               {rackSearchTerm && (
                 <button
                   onClick={() => setRackSearchTerm('')}
                   className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                  aria-label="Hapus pencarian"
                 >
-                  <X className="h-5 w-5" />
+                  <X className="h-4 w-4" />
                 </button>
               )}
             </div>
           </div>
 
-          {/* List/Grid of Rack Locations */}
-          <div className="flex-1 overflow-y-auto p-5 bg-gray-50 space-y-3">
-            {/* Custom Input Button if search term not exactly matching */}
-            {rackSearchTerm.trim() !== '' && (
-              <button
-                onClick={() => {
-                  const upperName = rackSearchTerm.trim().toUpperCase();
-                  updateLocation(selectedItemForRackModal.id, 'update_lokasi_rak', upperName);
-                  setSelectedItemForRackModal(null);
-                  setRackSearchTerm('');
-                  showToast(`Lokasi rak di-set ke: ${upperName}`, 'success');
-                }}
-                className="w-full p-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-2xl shadow-md flex items-center justify-between transition-all active:scale-98 border border-emerald-500"
-              >
-                <div className="flex items-center gap-3">
-                  <CheckCircle className="h-6 w-6" />
-                  <div className="text-left">
-                    <p className="text-xs opacity-90 uppercase tracking-wider">Gunakan Lokasi Custom</p>
-                    <p className="text-base font-black font-mono">{rackSearchTerm.trim().toUpperCase()}</p>
-                  </div>
-                </div>
-                <span className="text-xs font-bold bg-white/20 px-3 py-1 rounded-lg">PILIH</span>
-              </button>
-            )}
-
-            <p className="text-xs font-extrabold uppercase tracking-wider text-gray-500 ml-1">
-              Daftar Lokasi Rak Terdaftar ({rackLocations.length})
-            </p>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {rackLocations
-                .filter(r => r.nama.toLowerCase().includes(rackSearchTerm.toLowerCase()))
-                .map((rack) => (
-                  <button
-                    key={rack.id || rack.nama}
-                    onClick={() => {
-                      const upperName = rack.nama.trim().toUpperCase();
-                      updateLocation(selectedItemForRackModal.id, 'update_lokasi_rak', upperName);
-                      setSelectedItemForRackModal(null);
-                      setRackSearchTerm('');
-                      showToast(`Lokasi rak dipilih: ${upperName}`, 'success');
-                    }}
-                    className={`p-3.5 rounded-xl border-2 text-center transition-all duration-200 active:scale-95 flex flex-col items-center justify-center gap-1 ${
-                      selectedItemForRackModal.update_lokasi_rak === rack.nama
-                        ? 'bg-blue-600 text-white border-blue-700 shadow-md'
-                        : 'bg-white text-gray-800 border-gray-200 hover:border-blue-400 hover:bg-blue-50/50 shadow-sm'
-                    }`}
-                  >
-                    <span className="font-mono font-black text-sm md:text-base tracking-wider">{rack.nama}</span>
-                  </button>
-                ))}
+          {/* Compact Product Info Header */}
+          <div className="bg-blue-50/90 px-4 py-2 border-b border-blue-100 flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2 min-w-0 pr-2">
+              <span className="font-extrabold text-blue-950 truncate">{selectedItemForRackModal.sku}</span>
+              <span className="text-[10px] bg-blue-200 text-blue-800 font-bold px-1.5 py-0.5 rounded-full shrink-0">
+                {selectedItemForRackModal.jumlah} PCS
+              </span>
+            </div>
+            <div className="text-[11px] text-gray-600 shrink-0">
+              Lokasi Lama: <span className="font-mono font-bold text-red-600">{selectedItemForRackModal.lokasi_penyimpanan || 'UTAMA'}</span>
             </div>
           </div>
 
-          {/* Modal Footer */}
-          <div className="p-4 bg-white border-t border-gray-200 flex justify-end">
-            <button
-              onClick={() => setSelectedItemForRackModal(null)}
-              className="w-full h-12 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all uppercase text-xs tracking-wider"
-            >
-              Batal
-            </button>
+          {/* Mobile List of Registered Racks ONLY (No custom location button!) */}
+          <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-gray-50">
+            {(() => {
+              const filtered = rackLocations.filter(r =>
+                r.nama.toLowerCase().includes(rackSearchTerm.toLowerCase())
+              );
+              if (filtered.length === 0) {
+                return (
+                  <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+                    <Search className="h-10 w-10 text-gray-300 mb-2" />
+                    <p className="font-bold text-sm text-gray-600">Tidak ada lokasi rak terdaftar yang cocok</p>
+                    <p className="text-xs text-gray-400 mt-1">Hanya lokasi rak terdaftar yang dapat dipilih</p>
+                  </div>
+                );
+              }
+              return (
+                <>
+                  {filtered.slice(0, 150).map((rack) => {
+                    const isSelected = selectedItemForRackModal.update_lokasi_rak === rack.nama;
+                    return (
+                      <div
+                        key={rack.id || rack.nama}
+                        onClick={() => {
+                          const upperName = rack.nama.trim().toUpperCase();
+                          updateLocation(selectedItemForRackModal.id, 'update_lokasi_rak', upperName);
+                          setSelectedItemForRackModal(null);
+                          setRackSearchTerm('');
+                          showToast(`Lokasi rak dipilih: ${upperName}`, 'success');
+                        }}
+                        className={`px-4 py-3 bg-white rounded-lg border shadow-sm active:bg-blue-50 active:border-blue-300 flex items-center justify-between cursor-pointer transition-all ${
+                          isSelected ? 'border-blue-500 bg-blue-50/60 ring-1 ring-blue-500' : 'border-gray-200'
+                        }`}
+                      >
+                        <span className={`font-semibold text-base ${isSelected ? 'text-blue-700 font-black' : 'text-gray-900'}`}>
+                          {rack.nama}
+                        </span>
+                        {isSelected && (
+                          <Check className="h-5 w-5 text-blue-600 shrink-0" />
+                        )}
+                      </div>
+                    );
+                  })}
+                  {filtered.length > 150 && (
+                    <div className="p-3 text-center text-xs text-gray-400">
+                      Menampilkan 150 dari {filtered.length.toLocaleString()} lokasi rak. Ketik untuk mempersempit pencarian.
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

@@ -333,12 +333,13 @@ export function CustomDropdown({ value, onChange, options, placeholder, classNam
 
                     {/* Mobile Fullscreen Overlay - Portalled to Body */}
                     {!isInTable && createPortal(
-                        <div ref={portalRef} className="fixed inset-0 z-[10000] bg-white lg:hidden flex flex-col animate-in fade-in zoom-in-95 duration-200 font-sans">
+                        <div ref={portalRef} className="fixed inset-0 z-[10000] bg-white md:hidden flex flex-col animate-in fade-in zoom-in-95 duration-200 font-sans">
                             {/* Mobile Header */}
                             <div className="flex items-center gap-2 p-4 border-b border-gray-200 shadow-md bg-white z-10 pt-safe-top">
                                 <button
                                     onClick={() => setIsOpen(false)}
                                     className="p-2 -ml-2 text-gray-600 hover:text-gray-900 active:bg-gray-100 rounded-full flex flex-col items-center"
+                                    aria-label="Kembali"
                                 >
                                     <ArrowLeft className="h-6 w-6" />
                                 </button>
@@ -360,6 +361,7 @@ export function CustomDropdown({ value, onChange, options, placeholder, classNam
                                                 onChange({ target: { value: '' } });
                                             }}
                                             className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                                            aria-label="Hapus teks"
                                         >
                                             <X className="h-4 w-4" />
                                         </button>
@@ -370,15 +372,22 @@ export function CustomDropdown({ value, onChange, options, placeholder, classNam
                             {/* Mobile List */}
                             <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-gray-50">
                                 {filteredOptions.length > 0 ? (
-                                    filteredOptions.map((option, index) => (
-                                        <div
-                                            key={index}
-                                            onClick={() => handleOptionSelect(option, false)}
-                                            className="px-4 py-3 bg-white rounded-lg border border-gray-200 shadow-sm active:bg-blue-50 active:border-blue-300 flex items-center justify-between"
-                                        >
-                                            <span className="font-medium text-gray-900">{option}</span>
-                                        </div>
-                                    ))
+                                    <>
+                                        {filteredOptions.slice(0, 150).map((option, index) => (
+                                            <div
+                                                key={index}
+                                                onClick={() => handleOptionSelect(option, false)}
+                                                className="px-4 py-3 bg-white rounded-lg border border-gray-200 shadow-sm active:bg-blue-50 active:border-blue-300 flex items-center justify-between cursor-pointer"
+                                            >
+                                                <span className="font-medium text-gray-900">{option}</span>
+                                            </div>
+                                        ))}
+                                        {filteredOptions.length > 150 && (
+                                            <div className="p-3 text-center text-xs text-gray-400">
+                                                Menampilkan 150 dari {filteredOptions.length.toLocaleString()} hasil. Ketik untuk mempersempit pencarian.
+                                            </div>
+                                        )}
+                                    </>
                                 ) : (
                                     <div className="flex flex-col items-center justify-center py-10 text-gray-500">
                                         <Search className="h-10 w-10 text-gray-300 mb-2" />

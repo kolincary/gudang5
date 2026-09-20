@@ -3,6 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
+import { CustomDropdown } from './ui/CustomDropdown';
 import { Download, X, RefreshCw, QrCode, ChevronDown, Filter, Calendar, Package, Building, Layers, ArrowRightLeft, List, Tag, Calculator, AlertCircle, AlertTriangle, Search, Edit2, ArrowRight, CheckCircle, ArrowUpDown, Database, History, Copy, Check } from 'lucide-react';
 import { supabase, fetchAllProducts } from '../lib/supabase';
 import { runDateMigration } from '../lib/dateMigration';
@@ -60,279 +61,6 @@ interface PaginationInfo {
   totalCount: number;
   hasNextPage: boolean;
   hasPrevPage: boolean;
-}
-
-// --- Custom Dropdown Component ---
-interface CustomDropdownProps {
-  value: string;
-  onChange: (event: { target: { value: string } }) => void;
-  options: string[];
-  placeholder?: string;
-  className?: string;
-  isInTable?: boolean;
-  loading?: boolean;
-  showClearButton?: boolean;
-}
-
-function CustomDropdown({ value, onChange, options, placeholder, className, isInTable = false, loading = false, showClearButton = false }: CustomDropdownProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const optionRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const [dropdownPosition, setDropdownPosition] = useState<'bottom' | 'top'>('bottom');
-  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
-
-  const filteredOptions = React.useMemo(() => {
-    if (!value) return options.slice(0, 50);
-    const lowerValue = value.toLowerCase();
-    return options.filter(option =>
-      option.toLowerCase().includes(lowerValue)
-    ).slice(0, 50);
-  }, [value, options]);
-
-  useEffect(() => {
-    setHighlightedIndex(0);
-  }, [filteredOptions]);
-
-  useEffect(() => {
-    if (isOpen && optionRefs.current[highlightedIndex] && filteredOptions.length > 0) {
-      optionRefs.current[highlightedIndex]?.scrollIntoView({
-        behavior: 'instant',
-        block: 'nearest'
-      });
-    }
-  }, [highlightedIndex, isOpen]);
-
-  const calculatePosition = () => {
-    if (dropdownRef.current && inputRef.current) {
-      const rect = inputRef.current.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const spaceAbove = rect.top;
-      const dropdownHeight = Math.min(200, filteredOptions.length * 36);
-
-      if (isInTable) {
-        const style: React.CSSProperties = {
-          position: 'fixed',
-          left: rect.left,
-          top: rect.bottom + 4,
-          width: rect.width,
-          zIndex: 9999,
-          maxHeight: '200px'
-        };
-
-        if (spaceBelow < dropdownHeight + 10 && spaceAbove > dropdownHeight + 10) {
-          style.top = 'unset';
-          style.bottom = window.innerHeight - rect.top + 4;
-          setDropdownPosition('top');
-        } else {
-          setDropdownPosition('bottom');
-        }
-
-        setDropdownStyle(style);
-      } else {
-        setDropdownStyle({});
-        if (spaceBelow < 150 && spaceAbove > 150) {
-          setDropdownPosition('top');
-        } else {
-          setDropdownPosition('bottom');
-        }
-      }
-    }
-  };
-
-  const handleFocus = () => {
-    if (loading) return;
-    setIsOpen(true);
-    setHighlightedIndex(0);
-    calculatePosition();
-  };
-
-  const handleOptionSelect = (option: string) => {
-    onChange({ target: { value: option } });
-    setIsOpen(false);
-  };
-
-  const handleClearClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onChange({ target: { value: '' } });
-    setIsOpen(false);
-    if (inputRef.current) {
-      inputRef.current.focus();
-    }
-  };
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    onChange({ target: { value: e.target.value } });
-    if (!isOpen && !loading) {
-      setIsOpen(true);
-      setHighlightedIndex(0);
-      calculatePosition();
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (loading) return;
-
-    if (!isOpen) {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        setIsOpen(true);
-        setHighlightedIndex(0);
-        calculatePosition();
-      }
-      return;
-    }
-
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        setHighlightedIndex(prev => {
-          const nextIndex = prev < filteredOptions.length - 1 ? prev + 1 : 0;
-          return nextIndex;
-        });
-        break;
-
-      case 'ArrowUp':
-        e.preventDefault();
-        setHighlightedIndex(prev => {
-          const nextIndex = prev > 0 ? prev - 1 : filteredOptions.length - 1;
-          return nextIndex;
-        });
-        break;
-
-      case 'Enter':
-        e.preventDefault();
-        if (filteredOptions[highlightedIndex]) {
-          handleOptionSelect(filteredOptions[highlightedIndex]);
-        }
-        break;
-
-      case 'Tab':
-        if (filteredOptions[highlightedIndex]) {
-          handleOptionSelect(filteredOptions[highlightedIndex]);
-        }
-        break;
-
-      case 'Escape':
-        e.preventDefault();
-        setIsOpen(false);
-        break;
-    }
-  };
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, []);
-
-  useEffect(() => {
-    const handleResizeOrScroll = () => {
-      if (isOpen) {
-        calculatePosition();
-      }
-    };
-
-    window.addEventListener('resize', handleResizeOrScroll);
-    window.addEventListener('scroll', handleResizeOrScroll, true);
-    return () => {
-      window.removeEventListener('resize', handleResizeOrScroll);
-      window.removeEventListener('scroll', handleResizeOrScroll, true);
-    };
-  }, [isOpen]);
-
-  useEffect(() => {
-    optionRefs.current = optionRefs.current.slice(0, filteredOptions.length);
-  }, [filteredOptions.length]);
-
-  const showButton = showClearButton && value.trim() !== '';
-
-  return (
-    <div ref={dropdownRef} className="relative w-full">
-      <div className="relative">
-        <input
-          ref={inputRef}
-          type="text"
-          value={value}
-          onChange={handleInputChange}
-          onFocus={handleFocus}
-          onKeyDown={handleKeyDown}
-          className={`w-full px-4 py-2.5 pr-${showButton ? '14' : '10'} border border-gray-300 rounded-lg text-sm text-gray-900 placeholder-gray-400 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all duration-200 ${className} ${loading ? 'opacity-50 cursor-wait' : ''}`}
-          placeholder={loading ? 'Memuat data...' : placeholder}
-          autoComplete="off"
-          disabled={loading}
-        />
-        <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center space-x-1 pointer-events-none">
-          {showButton && (
-            <button
-              onClick={handleClearClick}
-              className="p-1 px-1.5 bg-gray-100/50 hover:bg-gray-200 text-gray-500 hover:text-gray-700 rounded-md transition-all backdrop-blur-sm border border-gray-200 pointer-events-auto"
-              aria-label="Hapus input"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
-          {loading ? (
-            <div className="animate-spin h-4 w-4 border-2 border-blue-500 border-t-transparent rounded-full ml-1"></div>
-          ) : (
-            <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''} pointer-events-auto`} />
-          )}
-        </div>
-      </div>
-
-      {isOpen && !loading && filteredOptions.length > 0 && (
-        <div
-          className={`bg-white border border-gray-200 rounded-lg shadow-xl overflow-y-scroll scrollbar-thin scrollbar-thumb-gray-200 scrollbar-track-transparent ${isInTable
-            ? ''
-            : `absolute left-0 right-0 z-50 max-h-60 ${dropdownPosition === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`
-            }`}
-          style={isInTable ? { ...dropdownStyle, maxHeight: '240px', overflowY: 'scroll' } : { zIndex: 9999 }}
-        >
-          {filteredOptions.map((option, index) => (
-            <div
-              ref={el => optionRefs.current[index] = el}
-              key={index}
-              onClick={() => handleOptionSelect(option)}
-              className={`px-3 py-2 text-sm cursor-pointer border-b border-gray-100 last:border-b-0 transition-colors ${index === highlightedIndex
-                ? 'bg-blue-500 text-white font-medium'
-                : 'hover:bg-blue-50 hover:text-blue-700'
-                }`}
-            >
-              {option}
-            </div>
-          ))}
-          {options.length > 50 && (
-            <div className="px-3 py-2 text-xs text-gray-500 bg-gray-50 border-t">
-              Menampilkan 50 dari {options.length.toLocaleString()} opsi
-            </div>
-          )}
-        </div>
-      )}
-
-      {isOpen && !loading && filteredOptions.length === 0 && value && (
-        <div
-          className={`bg-white border border-gray-300 rounded-md shadow-xl ${isInTable
-            ? ''
-            : `absolute left-0 right-0 z-50 ${dropdownPosition === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`
-            }`}
-          style={isInTable ? dropdownStyle : { zIndex: 9999 }}
-        >
-          <div className="px-3 py-2 text-sm text-gray-500">
-            Tidak ada data yang cocok dengan "{value}"
-          </div>
-        </div>
-      )}
-    </div>
-  );
 }
 
 // --- Komponen Utama ---
@@ -525,12 +253,9 @@ export function RiwayatBarang() {
     hasNextPage: false,
     hasPrevPage: false
   });
-  const [showGudangDropdown, setShowGudangDropdown] = useState(false);
   const [barangSearchTerm, setBarangSearchTerm] = useState('');
   const [gudangSearchTerm, setGudangSearchTerm] = useState('');
   const [rakSearchTerm, setRakSearchTerm] = useState('');
-  const gudangInputRef = useRef<HTMLInputElement>(null);
-  const gudangDropdownRef = useRef<HTMLDivElement>(null);
   const [toast, setToast] = useState<{
     isOpen: boolean;
     message: string;
@@ -1932,23 +1657,9 @@ export function RiwayatBarang() {
 
 
   const handleGudangInputChange = useCallback((value: string) => {
-    setGudangSearchTerm(value);
-    setFilters(prev => ({ ...prev, inisial_gudang: value }));
-    setShowGudangDropdown(true);
-    setCurrentPage(1);
-  }, []);
-
-  const handleGudangSelect = useCallback((nama: string) => {
-    setGudangSearchTerm(nama);
-    setFilters(prev => ({ ...prev, inisial_gudang: nama }));
-    setShowGudangDropdown(false);
-    setCurrentPage(1);
-  }, []);
-
-  const clearGudang = useCallback(() => {
-    setGudangSearchTerm('');
-    setFilters(prev => ({ ...prev, inisial_gudang: '' }));
-    setShowGudangDropdown(false);
+    const trimmedValue = value.trimEnd();
+    setGudangSearchTerm(trimmedValue);
+    setFilters(prev => ({ ...prev, inisial_gudang: trimmedValue }));
     setCurrentPage(1);
   }, []);
 
@@ -1959,33 +1670,12 @@ export function RiwayatBarang() {
     setCurrentPage(1);
   }, []);
 
-
-
   const displayedWarehouses = React.useMemo(() => {
     if (!canViewMoveAndTransfer) {
       return warehouses.filter(w => (w.nama || '').trim().toUpperCase() !== 'TRANSFER');
     }
     return warehouses;
   }, [warehouses, canViewMoveAndTransfer]);
-
-  const filteredWarehouses = gudangSearchTerm
-    ? displayedWarehouses.filter(warehouse =>
-      warehouse.nama.toLowerCase().includes(gudangSearchTerm.toLowerCase()) ||
-      warehouse.nama.toLowerCase() === gudangSearchTerm.toLowerCase()
-    )
-    : displayedWarehouses.slice(0, 50);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (gudangDropdownRef.current && !gudangDropdownRef.current.contains(target) &&
-        gudangInputRef.current && !gudangInputRef.current.contains(target)) {
-        setShowGudangDropdown(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   return (
     <div className="relative">
@@ -2384,46 +2074,16 @@ export function RiwayatBarang() {
                     <Building className="w-3.5 h-3.5 mr-1.5 text-blue-500" />
                     Gudang ({displayedWarehouses.length})
                   </label>
-                  <div className="relative">
-                    <input
-                      ref={gudangInputRef}
-                      type="text"
+                  <div className="relative group">
+                    <CustomDropdown
                       value={gudangSearchTerm}
                       onChange={(e) => handleGudangInputChange(e.target.value)}
-                      onFocus={() => setShowGudangDropdown(true)}
-                      className="w-full px-4 py-2.5 pr-10 bg-white border border-gray-300 rounded-lg text-sm text-gray-700 shadow-sm transition-all duration-200 hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 placeholder-gray-400"
+                      options={displayedWarehouses.map(w => w.nama)}
                       placeholder="Cari gudang..."
+                      showClearButton={true}
+                      loading={initialLoading}
+                      className="bg-white border-gray-300 hover:border-blue-400 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 rounded-lg py-2.5 text-gray-700"
                     />
-                    {gudangSearchTerm && (
-                      <button
-                        onClick={clearGudang}
-                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-red-500 transition-colors p-1"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    )}
-                    {showGudangDropdown && (
-                      <div
-                        ref={gudangDropdownRef}
-                        className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto"
-                      >
-                        {filteredWarehouses.length > 0 ? (
-                          filteredWarehouses.map((warehouse) => (
-                            <div
-                              key={warehouse.id}
-                              onClick={() => handleGudangSelect(warehouse.nama)}
-                              className="px-4 py-2 text-sm cursor-pointer hover:bg-blue-50 border-b border-gray-100 last:border-b-0 text-gray-700 hover:text-blue-700 transition-colors"
-                            >
-                              {warehouse.nama}
-                            </div>
-                          ))
-                        ) : (
-                          <div className="px-4 py-8 text-sm text-gray-400 text-center italic">
-                            Tidak ada gudang yang cocok
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 </div>
 
