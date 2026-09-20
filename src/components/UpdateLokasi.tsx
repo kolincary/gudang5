@@ -9,7 +9,7 @@ import { supabase, fetchAllProducts } from '../lib/supabase';
 import { Modal } from './ui/Modal';
 import { BarcodeScanner } from './ui/BarcodeScanner';
 import { cn } from '../lib/utils';
-import { useAuth } from '../lib/AuthContext';
+import { CustomDropdown } from './ui/CustomDropdown';
 
 interface TransactionItem {
   id: string;
@@ -55,146 +55,6 @@ interface PaginationInfo {
   hasNextPage: boolean;
   hasPrevPage: boolean;
 }
-
-// Debounce hook untuk search
-
-
-// ---
-// Komponen Search Dropdown yang dioptimalkan, dipindahkan ke luar untuk menghindari re-render yang tidak perlu.
-// ---
-
-const OptimizedSearchDropdown = ({
-  options,
-  value,
-  onChange,
-  onSelect,
-  onKeyDown,
-  onFocus,
-  placeholder,
-  loading,
-  highlightedIndex,
-  showDropdown,
-  setShowDropdown, // Prop baru untuk mengelola state dari parent
-  clearSearch,
-  inputRef,
-  maxDisplayItems = 50
-}: {
-  options: string[];
-  value: string;
-  onChange: (value: string) => void;
-  onSelect: (value: string) => void;
-  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
-  onFocus: () => void;
-  placeholder: string;
-  loading: boolean;
-  highlightedIndex: number;
-  showDropdown: boolean;
-  setShowDropdown: (show: boolean) => void;
-  clearSearch: () => void;
-  inputRef: React.RefObject<HTMLInputElement>;
-  maxDisplayItems?: number;
-}) => {
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  const filteredOptions = useMemo(() => {
-    const filtered = options.filter(option =>
-      option.toLowerCase().includes(value.toLowerCase())
-    );
-    return filtered.slice(0, maxDisplayItems);
-  }, [options, value, maxDisplayItems]);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target) &&
-        inputRef.current &&
-        !inputRef.current.contains(target)
-      ) {
-        setShowDropdown(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [inputRef, setShowDropdown]);
-
-  useEffect(() => {
-    if (dropdownRef.current && highlightedIndex >= 0 && highlightedIndex < filteredOptions.length) {
-      const highlightedElement = dropdownRef.current.children[highlightedIndex];
-      if (highlightedElement) {
-        highlightedElement.scrollIntoView({ block: 'nearest' });
-      }
-    }
-  }, [highlightedIndex, filteredOptions.length]);
-
-  return (
-    <div className="relative dropdown-container">
-      <div className="relative">
-        <input
-          ref={inputRef}
-          type="text"
-          onKeyDown={onKeyDown}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={onFocus}
-          className="w-full px-4 py-2.5 pr-10 border border-gray-300 rounded-lg text-sm text-gray-900 placeholder-gray-400 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all duration-200"
-          placeholder={loading ? 'Memuat data...' : placeholder}
-          disabled={loading}
-          autoComplete="off"
-        />
-        <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center space-x-1 pointer-events-none">
-          {value && (
-            <button
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                clearSearch();
-              }}
-              className="p-1 px-1.5 bg-gray-100/50 hover:bg-gray-200 text-gray-500 hover:text-gray-700 rounded-md transition-all backdrop-blur-sm border border-gray-200 pointer-events-auto"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
-          <ChevronLeft className={`h-4 w-4 text-gray-400 rotate-[-90deg] transition-transform ${showDropdown ? 'rotate-[90deg]' : ''} pointer-events-auto`} />
-        </div>
-      </div>
-
-      {showDropdown && (
-        <div
-          ref={dropdownRef}
-          className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 scrollbar-track-transparent"
-        >
-          {filteredOptions.length > 0 ? (
-            <>
-              {filteredOptions.map((option, index) => (
-                <div
-                  key={option}
-                  onMouseDown={() => onSelect(option)}
-                  className={`px-4 py-2 text-sm cursor-pointer border-b border-gray-100 last:border-b-0 transition-colors ${index === highlightedIndex
-                    ? 'bg-blue-500 text-white font-medium'
-                    : 'hover:bg-blue-50 hover:text-blue-700'
-                    }`}
-                >
-                  {option}
-                </div>
-              ))}
-              {options.length > maxDisplayItems && (
-                <div className="px-4 py-2 text-[10px] text-gray-500 bg-gray-50 border-t font-bold uppercase tracking-widest">
-                  Menampilkan {Math.min(filteredOptions.length, maxDisplayItems)} dari {options.length.toLocaleString()} item
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="px-4 py-2 text-sm text-gray-500">
-              {value ? `Tidak ada item yang cocok dengan "${value}"` : 'Ketik untuk mencari...'}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
 
 // ---
 // Komponen UpdateLokasiRakDropdown, dipindahkan ke luar untuk perbaikan fokus input
@@ -527,16 +387,8 @@ export function UpdateLokasi() {
     hasPrevPage: false
   });
 
-  const [showBarangDropdown, setShowBarangDropdown] = useState(false);
   const [barangSearchTerm, setBarangSearchTerm] = useState('');
-  const [barangHighlightedIndex, setBarangHighlightedIndex] = useState(0);
-
-  const [showGudangDropdown, setShowGudangDropdown] = useState(false);
   const [gudangSearchTerm, setGudangSearchTerm] = useState('');
-  const [gudangHighlightedIndex, setGudangHighlightedIndex] = useState(0);
-
-  const barangInputRef = useRef<HTMLInputElement>(null);
-  const gudangInputRef = useRef<HTMLInputElement>(null);
   const modalRakInputRef = useRef<HTMLInputElement>(null);
 
   // Scan confirmation modal states
@@ -1943,108 +1795,17 @@ export function UpdateLokasi() {
   };
 
   const handleBarangInputChange = useCallback((value: string) => {
-    setBarangSearchTerm(value);
-    setFilters(prev => ({ ...prev, barang: value }));
-    setShowBarangDropdown(true);
+    const trimmedValue = value.trimEnd();
+    setBarangSearchTerm(trimmedValue);
+    setFilters(prev => ({ ...prev, barang: trimmedValue }));
     setCurrentPage(1);
   }, []);
-
-  const handleBarangSelect = useCallback((productName: string) => {
-    setBarangSearchTerm(productName);
-    setFilters(prev => ({ ...prev, barang: productName }));
-    setShowBarangDropdown(false);
-    setCurrentPage(1);
-  }, []);
-
-  const clearBarang = useCallback(() => {
-    setBarangSearchTerm('');
-    setFilters(prev => ({ ...prev, barang: '' }));
-    setShowBarangDropdown(false);
-    if (barangInputRef.current) {
-      barangInputRef.current.focus();
-    }
-  }, []);
-
-  const handleBarangKeyDown = useCallback((e: React.KeyboardEvent) => {
-    const filtered = products.filter(product =>
-      product.nama.toLowerCase().includes(barangSearchTerm.toLowerCase())
-    ).slice(0, 50);
-
-    if (e.key === 'ArrowDown' && showBarangDropdown && filtered.length > 0) {
-      e.preventDefault();
-      setBarangHighlightedIndex(prev => prev >= filtered.length - 1 ? 0 : prev + 1);
-    } else if (e.key === 'ArrowUp' && showBarangDropdown && filtered.length > 0) {
-      e.preventDefault();
-      setBarangHighlightedIndex(prev => prev <= 0 ? filtered.length - 1 : prev - 1);
-    } else if ((e.key === 'Enter' || e.key === 'Tab') && showBarangDropdown && barangHighlightedIndex >= 0 && barangHighlightedIndex < filtered.length) {
-      e.preventDefault();
-      handleBarangSelect(filtered[barangHighlightedIndex].nama);
-    } else if (e.key === 'Escape') {
-      setShowBarangDropdown(false);
-      setBarangHighlightedIndex(0);
-    }
-  }, [products, barangSearchTerm, showBarangDropdown, barangHighlightedIndex, handleBarangSelect]);
 
   const handleGudangInputChange = useCallback((value: string) => {
-    setGudangSearchTerm(value);
-    setFilters(prev => ({ ...prev, inisial_gudang: value }));
-    setShowGudangDropdown(true);
-    setGudangHighlightedIndex(0);
+    const trimmedValue = value.trimEnd();
+    setGudangSearchTerm(trimmedValue);
+    setFilters(prev => ({ ...prev, inisial_gudang: trimmedValue }));
     setCurrentPage(1);
-  }, []);
-
-  const handleGudangSelect = useCallback((nama: string) => {
-    setGudangSearchTerm(nama);
-    setFilters(prev => ({ ...prev, inisial_gudang: nama }));
-    setShowGudangDropdown(false);
-    setCurrentPage(1);
-  }, []);
-
-  const clearGudang = useCallback(() => {
-    setGudangSearchTerm('');
-    setFilters(prev => ({ ...prev, inisial_gudang: '' }));
-    setShowGudangDropdown(false);
-    setCurrentPage(1);
-    if (gudangInputRef.current) {
-      gudangInputRef.current.focus();
-    }
-  }, []);
-
-  const handleGudangKeyDown = useCallback((e: React.KeyboardEvent) => {
-    const filtered = warehouses.filter(warehouse =>
-      warehouse.nama.toLowerCase().includes(gudangSearchTerm.toLowerCase())
-    ).slice(0, 50);
-
-    if (e.key === 'ArrowDown' && showGudangDropdown && filtered.length > 0) {
-      e.preventDefault();
-      setGudangHighlightedIndex(prev => prev >= filtered.length - 1 ? 0 : prev + 1);
-    } else if (e.key === 'ArrowUp' && showGudangDropdown && filtered.length > 0) {
-      e.preventDefault();
-      setGudangHighlightedIndex(prev => prev <= 0 ? filtered.length - 1 : prev - 1);
-    } else if (e.key === 'Enter' && showGudangDropdown && gudangHighlightedIndex >= 0 && gudangHighlightedIndex < filtered.length) {
-      e.preventDefault();
-      handleGudangSelect(filtered[gudangHighlightedIndex].nama);
-    } else if (e.key === 'Escape') {
-      setShowGudangDropdown(false);
-      setGudangHighlightedIndex(0);
-    }
-  }, [warehouses, gudangSearchTerm, showGudangDropdown, gudangHighlightedIndex, handleGudangSelect]);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-
-      if (barangInputRef.current && !barangInputRef.current.contains(target) && !target.closest('.dropdown-container')) {
-        setShowBarangDropdown(false);
-      }
-
-      if (gudangInputRef.current && !gudangInputRef.current.contains(target) && !target.closest('.dropdown-container')) {
-        setShowGudangDropdown(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   useEffect(() => {
@@ -2374,22 +2135,17 @@ export function UpdateLokasi() {
                       <Package className="w-3.5 h-3.5 mr-1.5 text-blue-500" />
                       Barang ({products.length.toLocaleString()})
                     </label>
-                    <OptimizedSearchDropdown
-                      options={products.map(p => p.nama)}
-                      value={barangSearchTerm}
-                      onChange={handleBarangInputChange}
-                      onSelect={handleBarangSelect}
-                      onKeyDown={handleBarangKeyDown}
-                      onFocus={() => setShowBarangDropdown(true)}
-                      placeholder="Cari nama barang..."
-                      loading={initialLoading}
-                      highlightedIndex={barangHighlightedIndex}
-                      showDropdown={showBarangDropdown}
-                      setShowDropdown={setShowBarangDropdown}
-                      clearSearch={clearBarang}
-                      inputRef={barangInputRef}
-                      maxDisplayItems={50}
-                    />
+                    <div className="relative group">
+                      <CustomDropdown
+                        value={barangSearchTerm}
+                        onChange={(e) => handleBarangInputChange(e.target.value)}
+                        options={products.map(p => p.nama)}
+                        placeholder="Cari nama barang..."
+                        showClearButton={true}
+                        loading={initialLoading}
+                        className="bg-white border-gray-300 hover:border-blue-400 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 rounded-lg py-2.5 text-gray-700"
+                      />
+                    </div>
                   </div>
 
                   <div>
@@ -2432,22 +2188,17 @@ export function UpdateLokasi() {
                       <Building className="w-3.5 h-3.5 mr-1.5 text-blue-500" />
                       Gudang ({warehouses.length})
                     </label>
-                    <OptimizedSearchDropdown
-                      options={warehouses.map(w => w.nama)}
-                      value={gudangSearchTerm}
-                      onChange={handleGudangInputChange}
-                      onSelect={handleGudangSelect}
-                      onKeyDown={handleGudangKeyDown}
-                      onFocus={() => setShowGudangDropdown(true)}
-                      placeholder="Cari nama gudang..."
-                      loading={initialLoading}
-                      highlightedIndex={gudangHighlightedIndex}
-                      showDropdown={showGudangDropdown}
-                      setShowDropdown={setShowGudangDropdown}
-                      clearSearch={clearGudang}
-                      inputRef={gudangInputRef}
-                      maxDisplayItems={50}
-                    />
+                    <div className="relative group">
+                      <CustomDropdown
+                        value={gudangSearchTerm}
+                        onChange={(e) => handleGudangInputChange(e.target.value)}
+                        options={warehouses.map(w => w.nama)}
+                        placeholder="Cari nama gudang..."
+                        showClearButton={true}
+                        loading={initialLoading}
+                        className="bg-white border-gray-300 hover:border-blue-400 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 rounded-lg py-2.5 text-gray-700"
+                      />
+                    </div>
                   </div>
 
                   <div>
