@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Download, Upload, FileText, CheckCircle, Check, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, UserCheck, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link, Layers, AlertTriangle } from 'lucide-react';
+import { Download, Upload, FileText, CheckCircle, Check, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, UserCheck, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link, Layers, AlertTriangle, Wrench, Settings, Sparkles } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { saveExportHistory } from '../lib/exportHistoryService';
@@ -214,6 +214,19 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const [showFixDates, setShowFixDates] = useState(() => {
     return localStorage.getItem('devmode') === 'true';
   });
+
+  const [isDevToolsModalOpen, setIsDevToolsModalOpen] = useState(false);
+
+  // Close DevTools modal with Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isDevToolsModalOpen) {
+        setIsDevToolsModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isDevToolsModalOpen]);
 
   // Sync showFixDates with global devmode (from Layout)
   useEffect(() => {
@@ -3894,6 +3907,305 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         onClose={() => setIsHistoryModalOpen(false)} 
       />
 
+      {/* DEV TOOLS MODAL DIALOG - 100% RESPONSIVE & UNCONSTRAINED */}
+      {isDevToolsModalOpen && (
+        <div 
+          className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 md:p-6 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsDevToolsModalOpen(false);
+          }}
+        >
+          <div className="bg-slate-900 border border-slate-700/80 rounded-3xl w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200 text-left normal-case">
+            {/* Modal Header */}
+            <div className="p-4 sm:p-6 border-b border-slate-800 bg-slate-950/60 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-400/30">
+                  <Wrench className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-white uppercase tracking-tight flex items-center gap-2">
+                    Panel Alat Pemeliharaan & Audit
+                    <span className="px-2 py-0.5 rounded-lg bg-amber-400/20 text-amber-300 text-[10px] font-black border border-amber-400/30">
+                      DevMode
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 font-medium">
+                    Kumpulan alat diagnosa saldo stok, audit transfer, dan perbaikan data log database
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDevToolsModalOpen(false)}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-4 sm:p-6 overflow-y-auto space-y-6 custom-scrollbar">
+              {/* Section 1: Sinkronisasi & Perbaikan Tanggal */}
+              <div>
+                <span className="text-xs font-black uppercase tracking-wider text-amber-400 flex items-center gap-2 mb-3">
+                  <Calendar className="w-4 h-4" /> 1. Sinkronisasi & Perbaikan Tanggal
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={handleFixDates}
+                    disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-amber-500/15 border border-slate-700/80 hover:border-amber-400/50 transition-all active:scale-[0.98] text-left flex items-start gap-3 group disabled:opacity-50 cursor-pointer"
+                  >
+                    <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-400/30 group-hover:bg-amber-500 group-hover:text-white transition-colors shrink-0">
+                      <ArrowUpDown className={`h-5 w-5 ${isMigrating ? 'animate-spin' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white group-hover:text-amber-200">
+                        {isMigrating 
+                          ? (migrationProgress.total > 0 ? `Fixing ${Math.round((migrationProgress.current / migrationProgress.total) * 100)}%` : 'Fixing...')
+                          : 'Fix Date'}
+                      </div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Perbaiki sinkronisasi tanggal log sesuai nota barang masuk</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleFixScanDates}
+                    disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-indigo-500/15 border border-slate-700/80 hover:border-indigo-400/50 transition-all active:scale-[0.98] text-left flex items-start gap-3 group disabled:opacity-50 cursor-pointer"
+                  >
+                    <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-400/30 group-hover:bg-indigo-500 group-hover:text-white transition-colors shrink-0">
+                      <Calendar className={`h-5 w-5 ${isRepairing ? 'animate-spin' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white group-hover:text-indigo-200">
+                        {isRepairing 
+                          ? (migrationProgress.total > 0 ? `Repair ${Math.round((migrationProgress.current / migrationProgress.total) * 100)}%` : 'Repairing...')
+                          : 'Fix Scan'}
+                      </div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Perbaiki tanggal scan barcode QR di database log</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSyncAllSubRakWithRak}
+                    disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-teal-500/15 border border-slate-700/80 hover:border-teal-400/50 transition-all active:scale-[0.98] text-left flex items-start gap-3 group disabled:opacity-50 cursor-pointer"
+                    title="Samakan SEMUA Sub Rak = Rak di database_log"
+                  >
+                    <div className="p-2.5 rounded-xl bg-teal-500/20 text-teal-400 border border-teal-400/30 group-hover:bg-teal-500 group-hover:text-white transition-colors shrink-0">
+                      <RefreshCw className={`h-5 w-5 ${isSyncingSubRak ? 'animate-spin' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white group-hover:text-teal-200">
+                        {isSyncingSubRak 
+                          ? (subRakProgress.total > 0 ? `Sync ${Math.round((subRakProgress.current / subRakProgress.total) * 100)}%` : 'Syncing...')
+                          : 'Fix Sub Rak'}
+                      </div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Samakan seluruh kolom Sub Rak = Rak di database log</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleFixAllTransferDates}
+                    disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-purple-500/15 border border-slate-700/80 hover:border-purple-400/50 transition-all active:scale-[0.98] text-left flex items-start gap-3 group disabled:opacity-50 cursor-pointer"
+                    title="Perbaiki Tanggal Log TRANSFER Sesuai Tanggal Barang Masuk Asli"
+                  >
+                    <div className="p-2.5 rounded-xl bg-purple-500/20 text-purple-400 border border-purple-400/30 group-hover:bg-purple-500 group-hover:text-white transition-colors shrink-0">
+                      <Calendar className={`h-5 w-5 ${isFixingTransferDates ? 'animate-spin' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white group-hover:text-purple-200">
+                        {isFixingTransferDates 
+                          ? `Fixing ${transferFixProgress.percent}%` 
+                          : 'Fix Transfer Date'}
+                      </div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Perbaiki tanggal log transfer (IN & OUT berpasangan)</div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Section 2: Audit & Diagnosa Stok */}
+              <div>
+                <span className="text-xs font-black uppercase tracking-wider text-indigo-400 flex items-center gap-2 mb-3">
+                  <Calculator className="w-4 h-4" /> 2. Audit & Diagnosa Stok
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      setIsAnalysisModalOpen(true);
+                      const targetSku = filters.sku || analysisSku;
+                      if (targetSku) {
+                        setAnalysisSku(targetSku);
+                        handleAnalyzeStockBalance(targetSku);
+                      } else {
+                        setAnalysisResults([]);
+                      }
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-teal-500/15 border border-slate-700/80 hover:border-teal-400/50 transition-all active:scale-[0.98] text-left flex flex-col gap-2.5 group cursor-pointer"
+                    title="Cek Saldo Stok & Diagnosa Data Minus / Lebih Potong"
+                  >
+                    <div className="p-2.5 rounded-xl bg-teal-500/20 text-teal-400 border border-teal-400/30 group-hover:bg-teal-500 group-hover:text-white transition-colors w-fit">
+                      <Calculator className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white group-hover:text-teal-200">Cek Saldo / Audit Minus</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Diagnosa saldo stok dan deteksi data minus</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      setIsTransferAuditModalOpen(true);
+                      const targetSku = filters.sku || transferAuditSku;
+                      if (targetSku) {
+                        setTransferAuditSku(targetSku);
+                        handleScanTransferAnomalies(targetSku);
+                      } else {
+                        handleScanTransferAnomalies('');
+                      }
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-indigo-500/15 border border-slate-700/80 hover:border-indigo-400/50 transition-all active:scale-[0.98] text-left flex flex-col gap-2.5 group cursor-pointer"
+                    title="Audit Anomali Data Transfer (Duplikat, Gantung, & Selisih)"
+                  >
+                    <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-400/30 group-hover:bg-indigo-500 group-hover:text-white transition-colors w-fit">
+                      <ArrowRightLeft className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white group-hover:text-indigo-200">Audit Transfer (IN/OUT)</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Deteksi anomali transfer duplikat & selisih</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      setIsChainAuditModalOpen(true);
+                      const targetSku = filters.sku || chainAuditSku;
+                      if (targetSku) {
+                        setChainAuditSku(targetSku);
+                        handleScanTransferChains(targetSku);
+                      } else {
+                        handleScanTransferChains('');
+                      }
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-violet-500/15 border border-slate-700/80 hover:border-violet-400/50 transition-all active:scale-[0.98] text-left flex flex-col gap-2.5 group cursor-pointer"
+                    title="Audit & Perbaiki Rantai Transfer (Chain) & Potong Stok Keluar"
+                  >
+                    <div className="p-2.5 rounded-xl bg-violet-500/20 text-violet-400 border border-violet-400/30 group-hover:bg-violet-500 group-hover:text-white transition-colors w-fit">
+                      <Link className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white group-hover:text-violet-200">Audit Transfer Chain</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Audit & perbaiki rantai transfer bertingkat</div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Section 3: Pembersihan & Penyesuaian Data */}
+              <div>
+                <span className="text-xs font-black uppercase tracking-wider text-rose-400 flex items-center gap-2 mb-3">
+                  <Layers className="w-4 h-4" /> 3. Pembersihan & Penyesuaian Data
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      setIsTransferPurgeModalOpen(true);
+                      const targetSku = filters.sku || purgeSkuInput;
+                      setPurgeSkuInput(targetSku || '');
+                      handleScanTransferPurge(targetSku || '');
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-rose-500/15 border border-slate-700/80 hover:border-rose-400/50 transition-all active:scale-[0.98] text-left flex items-start gap-3 group cursor-pointer"
+                    title="Pembersihan & Hapus Log TRANSFER (Dengan Proteksi Rak Khusus)"
+                  >
+                    <div className="p-2.5 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-400/30 group-hover:bg-rose-500 group-hover:text-white transition-colors shrink-0">
+                      <Trash2 className="h-5 w-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white group-hover:text-rose-200">Hapus Log Transfer</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Pembersihan log transfer dengan proteksi rak khusus</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      setIsSyncOutRakModalOpen(true);
+                      const targetSku = (filters.sku || syncOutSkuInput || '').trim();
+                      setSyncOutSkuInput(targetSku);
+                      if (targetSku) {
+                        handleScanSyncOut(targetSku);
+                      }
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-emerald-500/15 border border-slate-700/80 hover:border-emerald-400/50 transition-all active:scale-[0.98] text-left flex items-start gap-3 group cursor-pointer"
+                    title="Sinkron / Kembalikan Rak OUT Sesuai Nota Masuk Asli (Gudang J/H)"
+                  >
+                    <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-400/30 group-hover:bg-emerald-500 group-hover:text-white transition-colors shrink-0">
+                      <RotateCcw className="h-5 w-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white group-hover:text-emerald-200">Sinkron Rak OUT Nota</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Kembalikan rak OUT sesuai nota masuk asli</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      setIsSyncLt4Lt2ModalOpen(true);
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-indigo-500/15 border border-slate-700/80 hover:border-indigo-400/50 transition-all active:scale-[0.98] text-left flex items-start gap-3 group cursor-pointer"
+                    title="Penyelarasan Tanggal Mutasi Transfer LANTAI 4 ke LANTAI 2 (Accurate Tetap Aman)"
+                  >
+                    <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-400/30 group-hover:bg-indigo-500 group-hover:text-white transition-colors shrink-0">
+                      <Building2 className="h-5 w-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white group-hover:text-indigo-200">Mutasi LT4 ➔ LT2</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Penyelarasan tanggal mutasi transfer Lantai 4 ke Lantai 2</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      setIsAdjustmentStockOutModalOpen(true);
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-orange-500/15 border border-slate-700/80 hover:border-orange-400/50 transition-all active:scale-[0.98] text-left flex items-start gap-3 group cursor-pointer"
+                    title="Pencarian Single/Massal SKU Stok Tersedia & Penyesuaian Stok OUT"
+                  >
+                    <div className="p-2.5 rounded-xl bg-orange-500/20 text-orange-400 border border-orange-400/30 group-hover:bg-orange-500 group-hover:text-white transition-colors shrink-0">
+                      <Layers className="h-5 w-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white group-hover:text-orange-200">Penyesuaian Stok OUT</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Pencarian stok tersedia & penyesuaian stok keluar massal</div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isPinModalOpen && (
         <Modal isOpen={isPinModalOpen} onClose={handleClosePinModal} title="Akses Database Log" size="sm">
           <div className="flex flex-col items-center p-4">
@@ -3930,30 +4242,30 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
       {isAccessGranted ? (
         <div className="space-y-6">
-          {/* PREMIUM IMMERSIVE HEADER (310px) */}
+          {/* PREMIUM IMMERSIVE HEADER (min-h 310px) */}
           <div className="flex flex-col mb-8 lg:mb-12 uppercase">
-            <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
+            <div className="bg-gradient-to-br from-blue-700 via-indigo-800 to-slate-900 -mx-3 lg:-mx-8 pt-[90px] lg:pt-0 lg:min-h-[310px] pb-[75px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/40 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
 
               {/* Decorative Background Icon */}
-              <div className="absolute -top-12 -right-12 text-white opacity-5">
+              <div className="absolute -top-12 -right-12 text-white opacity-5 pointer-events-none">
                 <Database className="w-72 h-72 lg:w-[480px] lg:h-[480px]" />
               </div>
 
               {/* Decorative Floating Elements */}
-              <div className="absolute top-1/4 right-1/3 w-24 h-24 bg-blue-500/10 rounded-full blur-2xl animate-pulse"></div>
-              <div className="absolute bottom-10 left-10 w-20 h-20 bg-indigo-500/10 rounded-3xl rotate-12 blur-xl"></div>
+              <div className="absolute top-1/4 right-1/3 w-24 h-24 bg-blue-500/10 rounded-full blur-2xl animate-pulse pointer-events-none"></div>
+              <div className="absolute bottom-10 left-10 w-20 h-20 bg-indigo-500/10 rounded-3xl rotate-12 blur-xl pointer-events-none"></div>
 
               {/* Text Content */}
-              <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-end lg:justify-between gap-8 uppercase">
+              <div className="relative z-10 w-full flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6 lg:gap-8 uppercase">
                 <div className="max-w-2xl">
                   <div className="flex items-center gap-2 mb-3 lg:mb-4 opacity-90">
                     <div className="w-10 h-[2px] bg-blue-400 rounded-full"></div>
                     <span className="text-[10px] lg:text-[12px] font-black tracking-[0.4em] text-blue-100">System Activity Repository</span>
                   </div>
-                  <h1 className="text-[36px] lg:text-[62px] font-black text-white tracking-tighter leading-[1] mb-3 uppercase">
+                  <h1 className="text-[32px] sm:text-[40px] lg:text-[62px] font-black text-white tracking-tighter leading-[1] mb-3 uppercase">
                     Database <span className="text-blue-400">Log</span>
                   </h1>
-                  <div className="text-blue-100/80 font-medium text-[14px] lg:text-[18px] leading-relaxed max-w-[90%] normal-case flex items-center gap-3">
+                  <div className="text-blue-100/80 font-medium text-[13px] sm:text-[15px] lg:text-[18px] leading-relaxed max-w-[90%] normal-case flex flex-wrap items-center gap-2 sm:gap-3">
                     <div className="px-3 py-1 bg-white/10 rounded-full backdrop-blur-sm border border-white/10 flex items-center gap-2">
                       <span className="relative flex h-2 w-2">
                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
@@ -3962,229 +4274,54 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       <span className="text-[11px] font-bold tracking-widest uppercase">Live Monitoring</span>
                     </div>
                     <span className="opacity-60 hidden sm:inline">|</span>
-                    <span className="text-[13px] lg:text-[16px]">Pantau dan kelola riwayat transaksi data secara transparan</span>
+                    <span className="text-[12px] sm:text-[14px] lg:text-[16px]">Pantau dan kelola riwayat transaksi data secara transparan</span>
                   </div>
                 </div>
 
-                {/* Global Actions Container - Desktop */}
-                <div className="relative z-10 flex flex-wrap gap-2 lg:gap-3 lg:mb-2 items-center">
+                {/* Global Actions Container - Fully Responsive */}
+                <div className="relative z-10 flex flex-wrap gap-2 sm:gap-2.5 lg:gap-3 lg:mb-2 items-center">
                   {(loading || exportProgress.isExporting || importProgress.isImporting || isMigrating || isRepairing) && (
-                    <div className="px-5 py-2.5 bg-blue-500/20 backdrop-blur-md border border-white/20 rounded-2xl flex items-center gap-3 mr-2">
+                    <div className="px-4 sm:px-5 py-2 sm:py-2.5 bg-blue-500/20 backdrop-blur-md border border-white/20 rounded-2xl flex items-center gap-2 sm:gap-3">
                       <RefreshCw className="w-4 h-4 text-white animate-spin" />
-                      <span className="text-[11px] font-black text-white tracking-[0.2em] uppercase">Processing</span>
+                      <span className="text-[10px] sm:text-[11px] font-black text-white tracking-[0.2em] uppercase">Processing</span>
                     </div>
                   )}
 
                   {showFixDates && (
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        onClick={handleFixDates}
-                        disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
-                        className="h-12 px-5 bg-amber-500 hover:bg-amber-600 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-amber-400/50 disabled:opacity-50 min-w-[120px]"
-                      >
-                        <ArrowUpDown className={`h-4 w-4 ${isMigrating ? 'animate-spin' : ''}`} />
-                        <span className="uppercase text-[10px] font-black">
-                          {isMigrating 
-                            ? (migrationProgress.total > 0 ? `Fixing ${Math.round((migrationProgress.current / migrationProgress.total) * 100)}%` : 'Fixing...')
-                            : 'Fix Date'}
-                        </span>
-                      </button>
-                      <button
-                        onClick={handleFixScanDates}
-                        disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
-                        className="h-12 px-5 bg-indigo-500 hover:bg-indigo-600 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-indigo-400/50 disabled:opacity-50 min-w-[120px]"
-                      >
-                        <Calendar className={`h-4 w-4 ${isRepairing ? 'animate-spin' : ''}`} />
-                        <span className="uppercase text-[10px] font-black">
-                          {isRepairing 
-                            ? (migrationProgress.total > 0 ? `Repair ${Math.round((migrationProgress.current / migrationProgress.total) * 100)}%` : 'Repairing...')
-                            : 'Fix Scan'}
-                        </span>
-                      </button>
-                      <button
-                        onClick={handleSyncAllSubRakWithRak}
-                        disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
-                        className="h-12 px-5 bg-teal-600 hover:bg-teal-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-teal-400/50 disabled:opacity-50 min-w-[130px]"
-                        title="Samakan SEMUA Sub Rak = Rak di database_log"
-                      >
-                        <RefreshCw className={`h-4 w-4 ${isSyncingSubRak ? 'animate-spin' : ''}`} />
-                        <span className="uppercase text-[10px] font-black">
-                          {isSyncingSubRak 
-                            ? (subRakProgress.total > 0 ? `Sync ${Math.round((subRakProgress.current / subRakProgress.total) * 100)}%` : 'Syncing...')
-                            : 'Fix Sub Rak'}
-                        </span>
-                      </button>
-                      <button
-                        onClick={handleFixAllTransferDates}
-                        disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
-                        className="h-12 px-5 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-purple-400/50 disabled:opacity-50 min-w-[140px]"
-                        title="Perbaiki Tanggal Log TRANSFER (OUT & IN Berpasangan) Sesuai Tanggal Barang Masuk Asli"
-                      >
-                        <Calendar className={`h-4 w-4 ${isFixingTransferDates ? 'animate-spin' : ''}`} />
-                        <span className="uppercase text-[10px] font-black">
-                          {isFixingTransferDates 
-                            ? `Fixing ${transferFixProgress.percent}%` 
-                            : 'Fix Transfer Date'}
-                        </span>
-                      </button>
-
-                      {/* DEVMODE: CEK SALDO / AUDIT MINUS */}
-                      <button
-                        onClick={() => {
-                          setIsAnalysisModalOpen(true);
-                          const targetSku = filters.sku || analysisSku;
-                          if (targetSku) {
-                            setAnalysisSku(targetSku);
-                            handleAnalyzeStockBalance(targetSku);
-                          } else {
-                            setAnalysisResults([]);
-                          }
-                        }}
-                        className="h-12 px-5 bg-teal-600 hover:bg-teal-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-teal-400/30"
-                        title="Cek Saldo Stok & Diagnosa Data Minus / Lebih Potong"
-                      >
-                        <Calculator className="h-4 w-4" />
-                        <span className="uppercase text-[10px] font-black">Cek Saldo / Audit Minus</span>
-                      </button>
-
-                      {/* DEVMODE: AUDIT TRANSFER (IN/OUT) */}
-                      <button
-                        onClick={() => {
-                          setIsTransferAuditModalOpen(true);
-                          const targetSku = filters.sku || transferAuditSku;
-                          if (targetSku) {
-                            setTransferAuditSku(targetSku);
-                            handleScanTransferAnomalies(targetSku);
-                          } else {
-                            handleScanTransferAnomalies('');
-                          }
-                        }}
-                        className="h-12 px-5 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-indigo-400/30"
-                        title="Audit Anomali Data Transfer (Duplikat, Gantung, & Selisih)"
-                      >
-                        <ArrowRightLeft className="h-4 w-4" />
-                        <span className="uppercase text-[10px] font-black">Audit Transfer (IN/OUT)</span>
-                      </button>
-
-                      {/* DEVMODE: AUDIT TRANSFER CHAIN */}
-                      <button
-                        onClick={() => {
-                          setIsChainAuditModalOpen(true);
-                          const targetSku = filters.sku || chainAuditSku;
-                          if (targetSku) {
-                            setChainAuditSku(targetSku);
-                            handleScanTransferChains(targetSku);
-                          } else {
-                            handleScanTransferChains('');
-                          }
-                        }}
-                        className="h-12 px-5 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-violet-400/40"
-                        title="Audit & Perbaiki Rantai Transfer (Chain) & Potong Stok Keluar"
-                      >
-                        <Link className="h-4 w-4" />
-                        <span className="uppercase text-[10px] font-black">Audit Transfer Chain</span>
-                      </button>
-
-                      {/* DEVMODE: HAPUS LOG TRANSFER */}
-                      <button
-                        onClick={() => {
-                          setIsTransferPurgeModalOpen(true);
-                          const targetSku = filters.sku || purgeSkuInput;
-                          setPurgeSkuInput(targetSku || '');
-                          handleScanTransferPurge(targetSku || '');
-                        }}
-                        className="h-12 px-5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-rose-400/40"
-                        title="Pembersihan & Hapus Log TRANSFER (Dengan Proteksi Rak Khusus)"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        <span className="uppercase text-[10px] font-black">Hapus Log Transfer</span>
-                      </button>
-
-                      {/* DEVMODE: SINKRON RAK OUT NOTA */}
-                      <button
-                        onClick={() => {
-                          setIsSyncOutRakModalOpen(true);
-                          const targetSku = (filters.sku || syncOutSkuInput || '').trim();
-                          setSyncOutSkuInput(targetSku);
-                          if (targetSku) {
-                            handleScanSyncOut(targetSku);
-                          }
-                        }}
-                        className="h-12 px-5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-emerald-400/40"
-                        title="Sinkron / Kembalikan Rak OUT Sesuai Nota Masuk Asli (Gudang J/H)"
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                        <span className="uppercase text-[10px] font-black">Sinkron Rak OUT Nota</span>
-                      </button>
-
-                      {/* DEVMODE: SELARASKAN MUTASI LT4 -> LT2 */}
-                      <button
-                        onClick={() => setIsSyncLt4Lt2ModalOpen(true)}
-                        className="h-12 px-5 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:from-indigo-500 hover:to-pink-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-indigo-400/40"
-                        title="Penyelarasan Tanggal Mutasi Transfer LANTAI 4 ke LANTAI 2 (Accurate Tetap Aman)"
-                      >
-                        <Building2 className="h-4 w-4" />
-                        <span className="uppercase text-[10px] font-black">Mutasi LT4 ➔ LT2</span>
-                      </button>
-
-                      {/* DEVMODE: PENYESUAIAN STOK OUT */}
-                      <button
-                        onClick={() => setIsAdjustmentStockOutModalOpen(true)}
-                        className="h-12 px-5 bg-gradient-to-r from-amber-600 via-orange-600 to-rose-600 hover:from-amber-500 hover:to-rose-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-orange-400/40"
-                        title="Pencarian Single/Massal SKU Stok Tersedia & Penyesuaian Stok OUT (Gudang: PENYESUAIAN STOK OUT)"
-                      >
-                        <Layers className="h-4 w-4" />
-                        <span className="uppercase text-[10px] font-black">Penyesuaian Stok OUT</span>
-                      </button>
-
-                      {/* DEVMODE: FILTER USER SYSTEM (CEK RAK) */}
-                      <button
-                        onClick={() => {
-                          if (filters.user === 'System (Cek Rak)') {
-                            setFilters(prev => ({ ...prev, user: '' }));
-                            showToast('Filter User System (Cek Rak) dinonaktifkan', 'info');
-                          } else {
-                            setFilters(prev => ({ ...prev, user: 'System (Cek Rak)' }));
-                            showToast('Memfilter data User: System (Cek Rak)', 'success');
-                          }
-                        }}
-                        className={`h-12 px-5 font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border ${
-                          filters.user === 'System (Cek Rak)'
-                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-300 ring-2 ring-emerald-300 shadow-emerald-950/40'
-                            : 'bg-gradient-to-r from-emerald-700 to-teal-700 hover:from-emerald-600 hover:to-teal-600 text-white border-emerald-400/40'
-                        }`}
-                        title="Filter Cepat Kolom User: System (Cek Rak)"
-                      >
-                        <UserCheck className="h-4 w-4" />
-                        <span className="uppercase text-[10px] font-black">
-                          {filters.user === 'System (Cek Rak)' ? '✓ System (Cek Rak)' : 'User: Cek Rak'}
-                        </span>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsDevToolsModalOpen(true)}
+                      className="h-11 sm:h-12 px-3.5 sm:px-4.5 bg-gradient-to-r from-amber-500/20 via-indigo-500/20 to-purple-500/20 hover:from-amber-500/30 hover:to-purple-500/30 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-white/30 backdrop-blur-xl cursor-pointer"
+                      title="Buka Panel Alat Pemeliharaan & Audit Data (DevMode)"
+                    >
+                      <Wrench className="h-4 w-4 text-amber-300" />
+                      <span className="uppercase text-[10px] sm:text-[11px] font-black tracking-wider">Dev Tools</span>
+                      <span className="px-1.5 py-0.5 rounded-md bg-amber-400/20 text-amber-300 text-[9px] sm:text-[10px] font-black border border-amber-400/30">11</span>
+                    </button>
                   )}
 
                   <button
                     onClick={handleImport}
-                    className="h-12 px-5 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-white/30 backdrop-blur-xl"
+                    className="h-11 sm:h-12 px-4 sm:px-5 bg-white/10 hover:bg-white/20 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-white/30 backdrop-blur-xl cursor-pointer"
                   >
                     <Upload className="h-4 w-4" />
-                    <span className="uppercase text-[10px] font-black">Import</span>
+                    <span className="uppercase text-[10px] sm:text-[11px] font-black">Import</span>
                   </button>
 
                   <button
                     onClick={() => setIsHistoryModalOpen(true)}
-                    className="h-12 px-5 bg-fuchsia-600 hover:bg-fuchsia-500 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(192,38,211,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2 border border-fuchsia-400/50"
+                    className="h-11 sm:h-12 px-4 sm:px-5 bg-fuchsia-600 hover:bg-fuchsia-500 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(192,38,211,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2 border border-fuchsia-400/50 cursor-pointer"
                   >
                     <History className="h-4 w-4" />
-                    <span className="uppercase text-[10px] font-black">Riwayat Export</span>
+                    <span className="uppercase text-[10px] sm:text-[11px] font-black">Riwayat Export</span>
                   </button>
 
                   <button
                     onClick={handleExport}
-                    className="h-12 px-5 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(37,99,235,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2 border border-blue-400/50"
+                    className="h-11 sm:h-12 px-4 sm:px-5 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(37,99,235,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2 border border-blue-400/50 cursor-pointer"
                   >
                     <Download className="h-4 w-4" />
-                    <span className="uppercase text-[10px] font-black">Export</span>
+                    <span className="uppercase text-[10px] sm:text-[11px] font-black">Export</span>
                   </button>
                 </div>
               </div>
