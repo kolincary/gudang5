@@ -2364,7 +2364,7 @@ export function PindahDataBarang() {
                     <label className="block text-xs font-black text-slate-700 tracking-wider uppercase mb-2">
                       1. Pilih Batch Rak Asal
                     </label>
-                    <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                    <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-2 scrollbar-thin touch-pan-x scroll-smooth">
                       <button
                         type="button"
                         onClick={() => setBatchSelectedKey('ALL')}

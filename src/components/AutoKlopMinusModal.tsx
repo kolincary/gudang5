@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
     X,
     Search,
@@ -12,7 +12,9 @@ import {
     CheckSquare,
     Square,
     ArrowRightLeft,
-    Check
+    Check,
+    ChevronLeft,
+    ChevronRight
 } from 'lucide-react';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
@@ -33,6 +35,13 @@ export interface PlusLocation {
     id?: string;
 }
 
+export interface UtamaLocation {
+    rak: string;
+    sub_rak: string;
+    tersedia: number;
+    id?: string;
+}
+
 export interface ReconcilePairPlan {
     sourceRak: string;
     sourceSubRak: string;
@@ -45,6 +54,8 @@ export interface SkuReconcileItem {
     sku: string;
     packing: string;
     satuan: string;
+    utamaStock: number;
+    utamaLocations: UtamaLocation[];
     minusLocations: MinusLocation[];
     plusLocations: PlusLocation[];
     totalMinus: number; // absolute value, e.g. 96
@@ -155,12 +166,31 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
         setTimeout(() => setToastMessage(null), 3500);
     };
 
-    // 1. Group all stockItems by SKU and then by Batch
+    // Horizontal Scroll Ref & State for Pilih Batch Rak
+    const batchScrollRef = useRef<HTMLDivElement>(null);
+    const [canScrollLeft, setCanScrollLeft] = useState(false);
+    const [canScrollRight, setCanScrollRight] = useState(false);
+    const isDraggingRef = useRef(false);
+    const startXRef = useRef(0);
+    const scrollLeftRef = useRef(0);
+    const hasDraggedRef = useRef(false);
+
+    const updateScrollButtons = () => {
+        if (batchScrollRef.current) {
+            const { scrollLeft, scrollWidth, clientWidth } = batchScrollRef.current;
+            setCanScrollLeft(scrollLeft > 4);
+            setCanScrollRight(scrollLeft < scrollWidth - clientWidth - 4);
+        }
+    };
+
+    // 1. Group all stockItems by SKU and then by Batch (including Rak UTAMA tracking)
     const skuBatchMap = useMemo(() => {
         if (!stockItems || stockItems.length === 0) return new Map<string, {
             sku: string;
             packing: string;
             satuan: string;
+            utamaStock: number;
+            utamaLocations: UtamaLocation[];
             batches: Map<string, { minusLocations: MinusLocation[]; plusLocations: PlusLocation[] }>;
         }>();
 
@@ -168,6 +198,8 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
             sku: string;
             packing: string;
             satuan: string;
+            utamaStock: number;
+            utamaLocations: UtamaLocation[];
             batches: Map<string, { minusLocations: MinusLocation[]; plusLocations: PlusLocation[] }>;
         }>();
 
@@ -180,14 +212,30 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                     sku,
                     packing: item.packing || '',
                     satuan: item.satuan || 'PCS',
+                    utamaStock: 0,
+                    utamaLocations: [],
                     batches: new Map()
                 });
             }
 
             const skuRecord = map.get(sku)!;
-            const rakName = item.rak || '';
+            const rakName = (item.rak || '').trim();
+            const subRakName = (item.sub_rak || rakName).trim();
             const batchKey = getRackBatchKey(rakName);
             const qty = Number(item.tersedia) || 0;
+
+            const cleanRak = rakName.toUpperCase();
+            const cleanSubRak = subRakName.toUpperCase();
+            const isUtama = cleanRak === 'UTAMA' || cleanSubRak === 'UTAMA' || cleanRak.startsWith('UTAMA') || cleanSubRak.startsWith('UTAMA');
+            if (isUtama) {
+                skuRecord.utamaStock += qty;
+                skuRecord.utamaLocations.push({
+                    rak: rakName || 'UTAMA',
+                    sub_rak: subRakName || 'UTAMA',
+                    tersedia: qty,
+                    id: item.id
+                });
+            }
 
             if (!skuRecord.batches.has(batchKey)) {
                 skuRecord.batches.set(batchKey, { minusLocations: [], plusLocations: [] });
@@ -254,12 +302,79 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
             if (aIsLorong) return -1;
             if (bIsLorong) return 1;
 
+            if (a.key === 'UTAMA') return -1;
+            if (b.key === 'UTAMA') return 1;
+
             if (a.key === 'LAINNYA') return 1;
             if (b.key === 'LAINNYA') return -1;
 
             return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
         });
     }, [skuBatchMap]);
+
+    // Update scroll buttons indicator whenever detectedBatches changes or modal mounts
+    useEffect(() => {
+        const el = batchScrollRef.current;
+        if (!el) return;
+
+        updateScrollButtons();
+
+        // Support horizontal scroll via vertical mouse wheel on desktop
+        const handleWheel = (e: WheelEvent) => {
+            if (e.deltaY !== 0) {
+                e.preventDefault();
+                el.scrollLeft += e.deltaY;
+                updateScrollButtons();
+            }
+        };
+
+        el.addEventListener('wheel', handleWheel, { passive: false });
+        window.addEventListener('resize', updateScrollButtons);
+
+        return () => {
+            el.removeEventListener('wheel', handleWheel);
+            window.removeEventListener('resize', updateScrollButtons);
+        };
+    }, [detectedBatches]);
+
+    const handleScrollLeft = () => {
+        if (batchScrollRef.current) {
+            batchScrollRef.current.scrollBy({ left: -260, behavior: 'smooth' });
+            setTimeout(updateScrollButtons, 320);
+        }
+    };
+
+    const handleScrollRight = () => {
+        if (batchScrollRef.current) {
+            batchScrollRef.current.scrollBy({ left: 260, behavior: 'smooth' });
+            setTimeout(updateScrollButtons, 320);
+        }
+    };
+
+    // Desktop Mouse Drag / Grab Scrolling Handlers
+    const handleMouseDown = (e: React.MouseEvent) => {
+        if (!batchScrollRef.current) return;
+        isDraggingRef.current = true;
+        hasDraggedRef.current = false;
+        startXRef.current = e.pageX - batchScrollRef.current.offsetLeft;
+        scrollLeftRef.current = batchScrollRef.current.scrollLeft;
+    };
+
+    const handleMouseMove = (e: React.MouseEvent) => {
+        if (!isDraggingRef.current || !batchScrollRef.current) return;
+        e.preventDefault();
+        const x = e.pageX - batchScrollRef.current.offsetLeft;
+        const walk = (x - startXRef.current) * 1.5;
+        if (Math.abs(walk) > 4) {
+            hasDraggedRef.current = true;
+        }
+        batchScrollRef.current.scrollLeft = scrollLeftRef.current - walk;
+        updateScrollButtons();
+    };
+
+    const handleMouseUpOrLeave = () => {
+        isDraggingRef.current = false;
+    };
 
     // Total distinct SKUs that have at least one reconcilable batch
     const totalAllReconcilableSkusCount = useMemo(() => {
@@ -369,6 +484,8 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                     sku: skuRecord.sku,
                     packing: skuRecord.packing,
                     satuan: skuRecord.satuan,
+                    utamaStock: skuRecord.utamaStock,
+                    utamaLocations: skuRecord.utamaLocations,
                     minusLocations,
                     plusLocations,
                     totalMinus,
@@ -388,9 +505,12 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
     // Filter items based on search & category
     const filteredItems = useMemo(() => {
         return reconcilableItems.filter(item => {
-            const matchesSearch = item.sku.toLowerCase().includes(searchTerm.toLowerCase().trim()) ||
-                item.minusLocations.some(m => m.rak.toLowerCase().includes(searchTerm.toLowerCase().trim())) ||
-                item.plusLocations.some(p => p.rak.toLowerCase().includes(searchTerm.toLowerCase().trim()));
+            const term = searchTerm.toLowerCase().trim();
+            const matchesSearch = !term ||
+                item.sku.toLowerCase().includes(term) ||
+                item.minusLocations.some(m => m.rak.toLowerCase().includes(term) || m.sub_rak.toLowerCase().includes(term)) ||
+                item.plusLocations.some(p => p.rak.toLowerCase().includes(term) || p.sub_rak.toLowerCase().includes(term)) ||
+                item.utamaLocations.some(u => u.rak.toLowerCase().includes(term) || u.sub_rak.toLowerCase().includes(term));
 
             if (!matchesSearch) return false;
 
@@ -711,41 +831,104 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                 </div>
 
                 {/* Batch Rak Selector Bar (Per Batch Rak & Sub Rak A1-A999, B1-B999, dll) */}
-                <div className="px-6 py-2 bg-indigo-50/50 border-y border-indigo-100/80 flex items-center gap-2 overflow-x-auto no-scrollbar flex-shrink-0">
-                    <span className="text-[11px] font-black text-indigo-900 uppercase tracking-wider shrink-0 mr-1 flex items-center gap-1.5">
-                        <Layers className="w-3.5 h-3.5 text-indigo-600" />
-                        Pilih Batch Rak:
-                    </span>
+                <div className="px-3 sm:px-6 py-2 bg-indigo-50/60 border-y border-indigo-100/80 flex items-center gap-1.5 sm:gap-2 flex-shrink-0 select-none relative">
+                    <div className="flex items-center gap-1.5 shrink-0 pr-1">
+                        <div className="p-1 bg-indigo-600/10 text-indigo-700 rounded-lg">
+                            <Layers className="w-3.5 h-3.5" />
+                        </div>
+                        <span className="text-[11px] font-black text-indigo-950 uppercase tracking-wider hidden sm:inline">
+                            Pilih Batch Rak:
+                        </span>
+                    </div>
+
+                    {/* Scroll Left Button */}
                     <button
                         type="button"
-                        onClick={() => { setSelectedBatch('ALL'); setSelectedSkuSet(new Set()); }}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
-                            selectedBatch === 'ALL'
-                                ? 'bg-indigo-600 text-white shadow-sm'
-                                : 'bg-white hover:bg-indigo-100/70 text-slate-700 border border-indigo-200/60'
+                        onClick={handleScrollLeft}
+                        disabled={!canScrollLeft}
+                        className={`p-1.5 rounded-xl border transition-all shrink-0 cursor-pointer flex items-center justify-center ${
+                            canScrollLeft
+                                ? 'bg-white hover:bg-indigo-600 hover:text-white text-indigo-700 border-indigo-200 shadow-sm active:scale-95'
+                                : 'bg-slate-100/50 text-slate-300 border-transparent cursor-default opacity-30'
                         }`}
+                        title="Geser ke Kiri"
                     >
-                        Semua Batch ({totalAllReconcilableSkusCount} SKU)
+                        <ChevronLeft className="w-4 h-4" />
                     </button>
-                    {detectedBatches.map(b => (
+
+                    {/* Scrollable Container with drag and touch-pan */}
+                    <div
+                        ref={batchScrollRef}
+                        onScroll={updateScrollButtons}
+                        onMouseDown={handleMouseDown}
+                        onMouseMove={handleMouseMove}
+                        onMouseUp={handleMouseUpOrLeave}
+                        onMouseLeave={handleMouseUpOrLeave}
+                        className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar scroll-smooth flex-1 touch-pan-x cursor-grab active:cursor-grabbing py-0.5"
+                        style={{ WebkitOverflowScrolling: 'touch' }}
+                    >
                         <button
-                            key={b.key}
                             type="button"
-                            onClick={() => { setSelectedBatch(b.key); setSelectedSkuSet(new Set()); }}
+                            onClick={() => {
+                                if (!hasDraggedRef.current) {
+                                    setSelectedBatch('ALL');
+                                    setSelectedSkuSet(new Set());
+                                }
+                            }}
                             className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
-                                selectedBatch === b.key
+                                selectedBatch === 'ALL'
                                     ? 'bg-indigo-600 text-white shadow-sm'
                                     : 'bg-white hover:bg-indigo-100/70 text-slate-700 border border-indigo-200/60'
                             }`}
                         >
-                            <span>{b.label}</span>
+                            <span>Semua Batch</span>
                             <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-extrabold ${
-                                selectedBatch === b.key ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
+                                selectedBatch === 'ALL' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
                             }`}>
-                                {b.count} SKU
+                                {totalAllReconcilableSkusCount} SKU
                             </span>
                         </button>
-                    ))}
+
+                        {detectedBatches.map(b => (
+                            <button
+                                key={b.key}
+                                type="button"
+                                onClick={() => {
+                                    if (!hasDraggedRef.current) {
+                                        setSelectedBatch(b.key);
+                                        setSelectedSkuSet(new Set());
+                                    }
+                                }}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                                    selectedBatch === b.key
+                                        ? 'bg-indigo-600 text-white shadow-sm'
+                                        : 'bg-white hover:bg-indigo-100/70 text-slate-700 border border-indigo-200/60'
+                                }`}
+                            >
+                                <span>{b.label}</span>
+                                <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-extrabold ${
+                                    selectedBatch === b.key ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
+                                }}`}>
+                                    {b.count} SKU
+                                </span>
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Scroll Right Button */}
+                    <button
+                        type="button"
+                        onClick={handleScrollRight}
+                        disabled={!canScrollRight}
+                        className={`p-1.5 rounded-xl border transition-all shrink-0 cursor-pointer flex items-center justify-center ${
+                            canScrollRight
+                                ? 'bg-white hover:bg-indigo-600 hover:text-white text-indigo-700 border-indigo-200 shadow-sm active:scale-95'
+                                : 'bg-slate-100/50 text-slate-300 border-transparent cursor-default opacity-30'
+                        }`}
+                        title="Geser ke Kanan"
+                    >
+                        <ChevronRight className="w-4 h-4" />
+                    </button>
                 </div>
 
                 {/* Filter and Controls Bar */}
@@ -757,7 +940,7 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                 type="text"
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
-                                placeholder="Cari SKU atau nama rak (misal A2, B21)..."
+                                placeholder="Cari SKU atau nama rak (misal A2, B21, UTAMA)..."
                                 className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
                             />
                             {searchTerm && (
@@ -878,7 +1061,8 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                                 {isAllSelected ? <CheckSquare className="w-4 h-4 text-blue-600" /> : <Square className="w-4 h-4" />}
                                             </button>
                                         </th>
-                                        <th className="p-3 w-56">SKU Produk</th>
+                                        <th className="p-3 w-48">SKU Produk</th>
+                                        <th className="p-3">Rak UTAMA</th>
                                         <th className="p-3">Rak Minus (Dibutuhkan)</th>
                                         <th className="p-3">Rak Donor (Tersedia)</th>
                                         <th className="p-3 text-center">Qty Di-Klop</th>
@@ -928,6 +1112,47 @@ export const AutoKlopMinusModal: React.FC<AutoKlopMinusModalProps> = ({
                                                             </span>
                                                         ))}
                                                     </div>
+                                                </td>
+
+                                                {/* Rak UTAMA */}
+                                                <td className="p-3">
+                                                    {item.utamaLocations && item.utamaLocations.length > 0 ? (
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {item.utamaLocations.map((u, uIdx) => {
+                                                                const qtyVal = Number(u.tersedia) || 0;
+                                                                const isPositive = qtyVal > 0;
+                                                                const isNegative = qtyVal < 0;
+                                                                return (
+                                                                    <span
+                                                                        key={uIdx}
+                                                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg font-bold text-[11px] border ${
+                                                                            isPositive
+                                                                                ? 'bg-purple-50 border-purple-200 text-purple-700'
+                                                                                : isNegative
+                                                                                ? 'bg-rose-50 border-rose-200 text-rose-700'
+                                                                                : 'bg-slate-50 border-slate-200 text-slate-600'
+                                                                        }`}
+                                                                        title={`Rak ${u.rak || 'UTAMA'}${u.sub_rak && u.sub_rak !== u.rak ? ` (${u.sub_rak})` : ''}: ${qtyVal > 0 ? '+' : ''}${qtyVal.toLocaleString()} ${item.satuan}`}
+                                                                    >
+                                                                        <span className="font-extrabold">{u.rak || 'UTAMA'}</span>
+                                                                        <span className={`px-1 py-0.2 rounded text-[10px] font-black ${
+                                                                            isPositive
+                                                                                ? 'text-purple-900 bg-purple-200/80'
+                                                                                : isNegative
+                                                                                ? 'text-rose-900 bg-rose-200/80'
+                                                                                : 'text-slate-700 bg-slate-200/80'
+                                                                        }`}>
+                                                                            {qtyVal > 0 ? `+${qtyVal.toLocaleString()}` : qtyVal.toLocaleString()}
+                                                                        </span>
+                                                                    </span>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    ) : (
+                                                        <span className="inline-block bg-slate-100 border border-slate-200/80 text-slate-400 px-2 py-0.5 rounded-md text-[10px] font-bold">
+                                                            0 {item.satuan}
+                                                        </span>
+                                                    )}
                                                 </td>
 
                                                 {/* Rak Minus */}

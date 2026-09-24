@@ -1,6 +1,26 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Button } from './ui/Button';
-import { RefreshCw, Eye, Search, X, Trash2, Send, Tag, CheckCircle2, RotateCcw, ShieldCheck, Check } from 'lucide-react';
+import {
+    RefreshCw,
+    Eye,
+    Search,
+    X,
+    Trash2,
+    Send,
+    Tag,
+    CheckCircle2,
+    RotateCcw,
+    ShieldCheck,
+    Check,
+    Pencil,
+    CheckSquare,
+    Square,
+    Flame,
+    Save,
+    Edit3,
+    AlertOctagon,
+    SlidersHorizontal
+} from 'lucide-react';
 import { Toast } from './ui/Toast';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase } from '../lib/supabase';
@@ -68,6 +88,21 @@ export const StokMinus: React.FC = () => {
     const [statusTab, setStatusTab] = useState<'ALL' | 'PENDING' | 'RESOLVED'>('ALL');
     const [resolvedRecords, setResolvedRecords] = useState<Record<string, ResolvedItemMeta>>({});
 
+    // Dev Mode & Checkbox Selection & Inline/Modal Editing States
+    const [isDevEditMode, setIsDevEditMode] = useState<boolean>(() => {
+        if (typeof window !== 'undefined') {
+            return localStorage.getItem('minus_stock_devmode_active') === 'true';
+        }
+        return false;
+    });
+    const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+    const [editingRowId, setEditingRowId] = useState<string | null>(null);
+    const [editingFormData, setEditingFormData] = useState<Partial<MinusStockRow>>({});
+    const [savingEdit, setSavingEdit] = useState(false);
+    const [editModalRow, setEditModalRow] = useState<MinusStockRow | null>(null);
+    const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
+    const keystrokeBufferRef = useRef<string>('');
+
     const [toast, setToast] = useState<ToastState>({ show: false, message: '', type: 'info' });
     const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; rowId: string | null }>({
         isOpen: false,
@@ -78,6 +113,37 @@ export const StokMinus: React.FC = () => {
     const showToast = (message: string, type: 'success' | 'error' | 'info') => {
         setToast({ show: true, message, type });
     };
+
+    // Secret Keystroke Sequence Listener: Typing 'devmode' anywhere activates/toggles Dev Edit Mode
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key && e.key.length === 1) {
+                keystrokeBufferRef.current = (keystrokeBufferRef.current + e.key.toLowerCase()).slice(-10);
+                if (keystrokeBufferRef.current.endsWith('devmode')) {
+                    setIsDevEditMode(prev => {
+                        const next = !prev;
+                        if (typeof window !== 'undefined') {
+                            localStorage.setItem('minus_stock_devmode_active', String(next));
+                        }
+                        if (next) {
+                            showToast('🔥 Dev Mode Diaktifkan! Checkbox & Fitur Edit Langsung Aktif.', 'success');
+                        } else {
+                            showToast('🔒 Dev Mode Dinonaktifkan.', 'info');
+                            setSelectedRowIds(new Set());
+                            setEditingRowId(null);
+                        }
+                        return next;
+                    });
+                    keystrokeBufferRef.current = '';
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+        };
+    }, []);
 
     // Load resolved records from app_settings & localStorage
     const fetchResolvedRecords = async () => {
@@ -133,7 +199,7 @@ export const StokMinus: React.FC = () => {
 
     // Developer and Admin toggle action per row
     const handleToggleMarkResolved = async (row: MinusStockRow) => {
-        if (!canManageMarked) {
+        if (!canManageMarked && !isDevEditMode) {
             showToast('Hanya role Developer dan Admin yang dapat mengubah status ini', 'error');
             return;
         }
@@ -154,6 +220,186 @@ export const StokMinus: React.FC = () => {
             };
             await saveResolvedRecords(nextRecords);
             showToast(`✓ Ditandai: Barcode Sudah Dipakai (Tidak Perlu Potong)`, 'success');
+        }
+    };
+
+    // Checkbox selection helpers
+    const isAllSelected = useMemo(() => {
+        return filteredRows.length > 0 && filteredRows.every(r => selectedRowIds.has(r.id));
+    }, [filteredRows, selectedRowIds]);
+
+    const toggleSelectAll = () => {
+        if (isAllSelected) {
+            setSelectedRowIds(prev => {
+                const next = new Set(prev);
+                filteredRows.forEach(r => next.delete(r.id));
+                return next;
+            });
+        } else {
+            setSelectedRowIds(prev => {
+                const next = new Set(prev);
+                filteredRows.forEach(r => next.add(r.id));
+                return next;
+            });
+        }
+    };
+
+    const toggleSelectRow = (id: string) => {
+        setSelectedRowIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) {
+                next.delete(id);
+            } else {
+                next.add(id);
+            }
+            return next;
+        });
+    };
+
+    // Batch delete selected rows from minus_stock in database
+    const handleBatchDelete = async () => {
+        if (selectedRowIds.size === 0) return;
+        const idsToDelete = Array.from(selectedRowIds);
+        setLoading(true);
+        try {
+            const { error } = await supabase
+                .from('minus_stock')
+                .delete()
+                .in('id', idsToDelete);
+
+            if (error) {
+                console.error('Error batch deleting minus_stock:', error);
+                showToast(`Gagal menghapus data terpilih: ${error.message}`, 'error');
+                return;
+            }
+
+            const nextRecords = { ...resolvedRecords };
+            idsToDelete.forEach(id => delete nextRecords[id]);
+            await saveResolvedRecords(nextRecords);
+
+            showToast(`✓ Berhasil menghapus ${idsToDelete.length} data stok minus terpilih!`, 'success');
+            setSelectedRowIds(new Set());
+            setBatchDeleteConfirm(false);
+            await loadMinusStockData();
+        } catch (err: any) {
+            console.error('Batch delete error:', err);
+            showToast('Terjadi kesalahan saat menghapus data terpilih', 'error');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // Batch mark resolved
+    const handleBatchMarkResolved = async () => {
+        if (selectedRowIds.size === 0) return;
+        const idsToMark = Array.from(selectedRowIds);
+        const nextRecords = { ...resolvedRecords };
+        idsToMark.forEach(id => {
+            nextRecords[id] = {
+                status: 'BARCODE_USED',
+                label: 'Barcode Sudah Dipakai (Tidak Perlu Potong)',
+                marked_at: new Date().toISOString(),
+                marked_by: user?.email || userRole || 'admin'
+            };
+        });
+        await saveResolvedRecords(nextRecords);
+        showToast(`✓ ${idsToMark.length} data berhasil ditandai: Barcode Sudah Dipakai!`, 'success');
+        setSelectedRowIds(new Set());
+    };
+
+    // Open Edit Modal
+    const handleOpenEditModal = (row: MinusStockRow) => {
+        setEditModalRow(row);
+        setEditingFormData({
+            tanggal: row.tanggal,
+            waktu: row.waktu,
+            nama_produk: row.nama_produk,
+            jumlah: row.jumlah,
+            gudang: row.gudang,
+            rak: row.rak,
+            sub_rak: row.sub_rak || row.rak,
+            tgl_scan: row.tgl_scan || '',
+            user_name: row.user_name || ''
+        });
+    };
+
+    // Start inline edit
+    const handleStartInlineEdit = (row: MinusStockRow) => {
+        setEditingRowId(row.id);
+        setEditingFormData({
+            tanggal: row.tanggal,
+            waktu: row.waktu,
+            nama_produk: row.nama_produk,
+            jumlah: row.jumlah,
+            gudang: row.gudang,
+            rak: row.rak,
+            sub_rak: row.sub_rak || row.rak,
+            tgl_scan: row.tgl_scan || '',
+            user_name: row.user_name || ''
+        });
+    };
+
+    const handleCancelEdit = () => {
+        setEditingRowId(null);
+        setEditModalRow(null);
+        setEditingFormData({});
+    };
+
+    // Save edited row directly to minus_stock table in Supabase
+    const handleSaveEdit = async (id: string) => {
+        if (!editingFormData) return;
+        setSavingEdit(true);
+        try {
+            const cleanSku = (editingFormData.nama_produk || '').trim().toUpperCase();
+            const cleanRak = (editingFormData.rak || '').trim().toUpperCase();
+            const cleanSubRak = (editingFormData.sub_rak || cleanRak).trim().toUpperCase();
+            const cleanGudang = (editingFormData.gudang || '').trim().toUpperCase();
+            const cleanTgl = (editingFormData.tanggal || '').trim();
+            const cleanWaktu = (editingFormData.waktu || '').trim();
+            const cleanTglScan = (editingFormData.tgl_scan || '').trim();
+            const cleanUser = (editingFormData.user_name || '').trim();
+            const numJumlah = Number(editingFormData.jumlah) || 0;
+
+            if (!cleanSku || !cleanRak) {
+                showToast('Nama produk dan Rak tidak boleh kosong', 'error');
+                setSavingEdit(false);
+                return;
+            }
+
+            const updatePayload = {
+                tanggal: cleanTgl,
+                waktu: cleanWaktu,
+                nama_produk: cleanSku,
+                jumlah: numJumlah,
+                gudang: cleanGudang,
+                rak: cleanRak,
+                sub_rak: cleanSubRak,
+                tgl_scan: cleanTglScan,
+                user_name: cleanUser,
+                updated_at: new Date().toISOString()
+            };
+
+            const { error } = await supabase
+                .from('minus_stock')
+                .update(updatePayload)
+                .eq('id', id);
+
+            if (error) {
+                console.error('Error updating minus_stock row:', error);
+                showToast(`Gagal update ke database: ${error.message}`, 'error');
+                return;
+            }
+
+            showToast(`✓ Berhasil update data ${cleanSku} langsung di database!`, 'success');
+            setEditingRowId(null);
+            setEditModalRow(null);
+            setEditingFormData({});
+            await loadMinusStockData();
+        } catch (err: any) {
+            console.error('Error saving edit:', err);
+            showToast('Terjadi kesalahan saat menyimpan perubahan', 'error');
+        } finally {
+            setSavingEdit(false);
         }
     };
 
@@ -460,7 +706,7 @@ export const StokMinus: React.FC = () => {
     }, []);
 
     return (
-        <div className="min-h-screen bg-[#f8fafc] font-sans text-slate-800 relative overflow-hidden">
+        <div className="min-h-screen bg-[#f8fafc] font-sans text-slate-800 relative overflow-hidden pb-24">
             {/* Background Decorative Elements */}
             <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-red-100/30 blur-[120px] rounded-full z-0 animate-pulse"></div>
             <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-100/20 blur-[120px] rounded-full z-0"></div>
@@ -497,10 +743,42 @@ export const StokMinus: React.FC = () => {
                                             <span className="text-[11px] font-bold tracking-wider uppercase">{counts.resolved} Barcode Dipakai</span>
                                         </div>
                                     )}
+                                    {isDevEditMode && (
+                                        <div className="px-3 py-1 bg-amber-500/25 rounded-full backdrop-blur-sm border border-amber-400/40 flex items-center gap-1.5 text-amber-200 animate-pulse">
+                                            <Flame className="h-3.5 w-3.5 text-amber-300" />
+                                            <span className="text-[11px] font-black tracking-wider uppercase">DEV MODE AKTIF</span>
+                                        </div>
+                                    )}
                                     <span className="text-[13px] lg:text-[16px]">Barang keluar yang melampaui stok tersedia</span>
                                 </div>
                             </div>
                             <div className="relative z-10 flex flex-wrap gap-2 lg:gap-3 lg:mb-2 items-center">
+                                <Button
+                                    onClick={() => {
+                                        const next = !isDevEditMode;
+                                        setIsDevEditMode(next);
+                                        localStorage.setItem('minus_stock_devmode_active', String(next));
+                                        if (next) {
+                                            showToast('🔥 Dev Mode Aktif: Checkbox & Edit Langsung Terbuka', 'success');
+                                        } else {
+                                            showToast('Dev Mode Dimatikan', 'info');
+                                            setSelectedRowIds(new Set());
+                                            setEditingRowId(null);
+                                        }
+                                    }}
+                                    className={`h-12 px-5 font-black rounded-2xl transition-all active:scale-95 flex items-center justify-center gap-2 border-none shadow-lg ${
+                                        isDevEditMode
+                                            ? 'bg-amber-400 hover:bg-amber-500 text-slate-950 shadow-amber-500/30'
+                                            : 'bg-white/10 hover:bg-white/20 text-white backdrop-blur-md border border-white/20'
+                                    }`}
+                                    title="Klik atau ketik 'devmode' di keyboard untuk toggle"
+                                >
+                                    <Flame className={`h-4 w-4 ${isDevEditMode ? 'text-slate-950 fill-amber-500' : 'text-amber-300'}`} />
+                                    <span className="uppercase text-xs font-black">
+                                        {isDevEditMode ? 'Dev Mode On' : 'Dev Mode Off'}
+                                    </span>
+                                </Button>
+
                                 <Button
                                     onClick={loadMinusStockData}
                                     className="h-12 px-6 bg-white hover:bg-red-50 text-red-700 font-black rounded-2xl shadow-[0_8px_25px_rgba(255,255,255,0.2)] transition-all active:scale-95 flex items-center justify-center gap-2.5 border-none"
@@ -516,6 +794,46 @@ export const StokMinus: React.FC = () => {
 
                 {/* Main Content Area */}
                 <div className="p-4 md:p-6 lg:p-10 space-y-6">
+                    {/* Dev Mode Informational Banner */}
+                    {isDevEditMode && (
+                        <div className="bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-red-500/10 border-2 border-amber-400/40 rounded-3xl p-4 md:p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 backdrop-blur-xl shadow-lg">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2.5 bg-amber-500 text-slate-950 rounded-2xl shadow-md">
+                                    <Flame className="h-6 w-6 fill-amber-300" />
+                                </div>
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <h4 className="text-slate-900 font-black text-sm uppercase tracking-wider">Mode Developer Aktif</h4>
+                                        <span className="px-2 py-0.5 bg-amber-500/20 text-amber-800 text-[10px] font-black rounded-full uppercase">Ketik devmode untuk toggle</span>
+                                    </div>
+                                    <p className="text-slate-600 text-xs mt-0.5 font-medium">
+                                        Anda dapat memilih data menggunakan checkbox (satu-satu / semua), dan mengedit tiap kolom data secara langsung ke database table <code className="bg-white/80 px-1.5 py-0.5 rounded text-amber-700 font-mono font-bold">minus_stock</code>.
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                                <button
+                                    onClick={toggleSelectAll}
+                                    className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl border border-slate-200 shadow-2xs transition-all"
+                                >
+                                    {isAllSelected ? 'Batal Pilih Semua' : `Pilih Semua (${filteredRows.length})`}
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setIsDevEditMode(false);
+                                        localStorage.setItem('minus_stock_devmode_active', 'false');
+                                        setSelectedRowIds(new Set());
+                                        setEditingRowId(null);
+                                        showToast('Dev Mode Dinonaktifkan', 'info');
+                                    }}
+                                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl shadow-2xs transition-all"
+                                >
+                                    Tutup Dev Mode
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Search & Filter Bar */}
                     <div className="flex flex-col lg:flex-row gap-4 items-stretch lg:items-center justify-between">
                         {/* Search Box */}
@@ -601,7 +919,18 @@ export const StokMinus: React.FC = () => {
                             <div className="overflow-x-auto">
                                 <table className="w-full text-sm text-center border-collapse">
                                     <thead>
-                                        <tr className="bg-white/50 border-b border-slate-100">
+                                        <tr className="bg-white/60 border-b border-slate-100">
+                                            {isDevEditMode && (
+                                                <th className="w-12 px-3 py-4 text-center">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isAllSelected}
+                                                        onChange={toggleSelectAll}
+                                                        className="w-4 h-4 rounded border-slate-300 text-red-600 focus:ring-red-500 cursor-pointer accent-red-600"
+                                                        title={isAllSelected ? 'Batal pilih semua' : 'Pilih semua'}
+                                                    />
+                                                </th>
+                                            )}
                                             <th className="px-4 py-4 font-black text-slate-400 uppercase tracking-widest text-[10px]">No</th>
                                             <th className="px-4 py-4 font-black text-slate-400 uppercase tracking-widest text-[10px]">Tanggal</th>
                                             <th className="px-4 py-4 font-black text-slate-400 uppercase tracking-widest text-[10px]">Waktu</th>
@@ -620,65 +949,231 @@ export const StokMinus: React.FC = () => {
                                     <tbody className="divide-y divide-slate-50">
                                         {filteredRows.map((row, index) => {
                                             const isResolved = Boolean(resolvedRecords[row.id]);
+                                            const isSelected = selectedRowIds.has(row.id);
+                                            const isInlineEditing = editingRowId === row.id;
 
                                             return (
                                                 <tr
                                                     key={row.id}
                                                     className={`transition-colors group ${
-                                                        isResolved
+                                                        isSelected
+                                                            ? 'bg-red-50/70 border-l-4 border-l-red-500'
+                                                            : isResolved
                                                             ? 'bg-purple-50/40 hover:bg-purple-50/70 border-l-4 border-l-purple-400'
                                                             : 'hover:bg-white/80'
                                                     }`}
                                                 >
+                                                    {isDevEditMode && (
+                                                        <td className="w-12 px-3 py-3 text-center">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={isSelected}
+                                                                onChange={() => toggleSelectRow(row.id)}
+                                                                className="w-4 h-4 rounded border-slate-300 text-red-600 focus:ring-red-500 cursor-pointer accent-red-600"
+                                                            />
+                                                        </td>
+                                                    )}
                                                     <td className="px-4 py-3 text-slate-400 font-mono font-bold">{index + 1}</td>
-                                                    <td className="px-4 py-3 font-medium text-slate-700 whitespace-nowrap">{format(new Date(row.tanggal), 'dd/MM/yyyy')}</td>
-                                                    <td className="px-4 py-3 font-medium text-slate-500 font-mono whitespace-nowrap">{row.waktu}</td>
-                                                    <td className="px-4 py-3 font-bold text-slate-900 text-left">
-                                                        <span>{row.nama_produk}</span>
-                                                        {isResolved && (
-                                                            <span className="block text-[10px] text-purple-700 font-bold mt-0.5">
-                                                                ✓ Barcode Sudah Dipakai (Tidak Perlu Potong)
-                                                            </span>
+
+                                                    {/* Tanggal */}
+                                                    <td className="px-4 py-3 font-medium text-slate-700 whitespace-nowrap">
+                                                        {isInlineEditing ? (
+                                                            <input
+                                                                type="date"
+                                                                value={editingFormData.tanggal || ''}
+                                                                onChange={(e) => setEditingFormData({ ...editingFormData, tanggal: e.target.value })}
+                                                                className="px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-red-500 outline-none"
+                                                            />
+                                                        ) : (
+                                                            format(new Date(row.tanggal), 'dd/MM/yyyy')
                                                         )}
                                                     </td>
-                                                    <td className="px-4 py-3">
-                                                        <span className="inline-flex px-2 py-1 rounded bg-red-100 font-bold text-red-700">{row.jumlah}</span>
+
+                                                    {/* Waktu */}
+                                                    <td className="px-4 py-3 font-medium text-slate-500 font-mono whitespace-nowrap">
+                                                        {isInlineEditing ? (
+                                                            <input
+                                                                type="text"
+                                                                value={editingFormData.waktu || ''}
+                                                                onChange={(e) => setEditingFormData({ ...editingFormData, waktu: e.target.value })}
+                                                                placeholder="08.00.00"
+                                                                className="px-2 py-1 w-20 bg-white border border-slate-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-red-500 outline-none text-center"
+                                                            />
+                                                        ) : (
+                                                            row.waktu
+                                                        )}
                                                     </td>
+
+                                                    {/* Nama Produk */}
+                                                    <td className="px-4 py-3 font-bold text-slate-900 text-left">
+                                                        {isInlineEditing ? (
+                                                            <input
+                                                                type="text"
+                                                                value={editingFormData.nama_produk || ''}
+                                                                onChange={(e) => setEditingFormData({ ...editingFormData, nama_produk: e.target.value })}
+                                                                className="w-full px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-bold focus:ring-2 focus:ring-red-500 outline-none"
+                                                            />
+                                                        ) : (
+                                                            <>
+                                                                <span>{row.nama_produk}</span>
+                                                                {isResolved && (
+                                                                    <span className="block text-[10px] text-purple-700 font-bold mt-0.5">
+                                                                        ✓ Barcode Sudah Dipakai (Tidak Perlu Potong)
+                                                                    </span>
+                                                                )}
+                                                            </>
+                                                        )}
+                                                    </td>
+
+                                                    {/* Jumlah */}
+                                                    <td className="px-4 py-3">
+                                                        {isInlineEditing ? (
+                                                            <input
+                                                                type="number"
+                                                                value={editingFormData.jumlah ?? 0}
+                                                                onChange={(e) => setEditingFormData({ ...editingFormData, jumlah: Number(e.target.value) })}
+                                                                className="w-16 px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-bold text-red-700 focus:ring-2 focus:ring-red-500 outline-none text-center"
+                                                            />
+                                                        ) : (
+                                                            <span className="inline-flex px-2 py-1 rounded bg-red-100 font-bold text-red-700">{row.jumlah}</span>
+                                                        )}
+                                                    </td>
+
+                                                    {/* Type */}
                                                     <td className="px-4 py-3">
                                                         <span className="inline-flex px-2 py-1 rounded text-xs font-bold bg-blue-100 text-blue-700">
                                                             OUT
                                                         </span>
                                                     </td>
-                                                    <td className="px-4 py-3 font-medium text-slate-600">{row.gudang}</td>
-                                                    <td className="px-4 py-3 font-bold text-yellow-600 bg-yellow-50 rounded">{row.rak}</td>
-                                                    <td className="px-4 py-3 font-medium text-blue-600 whitespace-nowrap">{row.tgl_scan || '-'}</td>
-                                                    <td className="px-4 py-3 font-medium text-slate-500">{row.user_name || '-'}</td>
+
+                                                    {/* Gudang */}
+                                                    <td className="px-4 py-3 font-medium text-slate-600">
+                                                        {isInlineEditing ? (
+                                                            <input
+                                                                type="text"
+                                                                value={editingFormData.gudang || ''}
+                                                                onChange={(e) => setEditingFormData({ ...editingFormData, gudang: e.target.value.toUpperCase() })}
+                                                                className="w-14 px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-red-500 outline-none text-center uppercase"
+                                                            />
+                                                        ) : (
+                                                            row.gudang
+                                                        )}
+                                                    </td>
+
+                                                    {/* Rak */}
+                                                    <td className="px-4 py-3 font-bold text-yellow-600">
+                                                        {isInlineEditing ? (
+                                                            <input
+                                                                type="text"
+                                                                value={editingFormData.rak || ''}
+                                                                onChange={(e) => setEditingFormData({ ...editingFormData, rak: e.target.value.toUpperCase() })}
+                                                                className="w-16 px-2 py-1 bg-yellow-50 border border-yellow-300 rounded-lg text-xs font-bold text-yellow-800 focus:ring-2 focus:ring-yellow-500 outline-none text-center uppercase"
+                                                            />
+                                                        ) : (
+                                                            <span className="bg-yellow-50 px-2 py-1 rounded">{row.rak}</span>
+                                                        )}
+                                                    </td>
+
+                                                    {/* Tgl Scan */}
+                                                    <td className="px-4 py-3 font-medium text-blue-600 whitespace-nowrap">
+                                                        {isInlineEditing ? (
+                                                            <input
+                                                                type="text"
+                                                                value={editingFormData.tgl_scan || ''}
+                                                                onChange={(e) => setEditingFormData({ ...editingFormData, tgl_scan: e.target.value })}
+                                                                placeholder="yyyy-MM-dd"
+                                                                className="w-28 px-2 py-1 bg-blue-50 border border-blue-200 rounded-lg text-xs font-medium text-blue-700 focus:ring-2 focus:ring-blue-500 outline-none text-center"
+                                                            />
+                                                        ) : (
+                                                            row.tgl_scan || '-'
+                                                        )}
+                                                    </td>
+
+                                                    {/* User */}
+                                                    <td className="px-4 py-3 font-medium text-slate-500">
+                                                        {isInlineEditing ? (
+                                                            <input
+                                                                type="text"
+                                                                value={editingFormData.user_name || ''}
+                                                                onChange={(e) => setEditingFormData({ ...editingFormData, user_name: e.target.value })}
+                                                                className="w-24 px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-red-500 outline-none text-center"
+                                                            />
+                                                        ) : (
+                                                            row.user_name || '-'
+                                                        )}
+                                                    </td>
+
+                                                    {/* Stok Tersedia */}
                                                     <td className="px-4 py-3 font-bold text-slate-700">{row.stok_tersedia}</td>
+
+                                                    {/* Sisa */}
                                                     <td className="px-4 py-3">
                                                         <span className={`inline-flex px-2 py-1 rounded text-xs font-bold ${row.total_stok < 0 ? 'bg-red-500 text-white' : 'bg-emerald-500 text-white'}`}>
                                                             {row.total_stok}
                                                         </span>
                                                     </td>
+
+                                                    {/* Aksi */}
                                                     <td className="px-4 py-3">
-                                                        <div className="flex gap-2 justify-center items-center">
-                                                            {isResolved ? (
+                                                        <div className="flex gap-1.5 justify-center items-center">
+                                                            {isInlineEditing ? (
+                                                                <>
+                                                                    <Button
+                                                                        onClick={() => handleSaveEdit(row.id)}
+                                                                        className="h-8 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center gap-1 shadow-xs border-none"
+                                                                        title="Simpan Langsung ke Database"
+                                                                        disabled={savingEdit}
+                                                                    >
+                                                                        <Save className="h-3.5 w-3.5" />
+                                                                        <span className="text-[10px] font-bold">Simpan</span>
+                                                                    </Button>
+                                                                    <Button
+                                                                        onClick={handleCancelEdit}
+                                                                        className="h-8 w-8 p-0 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg border border-slate-200 flex items-center justify-center"
+                                                                        title="Batal Edit"
+                                                                        disabled={savingEdit}
+                                                                    >
+                                                                        <X className="h-3.5 w-3.5" />
+                                                                    </Button>
+                                                                </>
+                                                            ) : isResolved ? (
                                                                 <div className="inline-flex items-center gap-1.5">
-                                                                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-purple-100 text-purple-800 border border-purple-300 rounded-xl text-xs font-bold shadow-2xs">
+                                                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-purple-100 text-purple-800 border border-purple-300 rounded-xl text-xs font-bold shadow-2xs">
                                                                         <CheckCircle2 className="w-3.5 h-3.5 text-purple-600" />
-                                                                        Barcode Sudah Dipakai
+                                                                        Barcode Dipakai
                                                                     </span>
-                                                                    {canManageMarked && (
-                                                                        <button
-                                                                            onClick={() => handleToggleMarkResolved(row)}
-                                                                            className="p-1 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors"
-                                                                            title="Batalkan penanda (Kembalikan tombol Kirim/Hapus)"
-                                                                        >
-                                                                            <RotateCcw className="w-3.5 h-3.5" />
-                                                                        </button>
+                                                                    {(canManageMarked || isDevEditMode) && (
+                                                                        <>
+                                                                            <button
+                                                                                onClick={() => handleOpenEditModal(row)}
+                                                                                className="p-1 text-slate-400 hover:text-amber-600 rounded-lg hover:bg-amber-50 transition-colors"
+                                                                                title="Edit Data Kolom"
+                                                                            >
+                                                                                <Pencil className="w-3.5 h-3.5" />
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={() => handleToggleMarkResolved(row)}
+                                                                                className="p-1 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors"
+                                                                                title="Batalkan penanda"
+                                                                            >
+                                                                                <RotateCcw className="w-3.5 h-3.5" />
+                                                                            </button>
+                                                                        </>
                                                                     )}
                                                                 </div>
                                                             ) : (
                                                                 <>
+                                                                    {/* Edit Button (Dev Mode or Admin) */}
+                                                                    {(isDevEditMode || canManageMarked) && (
+                                                                        <Button
+                                                                            onClick={() => handleOpenEditModal(row)}
+                                                                            className="h-8 w-8 p-0 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg border border-amber-200 flex items-center justify-center shadow-2xs"
+                                                                            title="Edit Tiap Kolom Data"
+                                                                        >
+                                                                            <Pencil className="h-3.5 w-3.5" />
+                                                                        </Button>
+                                                                    )}
+
                                                                     {row.total_stok >= 0 && (
                                                                         <Button
                                                                             onClick={() => handleSendToDatabase(row)}
@@ -696,7 +1191,7 @@ export const StokMinus: React.FC = () => {
                                                                     >
                                                                         <Trash2 className="h-4 w-4" />
                                                                     </Button>
-                                                                    {canManageMarked && (
+                                                                    {(canManageMarked || isDevEditMode) && (
                                                                         <Button
                                                                             onClick={() => handleToggleMarkResolved(row)}
                                                                             className="h-8 w-8 p-0 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg border border-purple-200 flex items-center justify-center shadow-2xs"
@@ -723,21 +1218,47 @@ export const StokMinus: React.FC = () => {
                 <div className="lg:hidden p-6 space-y-6">
                     {filteredRows.map((row) => {
                         const isResolved = Boolean(resolvedRecords[row.id]);
+                        const isSelected = selectedRowIds.has(row.id);
 
                         return (
                             <div
                                 key={row.id}
-                                className={`bg-white/80 rounded-3xl border border-white shadow-xl shadow-slate-200/50 overflow-hidden transition-all active:scale-[0.98] ${
-                                    isResolved ? 'border-l-4 border-l-purple-500' : ''
+                                className={`bg-white/80 rounded-3xl border shadow-xl shadow-slate-200/50 overflow-hidden transition-all active:scale-[0.98] ${
+                                    isSelected
+                                        ? 'border-2 border-red-500 bg-red-50/20'
+                                        : isResolved
+                                        ? 'border-white border-l-4 border-l-purple-500'
+                                        : 'border-white'
                                 }`}
                             >
+                                {isDevEditMode && (
+                                    <div className="bg-slate-900/5 px-5 py-2.5 flex items-center justify-between border-b border-slate-100">
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={isSelected}
+                                                onChange={() => toggleSelectRow(row.id)}
+                                                className="w-4 h-4 rounded border-slate-300 text-red-600 focus:ring-red-500 cursor-pointer accent-red-600"
+                                            />
+                                            <span className="text-xs font-bold text-slate-700">Pilih Baris Ini</span>
+                                        </label>
+                                        <button
+                                            onClick={() => handleOpenEditModal(row)}
+                                            className="flex items-center gap-1 text-xs font-black text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg shadow-2xs"
+                                        >
+                                            <Pencil className="h-3 w-3" />
+                                            <span>Edit Data</span>
+                                        </button>
+                                    </div>
+                                )}
+
                                 {isResolved && (
                                     <div className="bg-gradient-to-r from-purple-700 to-indigo-700 text-white px-4 py-2 text-xs font-bold flex items-center justify-between shadow-xs">
                                         <span className="flex items-center gap-1.5">
                                             <CheckCircle2 className="h-4 w-4 text-purple-200" />
                                             Tidak Perlu Potong (Barcode Sudah Dipakai)
                                         </span>
-                                        {canManageMarked && (
+                                        {(canManageMarked || isDevEditMode) && (
                                             <button
                                                 onClick={() => handleToggleMarkResolved(row)}
                                                 className="bg-white/20 hover:bg-white/30 text-white px-2 py-0.5 rounded text-[10px] font-black uppercase"
@@ -793,14 +1314,25 @@ export const StokMinus: React.FC = () => {
                                     </div>
                                 </div>
 
-                                <div className="p-4 flex gap-3">
+                                <div className="p-4 flex gap-2">
+                                    {(isDevEditMode || canManageMarked) && (
+                                        <Button
+                                            onClick={() => handleOpenEditModal(row)}
+                                            className="h-12 px-3 bg-amber-50 hover:bg-amber-100 text-amber-700 font-bold rounded-2xl border border-amber-200 shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                                            title="Edit Data"
+                                        >
+                                            <Pencil className="h-4 w-4" />
+                                            <span className="text-[10px] uppercase font-bold">Edit</span>
+                                        </Button>
+                                    )}
+
                                     {isResolved ? (
                                         <div className="flex-1 flex items-center justify-between bg-purple-50 border border-purple-200 rounded-2xl p-3">
                                             <span className="text-xs font-bold text-purple-800 flex items-center gap-1.5">
                                                 <CheckCircle2 className="h-4 w-4 text-purple-600" />
                                                 Barcode Sudah Dipakai
                                             </span>
-                                            {canManageMarked && (
+                                            {(canManageMarked || isDevEditMode) && (
                                                 <button
                                                     onClick={() => handleToggleMarkResolved(row)}
                                                     className="text-[11px] font-bold text-purple-700 hover:text-red-600 px-2 py-1 bg-white border border-purple-200 rounded-lg shadow-2xs"
@@ -818,7 +1350,7 @@ export const StokMinus: React.FC = () => {
                                                     disabled={sendingRows.has(row.id)}
                                                 >
                                                     <Send className="h-4 w-4" />
-                                                    <span className="tracking-widest uppercase text-[10px]">Kirim Log</span>
+                                                    <span className="tracking-widest uppercase text-[10px]">Kirim</span>
                                                 </Button>
                                             )}
                                             <Button
@@ -828,10 +1360,10 @@ export const StokMinus: React.FC = () => {
                                                 <Trash2 className="h-4 w-4" />
                                                 <span className="tracking-widest uppercase text-[10px]">Hapus</span>
                                             </Button>
-                                            {canManageMarked && (
+                                            {(canManageMarked || isDevEditMode) && (
                                                 <Button
                                                     onClick={() => handleToggleMarkResolved(row)}
-                                                    className="h-12 px-4 bg-purple-100 text-purple-700 font-black rounded-2xl border border-purple-200 shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                                                    className="h-12 px-3 bg-purple-100 text-purple-700 font-black rounded-2xl border border-purple-200 shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1"
                                                     title="Tandai Barcode Sudah Dipakai"
                                                 >
                                                     <Tag className="h-4 w-4" />
@@ -847,6 +1379,222 @@ export const StokMinus: React.FC = () => {
                 </div>
             </div>
 
+            {/* STICKY FLOATING BATCH ACTION BAR (When rows are selected) */}
+            {selectedRowIds.size > 0 && (
+                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-2xl bg-slate-900/95 backdrop-blur-2xl text-white rounded-3xl p-4 shadow-2xl border border-slate-700/60 flex flex-col sm:flex-row items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-5 duration-300">
+                    <div className="flex items-center gap-3">
+                        <div className="h-9 w-9 rounded-2xl bg-red-600 text-white flex items-center justify-center font-black text-sm shadow-md">
+                            {selectedRowIds.size}
+                        </div>
+                        <div>
+                            <div className="text-sm font-black tracking-wide">
+                                {selectedRowIds.size} Baris Terpilih
+                            </div>
+                            <div className="text-[11px] text-slate-400">
+                                Aksi massal untuk data stok minus terpilih
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                        <button
+                            onClick={handleBatchMarkResolved}
+                            className="px-3.5 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm flex items-center gap-1.5"
+                            title="Tandai semua terpilih sebagai Barcode Sudah Dipakai"
+                        >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <span>Tandai Dipakai</span>
+                        </button>
+                        <button
+                            onClick={() => setBatchDeleteConfirm(true)}
+                            className="px-3.5 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm flex items-center gap-1.5"
+                            title="Hapus permanen semua baris terpilih"
+                        >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            <span>Hapus ({selectedRowIds.size})</span>
+                        </button>
+                        <button
+                            onClick={() => setSelectedRowIds(new Set())}
+                            className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-all"
+                            title="Batal Pilih"
+                        >
+                            <X className="h-4 w-4" />
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* EDIT ROW MODAL DIALOG */}
+            {editModalRow && (
+                <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200">
+                    <div className="bg-white rounded-3xl max-w-2xl w-full p-6 md:p-8 shadow-2xl border border-slate-100 relative my-8">
+                        <button
+                            onClick={handleCancelEdit}
+                            className="absolute top-6 right-6 p-2 rounded-2xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all"
+                        >
+                            <X className="h-5 w-5" />
+                        </button>
+
+                        <div className="flex items-center gap-3 mb-6">
+                            <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl border border-amber-200 shadow-2xs">
+                                <Edit3 className="h-6 w-6" />
+                            </div>
+                            <div>
+                                <h3 className="text-xl font-black text-slate-900 tracking-tight">Edit Kolom Data Stok Minus</h3>
+                                <p className="text-xs text-slate-500 font-medium">
+                                    Perubahan akan langsung disimpan ke database tabel <code className="bg-slate-100 text-slate-800 font-mono font-bold px-1 rounded">minus_stock</code>
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+                            {/* SKU / Nama Produk */}
+                            <div className="md:col-span-2">
+                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                    Nama Produk / SKU <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    value={editingFormData.nama_produk || ''}
+                                    onChange={(e) => setEditingFormData({ ...editingFormData, nama_produk: e.target.value.toUpperCase() })}
+                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-900 focus:ring-4 focus:ring-red-500/10 focus:border-red-500 focus:bg-white outline-none uppercase transition-all"
+                                    placeholder="Contoh: BOOK-NB-681/RED"
+                                />
+                            </div>
+
+                            {/* Jumlah Minus */}
+                            <div>
+                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                    Jumlah Minus <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="number"
+                                    value={editingFormData.jumlah ?? 0}
+                                    onChange={(e) => setEditingFormData({ ...editingFormData, jumlah: Number(e.target.value) })}
+                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-red-600 focus:ring-4 focus:ring-red-500/10 focus:border-red-500 focus:bg-white outline-none transition-all"
+                                />
+                            </div>
+
+                            {/* Gudang */}
+                            <div>
+                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                    Gudang
+                                </label>
+                                <input
+                                    type="text"
+                                    value={editingFormData.gudang || ''}
+                                    onChange={(e) => setEditingFormData({ ...editingFormData, gudang: e.target.value.toUpperCase() })}
+                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:ring-4 focus:ring-red-500/10 focus:border-red-500 focus:bg-white outline-none uppercase transition-all"
+                                    placeholder="Contoh: OP / L / JL"
+                                />
+                            </div>
+
+                            {/* Rak */}
+                            <div>
+                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                    Rak <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    value={editingFormData.rak || ''}
+                                    onChange={(e) => setEditingFormData({ ...editingFormData, rak: e.target.value.toUpperCase() })}
+                                    className="w-full px-4 py-3 bg-yellow-50/60 border border-yellow-200 rounded-2xl text-sm font-bold text-yellow-800 focus:ring-4 focus:ring-yellow-500/10 focus:border-yellow-500 focus:bg-white outline-none uppercase transition-all"
+                                    placeholder="Contoh: A5 / B9 / C19"
+                                />
+                            </div>
+
+                            {/* Sub Rak */}
+                            <div>
+                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                    Sub Rak
+                                </label>
+                                <input
+                                    type="text"
+                                    value={editingFormData.sub_rak || ''}
+                                    onChange={(e) => setEditingFormData({ ...editingFormData, sub_rak: e.target.value.toUpperCase() })}
+                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:ring-4 focus:ring-red-500/10 focus:border-red-500 focus:bg-white outline-none uppercase transition-all"
+                                    placeholder="Contoh: A5-1"
+                                />
+                            </div>
+
+                            {/* Tanggal Scan (tgl_scan) */}
+                            <div>
+                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                    Tanggal Scan (Batch)
+                                </label>
+                                <input
+                                    type="text"
+                                    value={editingFormData.tgl_scan || ''}
+                                    onChange={(e) => setEditingFormData({ ...editingFormData, tgl_scan: e.target.value })}
+                                    className="w-full px-4 py-3 bg-blue-50/50 border border-blue-200 rounded-2xl text-sm font-bold text-blue-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 focus:bg-white outline-none transition-all"
+                                    placeholder="yyyy-MM-dd (Contoh: 2026-09-19)"
+                                />
+                            </div>
+
+                            {/* User Petugas */}
+                            <div>
+                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                    Nama Petugas / User
+                                </label>
+                                <input
+                                    type="text"
+                                    value={editingFormData.user_name || ''}
+                                    onChange={(e) => setEditingFormData({ ...editingFormData, user_name: e.target.value })}
+                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:ring-4 focus:ring-red-500/10 focus:border-red-500 focus:bg-white outline-none transition-all"
+                                    placeholder="Contoh: laelalaika340"
+                                />
+                            </div>
+
+                            {/* Tanggal Transaksi */}
+                            <div>
+                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                    Tanggal Transaksi
+                                </label>
+                                <input
+                                    type="date"
+                                    value={editingFormData.tanggal || ''}
+                                    onChange={(e) => setEditingFormData({ ...editingFormData, tanggal: e.target.value })}
+                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-semibold text-slate-800 focus:ring-4 focus:ring-red-500/10 focus:border-red-500 focus:bg-white outline-none transition-all"
+                                />
+                            </div>
+
+                            {/* Waktu Transaksi */}
+                            <div>
+                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                    Waktu Transaksi
+                                </label>
+                                <input
+                                    type="text"
+                                    value={editingFormData.waktu || ''}
+                                    onChange={(e) => setEditingFormData({ ...editingFormData, waktu: e.target.value })}
+                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-mono font-semibold text-slate-800 focus:ring-4 focus:ring-red-500/10 focus:border-red-500 focus:bg-white outline-none transition-all"
+                                    placeholder="HH.mm.ss (Contoh: 14.25.54)"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="mt-8 pt-5 border-t border-slate-100 flex items-center justify-end gap-3">
+                            <button
+                                type="button"
+                                onClick={handleCancelEdit}
+                                className="px-5 py-3 rounded-2xl border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-50 transition-all"
+                                disabled={savingEdit}
+                            >
+                                Batal
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => handleSaveEdit(editModalRow.id)}
+                                className="px-6 py-3 rounded-2xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white font-black text-xs shadow-lg shadow-red-600/30 flex items-center gap-2 transition-all active:scale-95"
+                                disabled={savingEdit}
+                            >
+                                <Save className="h-4 w-4" />
+                                <span>{savingEdit ? 'Menyimpan...' : 'Simpan Langsung ke Database'}</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <Toast
                 isOpen={toast.show}
                 message={toast.message}
@@ -854,13 +1602,25 @@ export const StokMinus: React.FC = () => {
                 onClose={() => setToast({ ...toast, show: false })}
             />
 
+            {/* Single Delete Confirm */}
             <ConfirmDialog
                 isOpen={deleteConfirm.isOpen}
                 onClose={() => setDeleteConfirm({ isOpen: false, rowId: null })}
                 onConfirm={handleDelete}
                 title="Hapus Data Stok Minus"
-                message="Apakah Anda yakin ingin menghapus data ini? Tindakan ini tidak dapat dibatalkan."
+                message="Apakah Anda yakin ingin menghapus data ini dari tabel minus_stock? Tindakan ini tidak dapat dibatalkan."
                 confirmText="Ya, Hapus Data"
+                cancelText="Batal"
+            />
+
+            {/* Batch Delete Confirm */}
+            <ConfirmDialog
+                isOpen={batchDeleteConfirm}
+                onClose={() => setBatchDeleteConfirm(false)}
+                onConfirm={handleBatchDelete}
+                title={`Hapus Massal (${selectedRowIds.size} Data)`}
+                message={`Apakah Anda yakin ingin menghapus permanen ${selectedRowIds.size} baris terpilih dari tabel minus_stock? Data yang dihapus tidak dapat dikembalikan.`}
+                confirmText="Ya, Hapus Semua Terpilih"
                 cancelText="Batal"
             />
         </div>
