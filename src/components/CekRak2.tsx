@@ -47,7 +47,7 @@ interface StockItem {
 
 export function CekRak2() {
     const { userRole, user, userName, userPermissions, userEmail } = useAuth();
-    const { writeMode, dbMode } = useDatabaseConfig();
+    const { writeMode, readMode } = useDatabaseConfig();
     const isDeveloper = userRole === 'developer' || user?.email === 'devmode';
     const isAdminOrDev = isDeveloper || userRole === 'admin' || userRole?.includes('admin');
 
@@ -484,23 +484,58 @@ export function CekRak2() {
     };
 
     const isFetchingFinishedRef = useRef(false);
+    const hasQueuedFinishedRef = useRef(false);
 
-    // Real-Time Finished / Verified Items Fetching (Excludes Already Printed Items)
-    const fetchAllFinishedItems = async () => {
-        if (isFetchingFinishedRef.current) return;
-        isFetchingFinishedRef.current = true;
+    const isFetchingPrintHistoryRef = useRef(false);
+    const hasQueuedPrintHistoryRef = useRef(false);
+
+    const fetchPrintHistoryData = async () => {
+        if (isFetchingPrintHistoryRef.current) {
+            hasQueuedPrintHistoryRef.current = true;
+            return;
+        }
+        isFetchingPrintHistoryRef.current = true;
+        hasQueuedPrintHistoryRef.current = false;
+        setIsLoadingPrintHistory(true);
         try {
-            // 0. Load printed items from print history (Supabase / Firestore / LocalStorage)
-            const printedPairs = new Set<string>();
+            const history = await DatabaseService.fetchPrintHistory(readMode);
+            setPrintHistoryLogs(history || []);
+        } catch (err) {
+            console.warn('Error fetching print history:', err);
+        } finally {
+            isFetchingPrintHistoryRef.current = false;
+            setIsLoadingPrintHistory(false);
+            if (hasQueuedPrintHistoryRef.current) {
+                hasQueuedPrintHistoryRef.current = false;
+                fetchPrintHistoryData();
+            }
+        }
+    };
+
+    // Real-Time Finished / Verified Items Fetching (Excludes Already Printed Items based on accurate timestamp)
+    const fetchAllFinishedItems = async () => {
+        if (isFetchingFinishedRef.current) {
+            hasQueuedFinishedRef.current = true;
+            return;
+        }
+        isFetchingFinishedRef.current = true;
+        hasQueuedFinishedRef.current = false;
+        setIsLoadingFinished(true);
+        try {
+            // 0. Load print history to get the latest print timestamp for each (sku, rak)
+            const latestPrintTimeMap = new Map<string, number>();
             try {
-                const history = await DatabaseService.fetchPrintHistory(dbMode as any);
+                const history = await DatabaseService.fetchPrintHistory(readMode);
                 if (history && history.length > 0) {
                     setPrintHistoryLogs(history);
                     history.forEach((h: any) => {
                         const hSku = (h.sku || h.nama_barang || h.nama_produk || '').trim().toLowerCase();
                         const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
                         if (hSku && hRak) {
-                            printedPairs.add(`${hSku}:::${hRak}`);
+                            const pairKey = `${hSku}:::${hRak}`;
+                            const ts = new Date(h.created_at || (h.tgl_scan ? `${h.tgl_scan} ${h.waktu || '00:00:00'}` : 0)).getTime();
+                            const cur = latestPrintTimeMap.get(pairKey) || 0;
+                            latestPrintTimeMap.set(pairKey, Math.max(cur, ts));
                         }
                     });
                 }
@@ -508,7 +543,7 @@ export function CekRak2() {
                 console.warn('Error checking print history in fetchAllFinishedItems:', pErr);
             }
 
-            // Also check localStorage printed_opname_* keys for instantaneous local exclusion
+            // Also check localStorage printed_opname_* keys for instantaneous local exclusion with timestamp
             if (typeof window !== 'undefined') {
                 try {
                     for (let i = 0; i < localStorage.length; i++) {
@@ -520,7 +555,12 @@ export function CekRak2() {
                                 const r = withoutPrefix.substring(0, underscoreIdx).trim().toUpperCase();
                                 const s = withoutPrefix.substring(underscoreIdx + 1).trim().toLowerCase();
                                 if (r && s) {
-                                    printedPairs.add(`${s}:::${r}`);
+                                    const pairKey = `${s}:::${r}`;
+                                    const val = localStorage.getItem(k);
+                                    const valTs = val ? Number(val) : 0;
+                                    const validTs = (!isNaN(valTs) && valTs > 0) ? valTs : Date.now();
+                                    const cur = latestPrintTimeMap.get(pairKey) || 0;
+                                    latestPrintTimeMap.set(pairKey, Math.max(cur, validTs));
                                 }
                             }
                         }
@@ -535,11 +575,12 @@ export function CekRak2() {
                     .select('id, sku, rak, sub_rak, gudang, type, status, user_name, tgl, waktu, created_at, jumlah, log_update_user')
                     .in('gudang', ['VERIFY', 'UNVERIFY', 'TRANSFER'])
                     .order('created_at', { ascending: false })
-                    .limit(3000),
+                    .limit(5000),
                 supabase
                     .from('stock_items')
                     .select('nama_produk, rak, sub_rak, tersedia, satuan, packing')
                     .eq('status', 'Aktif')
+                    .limit(20000)
             ]);
 
             const data = logRes.data;
@@ -586,7 +627,15 @@ export function CekRak2() {
 
                 const pairKey = `${sku}:::${rak}`;
 
-                if (seenMap.has(pairKey) || excludedKeys.has(pairKey) || printedPairs.has(pairKey)) {
+                if (seenMap.has(pairKey) || excludedKeys.has(pairKey)) {
+                    return;
+                }
+
+                // Check if this log was created before or after the latest print timestamp
+                const logTime = new Date(log.created_at || (log.tgl ? `${log.tgl} ${log.waktu || '00:00:00'}` : 0)).getTime();
+                const latestPrintTime = latestPrintTimeMap.get(pairKey);
+                // If printed and the print occurred AFTER or equal to this log, this log is already printed
+                if (latestPrintTime !== undefined && latestPrintTime >= logTime) {
                     return;
                 }
 
@@ -641,7 +690,16 @@ export function CekRak2() {
                                         const cleanP = (pName || '').trim().toLowerCase();
                                         if (!cleanP) return;
                                         const pairKey = `${cleanP}:::${rak}`;
-                                        if (!seenMap.has(pairKey) && !excludedKeys.has(pairKey) && !printedPairs.has(pairKey)) {
+
+                                        const latestPrintTime = latestPrintTimeMap.get(pairKey);
+                                        if (latestPrintTime !== undefined) {
+                                            const localVerifiedTime = Number(localStorage.getItem(`verified_time_${rak}_${cleanP}`) || 0);
+                                            if (latestPrintTime >= (localVerifiedTime || Date.now() - 1000)) {
+                                                return;
+                                            }
+                                        }
+
+                                        if (!seenMap.has(pairKey) && !excludedKeys.has(pairKey)) {
                                             let resolvedBoxCount = boxCountFromLogs.get(pairKey) || 1;
                                             const cached = localStorage.getItem(`box_count_${rak}_${cleanP}`);
                                             if (cached) {
@@ -690,6 +748,10 @@ export function CekRak2() {
         } finally {
             isFetchingFinishedRef.current = false;
             setIsLoadingFinished(false);
+            if (hasQueuedFinishedRef.current) {
+                hasQueuedFinishedRef.current = false;
+                fetchAllFinishedItems();
+            }
         }
     };
 
@@ -711,6 +773,7 @@ export function CekRak2() {
         // Save to localStorage immediately
         if (typeof window !== 'undefined') {
             localStorage.setItem(`box_count_${rak}_${cleanSku}`, String(newCount));
+            window.dispatchEvent(new CustomEvent('finished-logs-updated'));
         }
 
         // Update finishedLogs state
@@ -729,59 +792,73 @@ export function CekRak2() {
         }));
     };
 
-    const fetchPrintHistoryData = async () => {
-        setIsLoadingPrintHistory(true);
-        try {
-            const history = await DatabaseService.fetchPrintHistory(dbMode as any);
-            setPrintHistoryLogs(history || []);
-        } catch (err) {
-            console.warn('Error fetching print history:', err);
-        } finally {
-            setIsLoadingPrintHistory(false);
-        }
-    };
-
     useEffect(() => {
         // Fetch immediately on mount
         fetchAllFinishedItems();
         fetchPrintHistoryData();
+
+        let debounceFinishedTimer: any = null;
+        const triggerRealtimeFinished = () => {
+            if (debounceFinishedTimer) clearTimeout(debounceFinishedTimer);
+            debounceFinishedTimer = setTimeout(() => {
+                fetchAllFinishedItems();
+            }, 100);
+        };
+
+        let debounceHistoryTimer: any = null;
+        const triggerRealtimeHistory = () => {
+            if (debounceHistoryTimer) clearTimeout(debounceHistoryTimer);
+            debounceHistoryTimer = setTimeout(() => {
+                fetchPrintHistoryData();
+                fetchAllFinishedItems();
+            }, 100);
+        };
         
-        // Supabase Realtime channel subscription
+        // Supabase Realtime channel subscription with table listeners
         const channel = supabase
-            .channel('realtime_stock_opname_finished_logs_' + Date.now())
+            .channel('realtime_stock_opname_live_' + Math.random().toString(36).substring(2, 9))
             .on('postgres_changes', {
                 event: '*',
                 schema: 'public',
                 table: 'database_log'
             }, () => {
-                fetchAllFinishedItems();
+                triggerRealtimeFinished();
             })
             .on('postgres_changes', {
                 event: '*',
                 schema: 'public',
                 table: 'opname_print_history'
             }, () => {
-                fetchPrintHistoryData();
-                fetchAllFinishedItems();
+                triggerRealtimeHistory();
+            })
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'stock_items'
+            }, () => {
+                triggerRealtimeFinished();
             })
             .subscribe();
 
         // Cross-tab and window listeners
         const handleSyncEvent = () => {
-            fetchAllFinishedItems();
-            fetchPrintHistoryData();
+            triggerRealtimeFinished();
+            triggerRealtimeHistory();
         };
         window.addEventListener('focus', handleSyncEvent);
         window.addEventListener('storage', handleSyncEvent);
         window.addEventListener('finished-logs-updated', handleSyncEvent);
 
-        // Periodic live heartbeat polling every 10 seconds as safety fallback
+        // Periodic live heartbeat polling every 5 seconds as safety fallback
         const interval = setInterval(() => {
             fetchAllFinishedItems();
-        }, 10000);
+            fetchPrintHistoryData();
+        }, 5000);
 
         return () => {
             supabase.removeChannel(channel);
+            if (debounceFinishedTimer) clearTimeout(debounceFinishedTimer);
+            if (debounceHistoryTimer) clearTimeout(debounceHistoryTimer);
             window.removeEventListener('focus', handleSyncEvent);
             window.removeEventListener('storage', handleSyncEvent);
             window.removeEventListener('finished-logs-updated', handleSyncEvent);
@@ -2778,6 +2855,12 @@ export function CekRak2() {
             console.warn('insertPrintHistory error:', e);
         }
 
+        if (typeof window !== 'undefined') {
+            localStorage.setItem(`printed_opname_${cleanR}_${cleanS}`, String(now.getTime()));
+            localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+            window.dispatchEvent(new CustomEvent('finished-logs-updated'));
+        }
+
         // 2. Remove immediately from finishedLogs queue with 0 latency
         setFinishedLogs(prev => prev.filter(l => {
             const lSku = (l.sku || l.nama_barang || l.nama_produk || '').trim().toLowerCase();
@@ -2904,6 +2987,18 @@ export function CekRak2() {
             console.warn('insertPrintHistory batch error:', e);
         }
 
+        if (typeof window !== 'undefined') {
+            targetList.forEach(log => {
+                const s = (log.sku || log.nama_barang || log.nama_produk || '').trim().toLowerCase();
+                const r = (log.sub_rak || log.rak || '').trim().toUpperCase();
+                if (s && r) {
+                    localStorage.setItem(`printed_opname_${r}_${s}`, String(now.getTime()));
+                }
+            });
+            localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+            window.dispatchEvent(new CustomEvent('finished-logs-updated'));
+        }
+
         // 2. Remove all batch items from finishedLogs queue with 0 latency
         const batchKeys = new Set(targetList.map(l => {
             const s = (l.sku || l.nama_barang || l.nama_produk || '').trim().toLowerCase();
@@ -2948,6 +3043,12 @@ export function CekRak2() {
         try {
             await DatabaseService.deletePrintHistory(historyItem, writeMode);
 
+            if (typeof window !== 'undefined') {
+                localStorage.removeItem(`printed_opname_${rak.trim().toUpperCase()}_${sku.trim().toLowerCase()}`);
+                localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+                window.dispatchEvent(new CustomEvent('finished-logs-updated'));
+            }
+
             setPrintHistoryLogs(prev => prev.filter(h => {
                 const hSku = (h.sku || h.nama_barang || '').trim().toLowerCase();
                 const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
@@ -2955,6 +3056,7 @@ export function CekRak2() {
             }));
 
             await fetchAllFinishedItems();
+            await fetchPrintHistoryData();
 
             setToast({
                 isOpen: true,
@@ -2988,12 +3090,21 @@ export function CekRak2() {
         try {
             await DatabaseService.deletePrintHistory(historyItem, writeMode);
 
+            if (typeof window !== 'undefined') {
+                localStorage.removeItem(`printed_opname_${rak.trim().toUpperCase()}_${sku.trim().toLowerCase()}`);
+                localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+                window.dispatchEvent(new CustomEvent('finished-logs-updated'));
+            }
+
             setPrintHistoryLogs(prev => prev.filter(h => {
                 if (historyItem.id && h.id && historyItem.id === h.id) return false;
                 const hSku = (h.sku || h.nama_barang || '').trim().toLowerCase();
                 const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
                 return !(hSku === sku.trim().toLowerCase() && hRak === rak.trim().toUpperCase());
             }));
+
+            await fetchAllFinishedItems();
+            await fetchPrintHistoryData();
 
             setToast({
                 isOpen: true,
@@ -3029,8 +3140,17 @@ export function CekRak2() {
             }
             if (typeof window !== 'undefined') {
                 localStorage.removeItem('opname_print_history_items');
+                Object.keys(localStorage).forEach(k => {
+                    if (k.startsWith('printed_opname_')) {
+                        localStorage.removeItem(k);
+                    }
+                });
+                localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+                window.dispatchEvent(new CustomEvent('finished-logs-updated'));
             }
             setPrintHistoryLogs([]);
+            await fetchAllFinishedItems();
+            await fetchPrintHistoryData();
             setToast({
                 isOpen: true,
                 message: '✅ Seluruh data riwayat cetak berhasil dibersihkan!',
@@ -3847,6 +3967,12 @@ export function CekRak2() {
                 const filteredUnverified = existingUnverified.filter((name: string) => name.trim().toLowerCase() !== prodName);
                 localStorage.setItem(unverifiedKey, JSON.stringify(filteredUnverified));
                 
+                // Remove any old print exclusion so item immediately appears in Selesai tab
+                localStorage.removeItem(`printed_opname_${cleanRak}_${prodName}`);
+                localStorage.setItem(`verified_time_${cleanRak}_${prodName}`, String(Date.now()));
+                localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+                window.dispatchEvent(new CustomEvent('finished-logs-updated'));
+
                 // Determine accumulated box count across multiple pulls
                 let existingBoxCount = 0;
                 if (typeof window !== 'undefined') {
@@ -4267,17 +4393,25 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
             const prodName = (item.nama_produk || item.sku || item.nama_barang || '').trim();
 
             if (cleanRak && prodName) {
-                const storageKey = `verified_rak_${cleanRak.toUpperCase()}`;
-                const unverifiedKey = `unverified_rak_${cleanRak.toUpperCase()}`;
+                const cleanR = cleanRak.toUpperCase();
+                const cleanP = prodName.toLowerCase();
+                const storageKey = `verified_rak_${cleanR}`;
+                const unverifiedKey = `unverified_rak_${cleanR}`;
                 
                 const existing: string[] = JSON.parse(localStorage.getItem(storageKey) || '[]');
-                if (!existing.some(n => n.trim().toLowerCase() === prodName.toLowerCase())) {
+                if (!existing.some(n => n.trim().toLowerCase() === cleanP)) {
                     existing.push(prodName);
                     localStorage.setItem(storageKey, JSON.stringify(existing));
                 }
                 const existingUnverified: string[] = JSON.parse(localStorage.getItem(unverifiedKey) || '[]');
-                const filteredUnverified = existingUnverified.filter(name => name.trim().toLowerCase() !== prodName.toLowerCase());
+                const filteredUnverified = existingUnverified.filter(name => name.trim().toLowerCase() !== cleanP);
                 localStorage.setItem(unverifiedKey, JSON.stringify(filteredUnverified));
+
+                // Clear any old printed exclusion so item immediately appears in Selesai tab
+                localStorage.removeItem(`printed_opname_${cleanR}_${cleanP}`);
+                localStorage.setItem(`verified_time_${cleanR}_${cleanP}`, String(Date.now()));
+                localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+                window.dispatchEvent(new CustomEvent('finished-logs-updated'));
 
                 // Clean up any old UNVERIFY records for this item in this rack so VERIFY is cleanly recorded
                 try {
@@ -4286,7 +4420,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         .delete()
                         .eq('gudang', 'UNVERIFY')
                         .ilike('sku', prodName)
-                        .or(`rak.eq.${cleanRak.toUpperCase()},sub_rak.eq.${cleanRak.toUpperCase()}`);
+                        .or(`rak.eq.${cleanR},sub_rak.eq.${cleanR}`);
                 } catch (delErr) {
                     console.warn('Could not cleanup UNVERIFY logs:', delErr);
                 }
@@ -4296,7 +4430,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 const tglHariIni = now.toISOString().split('T')[0];
                 const waktuSekarang = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-                const boxCountLocal = typeof window !== 'undefined' ? localStorage.getItem(`box_count_${cleanRak.toUpperCase()}_${prodName.toLowerCase()}`) : null;
+                const boxCountLocal = typeof window !== 'undefined' ? localStorage.getItem(`box_count_${cleanR}_${cleanP}`) : null;
                 const countNum = item.boxCount || item.box_count || (boxCountLocal ? parseInt(boxCountLocal, 10) : undefined);
 
                 await DatabaseService.insertLogs([{
@@ -4306,10 +4440,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                     jumlah: item.tersedia || item.jumlah || 0,
                     type: 'MOVE',
                     gudang: 'VERIFY',
-                    rak: cleanRak.toUpperCase(),
+                    rak: cleanR,
                     tgl_scan: item.tgl_scan || tglHariIni,
                     user_name: user?.email || userName || 'User',
-                    sub_rak: item.sub_rak || cleanRak.toUpperCase(),
+                    sub_rak: item.sub_rak || cleanR,
                     log_update_user: countNum ? `BOX_COUNT:${countNum}` : undefined
                 }], writeMode);
             }
@@ -4348,18 +4482,24 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
             });
 
             if (cleanRak && prodName) {
-                const storageKey = `verified_rak_${cleanRak.toUpperCase()}`;
-                const unverifiedKey = `unverified_rak_${cleanRak.toUpperCase()}`;
+                const cleanR = cleanRak.toUpperCase();
+                const cleanP = prodName.toLowerCase();
+                const storageKey = `verified_rak_${cleanR}`;
+                const unverifiedKey = `unverified_rak_${cleanR}`;
                 
                 const existingVerified: string[] = JSON.parse(localStorage.getItem(storageKey) || '[]');
-                const filtered = existingVerified.filter(name => name.trim().toLowerCase() !== prodName.toLowerCase());
+                const filtered = existingVerified.filter(name => name.trim().toLowerCase() !== cleanP);
                 localStorage.setItem(storageKey, JSON.stringify(filtered));
 
                 const existingUnverified: string[] = JSON.parse(localStorage.getItem(unverifiedKey) || '[]');
-                if (!existingUnverified.some(n => n.trim().toLowerCase() === prodName.toLowerCase())) {
-                    existingUnverified.push(prodName.toLowerCase());
+                if (!existingUnverified.some(n => n.trim().toLowerCase() === cleanP)) {
+                    existingUnverified.push(cleanP);
                     localStorage.setItem(unverifiedKey, JSON.stringify(existingUnverified));
                 }
+
+                localStorage.removeItem(`verified_time_${cleanR}_${cleanP}`);
+                localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+                window.dispatchEvent(new CustomEvent('finished-logs-updated'));
 
                 // 1. Direct delete matching VERIFY logs from Supabase database_log so it will never reappear on fetch
                 try {
@@ -4368,7 +4508,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         .delete()
                         .eq('gudang', 'VERIFY')
                         .ilike('sku', prodName)
-                        .or(`rak.eq.${cleanRak.toUpperCase()},sub_rak.eq.${cleanRak.toUpperCase()}`);
+                        .or(`rak.eq.${cleanR},sub_rak.eq.${cleanR}`);
 
                     if (item.id || item.logId) {
                         await supabase
@@ -4392,10 +4532,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                     jumlah: item.tersedia || item.jumlah || 0,
                     type: 'MOVE',
                     gudang: 'UNVERIFY',
-                    rak: cleanRak.toUpperCase(),
+                    rak: cleanR,
                     tgl_scan: item.tgl_scan || tglHariIni,
                     user_name: user?.email || userName || 'User (Batal Konfirmasi)',
-                    sub_rak: item.sub_rak || cleanRak.toUpperCase()
+                    sub_rak: item.sub_rak || cleanR
                 }], writeMode);
             }
 
@@ -4435,11 +4575,23 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
         const cleanRak = (lastScanned || '').trim();
 
         if (cleanRak) {
-            const storageKey = `verified_rak_${cleanRak.toUpperCase()}`;
-            const unverifiedKey = `unverified_rak_${cleanRak.toUpperCase()}`;
+            const cleanR = cleanRak.toUpperCase();
+            const storageKey = `verified_rak_${cleanR}`;
+            const unverifiedKey = `unverified_rak_${cleanR}`;
             const allNames = items.map(i => i.nama_produk?.trim().toLowerCase()).filter(Boolean);
             localStorage.setItem(storageKey, JSON.stringify(allNames));
             localStorage.removeItem(unverifiedKey);
+
+            // Remove any old print exclusions for all items in this rack
+            items.forEach(i => {
+                const pName = (i.nama_produk || i.sku || '').trim().toLowerCase();
+                if (pName) {
+                    localStorage.removeItem(`printed_opname_${cleanR}_${pName}`);
+                    localStorage.setItem(`verified_time_${cleanR}_${pName}`, String(Date.now()));
+                }
+            });
+            localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+            window.dispatchEvent(new CustomEvent('finished-logs-updated'));
 
             try {
                 const now = new Date();
@@ -4452,14 +4604,14 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         .from('database_log')
                         .delete()
                         .eq('gudang', 'UNVERIFY')
-                        .or(`rak.eq.${cleanRak.toUpperCase()},sub_rak.eq.${cleanRak.toUpperCase()}`);
+                        .or(`rak.eq.${cleanR},sub_rak.eq.${cleanR}`);
                 } catch (delErr) {
                     console.warn('Could not cleanup UNVERIFY logs:', delErr);
                 }
 
                 const logsToInsert = items.map(i => {
                     const prodName = (i.nama_produk || i.sku || '').trim().toLowerCase();
-                    const boxCountLocal = typeof window !== 'undefined' ? localStorage.getItem(`box_count_${cleanRak.toUpperCase()}_${prodName}`) : null;
+                    const boxCountLocal = typeof window !== 'undefined' ? localStorage.getItem(`box_count_${cleanR}_${prodName}`) : null;
                     const countNum = i.boxCount || i.box_count || (boxCountLocal ? parseInt(boxCountLocal, 10) : undefined);
                     return {
                         tgl: tglHariIni,
@@ -4468,10 +4620,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                         jumlah: i.tersedia || 0,
                         type: 'MOVE',
                         gudang: 'VERIFY',
-                        rak: cleanRak.toUpperCase(),
+                        rak: cleanR,
                         tgl_scan: i.tgl_scan || tglHariIni,
                         user_name: user?.email || userName || 'User',
-                        sub_rak: i.sub_rak || cleanRak.toUpperCase(),
+                        sub_rak: i.sub_rak || cleanR,
                         log_update_user: countNum ? `BOX_COUNT:${countNum}` : undefined
                     };
                 });
@@ -4544,10 +4696,12 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
 
             // Clear local storage verification keys
             Object.keys(localStorage).forEach(key => {
-                if (key.startsWith('verified_rak_') || key.startsWith('unverified_rak_')) {
+                if (key.startsWith('verified_rak_') || key.startsWith('unverified_rak_') || key.startsWith('verified_time_')) {
                     localStorage.removeItem(key);
                 }
             });
+            localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+            window.dispatchEvent(new CustomEvent('finished-logs-updated'));
 
             setVerifiedIds(new Set());
             setFinishedLogs([]);

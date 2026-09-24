@@ -16,6 +16,7 @@ import { TransferPurgeItem, TransferPurgeScanResult, scanTransferLogs, deleteTra
 import { SyncOutRakModal } from './SyncOutRakModal';
 import { MismatchedOutRakItem, SyncOutRakScanResult, scanMismatchedOutLogs, restoreOutRakLogs } from '../services/syncOutRakService';
 import { SyncLt4Lt2Modal } from './SyncLt4Lt2Modal';
+import { AdjustmentStockOutModal } from './AdjustmentStockOutModal';
 
 export interface DatabaseLogEntry {
   id: string;
@@ -566,6 +567,9 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
   // --- SELARASKAN MUTASI LANTAI 4 -> LANTAI 2 STATE ---
   const [isSyncLt4Lt2ModalOpen, setIsSyncLt4Lt2ModalOpen] = useState(false);
+
+  // --- DEVMODE: PENYESUAIAN STOK OUT STATE ---
+  const [isAdjustmentStockOutModalOpen, setIsAdjustmentStockOutModalOpen] = useState(false);
 
   const handleAnalyzeStockBalance = async (skuToAnalyze: string) => {
     if (!skuToAnalyze) {
@@ -4123,6 +4127,16 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                         <span className="uppercase text-[10px] font-black">Mutasi LT4 ➔ LT2</span>
                       </button>
 
+                      {/* DEVMODE: PENYESUAIAN STOK OUT */}
+                      <button
+                        onClick={() => setIsAdjustmentStockOutModalOpen(true)}
+                        className="h-12 px-5 bg-gradient-to-r from-amber-600 via-orange-600 to-rose-600 hover:from-amber-500 hover:to-rose-500 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 border border-orange-400/40"
+                        title="Pencarian Single/Massal SKU Stok Tersedia & Penyesuaian Stok OUT (Gudang: PENYESUAIAN STOK OUT)"
+                      >
+                        <Layers className="h-4 w-4" />
+                        <span className="uppercase text-[10px] font-black">Penyesuaian Stok OUT</span>
+                      </button>
+
                       {/* DEVMODE: FILTER USER SYSTEM (CEK RAK) */}
                       <button
                         onClick={() => {
@@ -6803,6 +6817,17 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
         }}
         currentUser={userName || 'Admin'}
+      />
+
+      {/* DEVMODE: MODAL PENYESUAIAN STOK OUT */}
+      <AdjustmentStockOutModal
+        isOpen={isAdjustmentStockOutModalOpen}
+        onClose={() => setIsAdjustmentStockOutModalOpen(false)}
+        onSuccess={() => {
+          showToast('Penyesuaian stok OUT berhasil diproses!', 'success');
+          loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
+        }}
+        defaultSku={filters.sku || ''}
       />
 
       <Toast
