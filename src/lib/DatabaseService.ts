@@ -1682,17 +1682,22 @@ export const DatabaseService = {
 
   async deletePrintHistory(itemOrId: any, mode: DatabaseWriteMode = 'both') {
     const id = typeof itemOrId === 'string' ? itemOrId : itemOrId?.id;
-    const sku = itemOrId?.sku || itemOrId?.nama_barang || '';
-    const rak = itemOrId?.sub_rak || itemOrId?.rak || '';
+    const sku = (itemOrId?.sku || itemOrId?.nama_barang || itemOrId?.nama_produk || '').trim();
+    const rak = (itemOrId?.sub_rak || itemOrId?.rak || '').trim();
 
-    // 1. LocalStorage cleanup
+    // 1. LocalStorage cleanup (instant)
     if (typeof window !== 'undefined') {
       try {
         const rawLocal = localStorage.getItem('opname_print_history_items');
         if (rawLocal) {
           const parsed = JSON.parse(rawLocal);
           if (Array.isArray(parsed)) {
-            const filtered = parsed.filter(x => x.id !== id && !((x.sku || '').toLowerCase() === sku.toLowerCase() && (x.rak || '').toUpperCase() === rak.toUpperCase()));
+            const filtered = parsed.filter(x => {
+              if (id && x.id && String(x.id) === String(id)) return false;
+              const xSku = (x.sku || x.nama_barang || x.nama_produk || '').trim().toLowerCase();
+              const xRak = (x.sub_rak || x.rak || '').trim().toUpperCase();
+              return !(xSku === sku.toLowerCase() && xRak === rak.toUpperCase());
+            });
             localStorage.setItem('opname_print_history_items', JSON.stringify(filtered));
           }
         }
@@ -1702,24 +1707,66 @@ export const DatabaseService = {
       } catch (e) {}
     }
 
-    // 2. Supabase delete
+    // 2. Parallel Supabase & Firestore delete
+    const tasks: Promise<any>[] = [];
+
     if (mode === 'supabase' || mode === 'both') {
+      if (id) {
+        tasks.push(supabase.from('opname_print_history').delete().eq('id', id));
+      }
+      if (sku && rak) {
+        tasks.push(supabase.from('opname_print_history').delete().ilike('sku', sku).ilike('rak', rak));
+      }
+    }
+
+    if (mode === 'firestore' || mode === 'both') {
+      if (id) {
+        tasks.push(deleteDoc(doc(db, 'opname_print_history', String(id))).catch(() => {}));
+      }
+    }
+
+    try {
+      await Promise.all(tasks);
+    } catch (e) {
+      console.warn('deletePrintHistory exception:', e);
+    }
+  },
+
+  async clearAllPrintHistory(mode: DatabaseWriteMode = 'both') {
+    // 1. LocalStorage cleanup (instant)
+    if (typeof window !== 'undefined') {
       try {
-        if (id) {
-          await supabase.from('opname_print_history').delete().eq('id', id);
-        }
-        if (sku && rak) {
-          await supabase.from('opname_print_history').delete().ilike('sku', sku).ilike('rak', rak);
-        }
+        localStorage.removeItem('opname_print_history_items');
+        Object.keys(localStorage).forEach(k => {
+          if (k.startsWith('printed_opname_')) {
+            localStorage.removeItem(k);
+          }
+        });
       } catch (e) {}
     }
 
-    // 3. Firestore delete
+    // 2. Parallel Supabase & Firestore delete
+    const tasks: Promise<any>[] = [];
+
+    if (mode === 'supabase' || mode === 'both') {
+      tasks.push(supabase.from('opname_print_history').delete().neq('id', '00000000-0000-0000-0000-000000000000'));
+    }
+
+    if (mode === 'firestore' || mode === 'both') {
+      tasks.push((async () => {
+        try {
+          const colRef = collection(db, 'opname_print_history');
+          const snap = await getDocs(colRef);
+          await Promise.all(snap.docs.map(d => deleteDoc(d.ref).catch(() => {})));
+        } catch (fbErr) {}
+      })());
+    }
+
     try {
-      if (id) {
-        await deleteDoc(doc(db, 'opname_print_history', String(id))).catch(() => {});
-      }
-    } catch (e) {}
+      await Promise.all(tasks);
+    } catch (e) {
+      console.warn('clearAllPrintHistory exception:', e);
+    }
   }
 };
 

@@ -489,14 +489,16 @@ export function CekRak2() {
     const isFetchingPrintHistoryRef = useRef(false);
     const hasQueuedPrintHistoryRef = useRef(false);
 
-    const fetchPrintHistoryData = async () => {
+    const fetchPrintHistoryData = async (showSpinner = false) => {
         if (isFetchingPrintHistoryRef.current) {
             hasQueuedPrintHistoryRef.current = true;
             return;
         }
         isFetchingPrintHistoryRef.current = true;
         hasQueuedPrintHistoryRef.current = false;
-        setIsLoadingPrintHistory(true);
+        if (showSpinner) {
+            setIsLoadingPrintHistory(true);
+        }
         try {
             const history = await DatabaseService.fetchPrintHistory(readMode);
             setPrintHistoryLogs(history || []);
@@ -507,27 +509,28 @@ export function CekRak2() {
             setIsLoadingPrintHistory(false);
             if (hasQueuedPrintHistoryRef.current) {
                 hasQueuedPrintHistoryRef.current = false;
-                fetchPrintHistoryData();
+                fetchPrintHistoryData(false);
             }
         }
     };
 
     // Real-Time Finished / Verified Items Fetching (Excludes Already Printed Items based on accurate timestamp)
-    const fetchAllFinishedItems = async () => {
+    const fetchAllFinishedItems = async (showSpinner = false) => {
         if (isFetchingFinishedRef.current) {
             hasQueuedFinishedRef.current = true;
             return;
         }
         isFetchingFinishedRef.current = true;
         hasQueuedFinishedRef.current = false;
-        setIsLoadingFinished(true);
+        if (showSpinner) {
+            setIsLoadingFinished(true);
+        }
         try {
             // 0. Load print history to get the latest print timestamp for each (sku, rak)
             const latestPrintTimeMap = new Map<string, number>();
             try {
                 const history = await DatabaseService.fetchPrintHistory(readMode);
                 if (history && history.length > 0) {
-                    setPrintHistoryLogs(history);
                     history.forEach((h: any) => {
                         const hSku = (h.sku || h.nama_barang || h.nama_produk || '').trim().toLowerCase();
                         const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
@@ -794,24 +797,24 @@ export function CekRak2() {
 
     useEffect(() => {
         // Fetch immediately on mount
-        fetchAllFinishedItems();
-        fetchPrintHistoryData();
+        fetchAllFinishedItems(true);
+        fetchPrintHistoryData(true);
 
         let debounceFinishedTimer: any = null;
         const triggerRealtimeFinished = () => {
             if (debounceFinishedTimer) clearTimeout(debounceFinishedTimer);
             debounceFinishedTimer = setTimeout(() => {
-                fetchAllFinishedItems();
-            }, 100);
+                fetchAllFinishedItems(false);
+            }, 300);
         };
 
         let debounceHistoryTimer: any = null;
         const triggerRealtimeHistory = () => {
             if (debounceHistoryTimer) clearTimeout(debounceHistoryTimer);
             debounceHistoryTimer = setTimeout(() => {
-                fetchPrintHistoryData();
-                fetchAllFinishedItems();
-            }, 100);
+                fetchPrintHistoryData(false);
+                fetchAllFinishedItems(false);
+            }, 300);
         };
         
         // Supabase Realtime channel subscription with table listeners
@@ -849,11 +852,11 @@ export function CekRak2() {
         window.addEventListener('storage', handleSyncEvent);
         window.addEventListener('finished-logs-updated', handleSyncEvent);
 
-        // Periodic live heartbeat polling every 5 seconds as safety fallback
+        // Periodic live heartbeat polling every 30 seconds as silent safety fallback
         const interval = setInterval(() => {
-            fetchAllFinishedItems();
-            fetchPrintHistoryData();
-        }, 5000);
+            fetchAllFinishedItems(false);
+            fetchPrintHistoryData(false);
+        }, 30000);
 
         return () => {
             supabase.removeChannel(channel);
@@ -3033,40 +3036,47 @@ export function CekRak2() {
             return;
         }
 
-        const sku = historyItem.sku || historyItem.nama_barang || historyItem.nama_produk || '';
-        const rak = historyItem.sub_rak || historyItem.rak || '';
+        const sku = (historyItem.sku || historyItem.nama_barang || historyItem.nama_produk || '').trim();
+        const rak = (historyItem.sub_rak || historyItem.rak || '').trim();
 
         if (!window.confirm(`Kembalikan item "${sku}" di Rak ${rak} dari History ke antrian "Data Selesai Diproses"?`)) {
             return;
         }
 
+        // 1. INSTANT OPTIMISTIC STATE UPDATE: Hapus langsung dari tabel history di layar tanpa menunggu query DB
+        setPrintHistoryLogs(prev => prev.filter(h => {
+            if (historyItem.id && h.id && String(historyItem.id) === String(h.id)) return false;
+            const hSku = (h.sku || h.nama_barang || h.nama_produk || '').trim().toLowerCase();
+            const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
+            return !(hSku === sku.toLowerCase() && hRak === rak.toUpperCase());
+        }));
+
+        // 2. Bersihkan local storage print flag seketika
+        if (typeof window !== 'undefined') {
+            localStorage.removeItem(`printed_opname_${rak.toUpperCase()}_${sku.toLowerCase()}`);
+            localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+        }
+
+        // 3. Notifikasi sukses instan
+        setToast({
+            isOpen: true,
+            message: `✅ "${sku}" berhasil dikembalikan ke antrian Data Selesai Diproses!`,
+            type: 'success'
+        });
+
+        // 4. Eksekusi hapus di database di latar belakang
         try {
             await DatabaseService.deletePrintHistory(historyItem, writeMode);
-
-            if (typeof window !== 'undefined') {
-                localStorage.removeItem(`printed_opname_${rak.trim().toUpperCase()}_${sku.trim().toLowerCase()}`);
-                localStorage.setItem('stock_opname_sync_event', String(Date.now()));
-                window.dispatchEvent(new CustomEvent('finished-logs-updated'));
-            }
-
-            setPrintHistoryLogs(prev => prev.filter(h => {
-                const hSku = (h.sku || h.nama_barang || '').trim().toLowerCase();
-                const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
-                return !(hSku === sku.trim().toLowerCase() && hRak === rak.trim().toUpperCase());
-            }));
-
-            await fetchAllFinishedItems();
-            await fetchPrintHistoryData();
-
-            setToast({
-                isOpen: true,
-                message: `✅ "${sku}" berhasil dikembalikan ke antrian Data Selesai Diproses!`,
-                type: 'success'
-            });
         } catch (err: any) {
-            console.error('Error reverting print history:', err);
-            setToast({ isOpen: true, message: 'Gagal mengembalikan data history', type: 'error' });
+            console.error('Error reverting print history in DB:', err);
         }
+
+        // 5. Trigger sync data selesai dan history
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('finished-logs-updated'));
+        }
+        fetchAllFinishedItems(false);
+        fetchPrintHistoryData(false);
     };
 
     // Permanently Delete an item from Print History (Developer only)
@@ -3080,41 +3090,47 @@ export function CekRak2() {
             return;
         }
 
-        const sku = historyItem.sku || historyItem.nama_barang || historyItem.nama_produk || '';
-        const rak = historyItem.sub_rak || historyItem.rak || '';
+        const sku = (historyItem.sku || historyItem.nama_barang || historyItem.nama_produk || '').trim();
+        const rak = (historyItem.sub_rak || historyItem.rak || '').trim();
 
         if (!window.confirm(`⚠️ Hapus permanen riwayat cetak item "${sku}" di Rak ${rak}?\n\nData ini akan dihapus dari history print.`)) {
             return;
         }
 
+        // 1. INSTANT OPTIMISTIC STATE UPDATE: Hapus langsung dari tabel history di layar tanpa menunggu query DB
+        setPrintHistoryLogs(prev => prev.filter(h => {
+            if (historyItem.id && h.id && String(historyItem.id) === String(h.id)) return false;
+            const hSku = (h.sku || h.nama_barang || h.nama_produk || '').trim().toLowerCase();
+            const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
+            return !(hSku === sku.toLowerCase() && hRak === rak.toUpperCase());
+        }));
+
+        // 2. Bersihkan local storage print flag seketika
+        if (typeof window !== 'undefined') {
+            localStorage.removeItem(`printed_opname_${rak.toUpperCase()}_${sku.toLowerCase()}`);
+            localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+        }
+
+        // 3. Notifikasi sukses instan
+        setToast({
+            isOpen: true,
+            message: `✅ Riwayat cetak "${sku}" di Rak ${rak} berhasil dihapus permanen!`,
+            type: 'success'
+        });
+
+        // 4. Eksekusi hapus di database di latar belakang
         try {
             await DatabaseService.deletePrintHistory(historyItem, writeMode);
-
-            if (typeof window !== 'undefined') {
-                localStorage.removeItem(`printed_opname_${rak.trim().toUpperCase()}_${sku.trim().toLowerCase()}`);
-                localStorage.setItem('stock_opname_sync_event', String(Date.now()));
-                window.dispatchEvent(new CustomEvent('finished-logs-updated'));
-            }
-
-            setPrintHistoryLogs(prev => prev.filter(h => {
-                if (historyItem.id && h.id && historyItem.id === h.id) return false;
-                const hSku = (h.sku || h.nama_barang || '').trim().toLowerCase();
-                const hRak = (h.sub_rak || h.rak || '').trim().toUpperCase();
-                return !(hSku === sku.trim().toLowerCase() && hRak === rak.trim().toUpperCase());
-            }));
-
-            await fetchAllFinishedItems();
-            await fetchPrintHistoryData();
-
-            setToast({
-                isOpen: true,
-                message: `✅ Riwayat cetak "${sku}" di Rak ${rak} berhasil dihapus permanen!`,
-                type: 'success'
-            });
         } catch (err: any) {
-            console.error('Error deleting print history:', err);
-            setToast({ isOpen: true, message: 'Gagal menghapus data riwayat cetak', type: 'error' });
+            console.error('Error deleting print history in DB:', err);
         }
+
+        // 5. Trigger sync
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('finished-logs-updated'));
+        }
+        fetchAllFinishedItems(false);
+        fetchPrintHistoryData(false);
     };
 
     // Clear all Print History (Developer only)
@@ -3134,32 +3150,36 @@ export function CekRak2() {
             return;
         }
 
-        try {
-            for (const item of printHistoryLogs) {
-                await DatabaseService.deletePrintHistory(item, writeMode);
-            }
-            if (typeof window !== 'undefined') {
-                localStorage.removeItem('opname_print_history_items');
-                Object.keys(localStorage).forEach(k => {
-                    if (k.startsWith('printed_opname_')) {
-                        localStorage.removeItem(k);
-                    }
-                });
-                localStorage.setItem('stock_opname_sync_event', String(Date.now()));
-                window.dispatchEvent(new CustomEvent('finished-logs-updated'));
-            }
-            setPrintHistoryLogs([]);
-            await fetchAllFinishedItems();
-            await fetchPrintHistoryData();
-            setToast({
-                isOpen: true,
-                message: '✅ Seluruh data riwayat cetak berhasil dibersihkan!',
-                type: 'success'
+        // 1. INSTANT OPTIMISTIC STATE UPDATE: Kosongkan list seketika
+        setPrintHistoryLogs([]);
+        if (typeof window !== 'undefined') {
+            localStorage.removeItem('opname_print_history_items');
+            Object.keys(localStorage).forEach(k => {
+                if (k.startsWith('printed_opname_')) {
+                    localStorage.removeItem(k);
+                }
             });
+            localStorage.setItem('stock_opname_sync_event', String(Date.now()));
+        }
+
+        setToast({
+            isOpen: true,
+            message: '✅ Seluruh data riwayat cetak berhasil dibersihkan!',
+            type: 'success'
+        });
+
+        // 2. Eksekusi bulk delete cepat di database
+        try {
+            await DatabaseService.clearAllPrintHistory(writeMode);
         } catch (err) {
             console.error('Error clearing all print history:', err);
-            setToast({ isOpen: true, message: 'Gagal membersihkan seluruh riwayat cetak', type: 'error' });
         }
+
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('finished-logs-updated'));
+        }
+        fetchAllFinishedItems(false);
+        fetchPrintHistoryData(false);
     };
 
     const handleSelectRackFromSearch = (targetRak: string) => {
@@ -5230,8 +5250,8 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 {/* COMPACT MINIMALIST HEADER (Mobile & Desktop) */}
                 {/* ======================================================== */}
                 <div className="flex flex-col mb-3 sm:mb-4">
-                    <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 pt-[80px] sm:pt-[90px] pb-4 sm:pb-5 px-4 sm:px-6 lg:px-8 rounded-b-2xl sm:rounded-b-3xl shadow-md border-b border-slate-800/80">
-                        <div className="max-w-7xl mx-auto w-full flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
+                    <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 pt-[80px] sm:pt-[90px] pb-4 sm:pb-5 px-4 sm:px-6 lg:px-10 xl:px-12 rounded-b-2xl sm:rounded-b-3xl shadow-md border-b border-slate-800/80">
+                        <div className="max-w-[1920px] mx-auto w-full flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
                             {/* Left Title & Status */}
                             <div className="flex items-center gap-3">
                                 <div className="w-10 h-10 rounded-xl bg-blue-600/30 border border-blue-400/30 flex items-center justify-center text-blue-300 shrink-0">
@@ -5278,7 +5298,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                 </div>
 
                 {/* MAIN CONTENT CONTAINER */}
-                <div className="max-w-7xl mx-auto w-full px-3 sm:px-6 lg:px-8 space-y-4 sm:space-y-5">
+                <div className="max-w-[1920px] mx-auto w-full px-3 sm:px-6 lg:px-10 xl:px-12 space-y-4 sm:space-y-5">
 
                     {/* COMPACT ACTIVE OPNAME ZONES ALERT (REAL-TIME BANNER) */}
                     {Object.entries(activeOpnameZones).filter(([_, s]) => s && s.active).length > 0 && (
@@ -5478,7 +5498,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 type="button"
                                 onClick={() => {
                                     setActiveMainTab('selesai_proses');
-                                    fetchAllFinishedItems();
+                                    if (finishedLogs.length === 0) fetchAllFinishedItems(true);
                                 }}
                                 className={cn(
                                     "h-10 sm:h-11 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer active:scale-95",
@@ -5501,7 +5521,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 type="button"
                                 onClick={() => {
                                     setActiveMainTab('history_print');
-                                    fetchPrintHistoryData();
+                                    if (printHistoryLogs.length === 0) fetchPrintHistoryData(true);
                                 }}
                                 className={cn(
                                     "h-10 sm:h-11 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer active:scale-95",
@@ -5548,7 +5568,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 )}
                                 <button
                                     type="button"
-                                    onClick={fetchAllFinishedItems}
+                                    onClick={() => fetchAllFinishedItems(true)}
                                     className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider border border-slate-200 transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 flex-1 sm:flex-none"
                                     title="Segarkan Data Selesai"
                                 >
@@ -5574,7 +5594,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 )}
                                 <button
                                     type="button"
-                                    onClick={fetchPrintHistoryData}
+                                    onClick={() => fetchPrintHistoryData(true)}
                                     className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider border border-slate-200 transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 flex-1 sm:flex-none"
                                     title="Segarkan Riwayat Cetak"
                                 >
@@ -6634,7 +6654,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     </div>
 
                                     {/* Table */}
-                                    {isLoadingFinished ? (
+                                    {isLoadingFinished && finishedLogs.length === 0 ? (
                                         <div className="flex flex-col items-center justify-center py-16 text-slate-500">
                                             <RefreshCw className="w-8 h-8 animate-spin text-emerald-500 mb-3" />
                                             <p className="text-xs font-bold">Memuat data verifikasi real-time...</p>
@@ -6855,7 +6875,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                     </div>
 
                                     {/* Table */}
-                                    {isLoadingPrintHistory ? (
+                                    {isLoadingPrintHistory && printHistoryLogs.length === 0 ? (
                                         <div className="flex flex-col items-center justify-center py-16 text-slate-500">
                                             <RefreshCw className="w-8 h-8 animate-spin text-amber-500 mb-3" />
                                             <p className="text-xs font-bold">Memuat riwayat cetak...</p>
@@ -6928,7 +6948,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                 <div className="flex items-center justify-center gap-2 mx-auto">
                                                                     <button
                                                                         type="button"
-                                                                        onClick={() => handlePrintThermalLabel(log)}
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            handlePrintThermalLabel(log);
+                                                                        }}
                                                                         className="px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-black text-[11px] uppercase tracking-wider rounded-xl shadow-sm hover:shadow active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
                                                                         title="Cetak Ulang Label QR Thermal"
                                                                     >
@@ -6939,7 +6962,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                     {isDeveloper && (
                                                                         <button
                                                                             type="button"
-                                                                            onClick={() => handleRevertPrintHistory(log)}
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                handleRevertPrintHistory(log);
+                                                                            }}
                                                                             className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-black text-[11px] uppercase tracking-wider rounded-xl border border-blue-200 shadow-sm active:scale-95 transition-all flex items-center gap-1 cursor-pointer"
                                                                             title="Kembalikan ke antrian Data Selesai Diproses (Khusus Developer)"
                                                                         >
@@ -6951,7 +6977,10 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                                     {isDeveloper && (
                                                                         <button
                                                                             type="button"
-                                                                            onClick={() => handleDeletePrintHistory(log)}
+                                                                            onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            handleDeletePrintHistory(log);
+                                                                        }}
                                                                             className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-black text-[11px] uppercase tracking-wider rounded-xl border border-rose-200 shadow-sm active:scale-95 transition-all flex items-center gap-1 cursor-pointer"
                                                                             title="Hapus permanen riwayat cetak ini (Khusus Developer)"
                                                                         >
