@@ -387,16 +387,28 @@ export function CekRak() {
             const aggregatedMap = new Map<string, StockItem>();
             allData.forEach((item: StockItem) => {
                 const key = `${item.nama_produk}-${item.rak}`;
+                const mathTersedia = (item.masuk !== undefined && item.keluar !== undefined && (Number(item.masuk) > 0 || Number(item.keluar) > 0 || (Number(item.stok_awal) || 0) > 0))
+                    ? Math.max(0, (Number(item.stok_awal) || 0) + (Number(item.masuk) || 0) - (Number(item.keluar) || 0))
+                    : Number(item.tersedia) || 0;
+
                 if (aggregatedMap.has(key)) {
                     const existing = aggregatedMap.get(key)!;
-                    existing.tersedia += item.tersedia;
-                    // Note: We use the first ID we encounter for UI purposes
+                    existing.stok_awal = (existing.stok_awal || 0) + (Number(item.stok_awal) || 0);
+                    existing.masuk = (existing.masuk || 0) + (Number(item.masuk) || 0);
+                    existing.keluar = (existing.keluar || 0) + (Number(item.keluar) || 0);
+                    existing.tersedia = Math.max(0, (existing.stok_awal || 0) + (existing.masuk || 0) - (existing.keluar || 0));
                 } else {
-                    aggregatedMap.set(key, { ...item });
+                    aggregatedMap.set(key, {
+                        ...item,
+                        stok_awal: Number(item.stok_awal) || 0,
+                        masuk: Number(item.masuk) || 0,
+                        keluar: Number(item.keluar) || 0,
+                        tersedia: mathTersedia
+                    });
                 }
             });
 
-            const finalData = Array.from(aggregatedMap.values());
+            const finalData = Array.from(aggregatedMap.values()).filter(x => x.tersedia > 0);
             setItems(finalData);
             const data = finalData;
 
@@ -626,14 +638,27 @@ export function CekRak() {
             const aggregatedMap = new Map<string, any>();
             filteredData?.forEach((item: any) => {
                 const key = `${item.nama_produk}-${item.rak}`;
+                const mathTersedia = (item.masuk !== undefined && item.keluar !== undefined && (Number(item.masuk) > 0 || Number(item.keluar) > 0 || (Number(item.stok_awal) || 0) > 0))
+                    ? Math.max(0, (Number(item.stok_awal) || 0) + (Number(item.masuk) || 0) - (Number(item.keluar) || 0))
+                    : Number(item.tersedia) || 0;
+
                 if (aggregatedMap.has(key)) {
                     const existing = aggregatedMap.get(key);
-                    existing.tersedia += item.tersedia;
+                    existing.stok_awal = (existing.stok_awal || 0) + (Number(item.stok_awal) || 0);
+                    existing.masuk = (existing.masuk || 0) + (Number(item.masuk) || 0);
+                    existing.keluar = (existing.keluar || 0) + (Number(item.keluar) || 0);
+                    existing.tersedia = Math.max(0, (existing.stok_awal || 0) + (existing.masuk || 0) - (existing.keluar || 0));
                 } else {
-                    aggregatedMap.set(key, { ...item });
+                    aggregatedMap.set(key, {
+                        ...item,
+                        stok_awal: Number(item.stok_awal) || 0,
+                        masuk: Number(item.masuk) || 0,
+                        keluar: Number(item.keluar) || 0,
+                        tersedia: mathTersedia
+                    });
                 }
             });
-            const finalPullable = Array.from(aggregatedMap.values());
+            const finalPullable = Array.from(aggregatedMap.values()).filter(x => x.tersedia > 0);
 
             setAllPullableItems(finalPullable);
             setPullSearchResults(finalPullable);
@@ -702,15 +727,28 @@ export function CekRak() {
             const aggregatedMap = new Map<string, any>();
             filteredData?.forEach((item: any) => {
                 const key = `${item.nama_produk}-${item.rak}`;
+                const mathTersedia = (item.masuk !== undefined && item.keluar !== undefined && (Number(item.masuk) > 0 || Number(item.keluar) > 0 || (Number(item.stok_awal) || 0) > 0))
+                    ? Math.max(0, (Number(item.stok_awal) || 0) + (Number(item.masuk) || 0) - (Number(item.keluar) || 0))
+                    : Number(item.tersedia) || 0;
+
                 if (aggregatedMap.has(key)) {
                     const existing = aggregatedMap.get(key);
-                    existing.tersedia += item.tersedia;
+                    existing.stok_awal = (existing.stok_awal || 0) + (Number(item.stok_awal) || 0);
+                    existing.masuk = (existing.masuk || 0) + (Number(item.masuk) || 0);
+                    existing.keluar = (existing.keluar || 0) + (Number(item.keluar) || 0);
+                    existing.tersedia = Math.max(0, (existing.stok_awal || 0) + (existing.masuk || 0) - (existing.keluar || 0));
                 } else {
-                    aggregatedMap.set(key, { ...item });
+                    aggregatedMap.set(key, {
+                        ...item,
+                        stok_awal: Number(item.stok_awal) || 0,
+                        masuk: Number(item.masuk) || 0,
+                        keluar: Number(item.keluar) || 0,
+                        tersedia: mathTersedia
+                    });
                 }
             });
 
-            setPullSearchResults(Array.from(aggregatedMap.values()));
+            setPullSearchResults(Array.from(aggregatedMap.values()).filter(x => x.tersedia > 0));
         } catch (err) {
             console.error('Error searching pull items:', err);
         } finally {
@@ -749,24 +787,44 @@ export function CekRak() {
             }
             const { data } = await supabase
                 .from('stock_items')
-                .select('tersedia, keluar')
+                .select('id, stok_awal, masuk, keluar, tersedia, packing')
                 .eq('nama_produk', item.nama_produk)
                 .eq('rak', item.rak)
                 .eq('status', 'Aktif');
 
-            const freshTersedia = data?.reduce((sum, r) => sum + (r.tersedia || 0), 0) ?? item.tersedia;
-            const freshKeluar = data?.reduce((sum, r) => sum + (r.keluar || 0), 0) ?? item.keluar;
+            let totalAwal = 0;
+            let totalMasuk = 0;
+            let totalKeluar = 0;
+            let totalTersedia = 0;
+
+            (data || []).forEach(r => {
+                totalAwal += Number(r.stok_awal) || 0;
+                totalMasuk += Number(r.masuk) || 0;
+                totalKeluar += Number(r.keluar) || 0;
+                totalTersedia += Number(r.tersedia) || 0;
+            });
+
+            const formulaTersedia = Math.max(0, totalAwal + totalMasuk - totalKeluar);
+            const freshTersedia = (totalMasuk > 0 || totalKeluar > 0 || totalAwal > 0)
+                ? formulaTersedia
+                : totalTersedia;
+
+            const freshKeluar = totalKeluar;
+            const freshPacking = data?.[0]?.packing || item.packing;
 
             const updatedItem = {
                 ...item,
+                stok_awal: totalAwal,
+                masuk: totalMasuk,
                 tersedia: freshTersedia,
-                keluar: freshKeluar
+                keluar: freshKeluar,
+                packing: freshPacking
             };
 
             // Update allPullableItems & search results in state real-time
             setAllPullableItems(prev => prev.map(x => {
                 if (x.nama_produk === item.nama_produk && x.rak === item.rak) {
-                    return { ...x, tersedia: freshTersedia };
+                    return { ...x, tersedia: freshTersedia, packing: freshPacking };
                 }
                 return x;
             }));

@@ -634,9 +634,10 @@ export function PindahDataBarang() {
 
         if (aggregatedMap.has(key)) {
             const existing = aggregatedMap.get(key)!;
-            existing.tersedia += verifiedTersedia;
+            existing.stok_awal = (existing.stok_awal || 0) + (Number(item.stok_awal) || 0);
             existing.masuk = (existing.masuk || 0) + (Number(item.masuk) || 0);
             existing.keluar = (existing.keluar || 0) + (Number(item.keluar) || 0);
+            existing.tersedia = (existing.stok_awal || 0) + (existing.masuk || 0) - (existing.keluar || 0);
         } else {
             aggregatedMap.set(key, {
                 id: item.id,
@@ -1643,19 +1644,19 @@ export function PindahDataBarang() {
       const uniqueSkus = Array.from(movedBySku.keys());
 
       // Query existing stock_items in destRak for these SKUs in chunks of 50
-      const existingDestStocks: { id: string; nama_produk: string; tersedia: number; masuk: number }[] = [];
+      const existingDestStocks: { id: string; nama_produk: string; stok_awal?: number; masuk?: number; keluar?: number; tersedia: number }[] = [];
       const SKU_CHUNK = 50;
       for (let i = 0; i < uniqueSkus.length; i += SKU_CHUNK) {
         const skuBatch = uniqueSkus.slice(i, i + SKU_CHUNK);
         const { data: destData } = await supabase
           .from('stock_items')
-          .select('id, nama_produk, tersedia, masuk')
+          .select('id, nama_produk, stok_awal, masuk, keluar, tersedia')
           .eq('rak', destRak)
           .in('nama_produk', skuBatch);
         if (destData) existingDestStocks.push(...destData);
       }
 
-      const existingDestMap = new Map<string, { id: string; nama_produk: string; tersedia: number; masuk: number }>();
+      const existingDestMap = new Map<string, { id: string; nama_produk: string; stok_awal?: number; masuk?: number; keluar?: number; tersedia: number }>();
       existingDestStocks.forEach(d => existingDestMap.set(d.nama_produk, d));
 
       const newDestItemsToInsert: any[] = [];
@@ -1664,12 +1665,14 @@ export function PindahDataBarang() {
       movedBySku.forEach(({ totalQty, sample }, sku) => {
         const existing = existingDestMap.get(sku);
         if (existing) {
+          const newMasuk = (existing.masuk || 0) + totalQty;
+          const newTersedia = Math.max(0, (existing.stok_awal || 0) + newMasuk - (existing.keluar || 0));
           existingDestUpdates.push(
             DatabaseService.updateStockItem(
               existing.id,
               {
-                masuk: (existing.masuk || 0) + totalQty,
-                tersedia: (existing.tersedia || 0) + totalQty
+                masuk: newMasuk,
+                tersedia: newTersedia
               },
               writeMode
             )
