@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
@@ -41,11 +42,12 @@ export function Modal({
   }, [isOpen]);
 
   if (!isOpen) return null;
+  if (typeof document === 'undefined') return null;
 
   // Full-screen modal (Pilih Lokasi Rak) — completely separate layout
   if (size === 'full') {
-    return (
-      <div className="fixed inset-0 z-[9999]">
+    return createPortal(
+      <div className="fixed inset-0 z-[99999]">
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
         <div className="relative flex flex-col w-full h-full bg-white z-10">
           {/* Full-screen header */}
@@ -60,7 +62,8 @@ export function Modal({
             {children}
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
     );
   }
 
@@ -78,43 +81,43 @@ export function Modal({
     full: 'max-w-none'
   };
 
-  return (
-    <div className="fixed inset-0 z-[9999] overflow-y-auto">
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] overflow-y-auto">
       {/* Backdrop */}
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
       {/* Centering wrapper — always vertically + horizontally centered */}
-      <div className="flex min-h-full items-center justify-center p-4">
+      <div className="flex min-h-full items-center justify-center p-3 sm:p-4">
         {/* Modal card */}
         <div className={cn(
-          'relative flex flex-col bg-white text-left shadow-2xl transform transition-all w-full rounded-3xl',
+          'relative flex flex-col bg-white text-left shadow-2xl transform transition-all w-full rounded-3xl my-auto',
           !overflowVisible && 'overflow-hidden',
-          fullHeight ? 'max-h-[90vh]' : 'max-h-[85vh]',
+          fullHeight ? 'max-h-[92vh]' : 'max-h-[88vh]',
           sizeClasses[size]
         )}>
           {/* Header — premium variant */}
           {headerVariant === 'premium' ? (
-            <div className="flex items-center gap-3 p-5 pb-4 bg-white border-b border-gray-100 flex-shrink-0">
+            <div className="flex items-center gap-3 p-4 sm:p-5 pb-4 bg-white border-b border-gray-100 flex-shrink-0">
               {icon && (
-                <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md">
+                <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md flex-shrink-0">
                   {icon}
                 </div>
               )}
-              <div className="flex-1">
-                <h3 className="text-lg font-black text-gray-900 tracking-tight">{title}</h3>
-                {subtitle && <p className="text-xs text-gray-500">{subtitle}</p>}
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base sm:text-lg font-black text-gray-900 tracking-tight truncate">{title}</h3>
+                {subtitle && <p className="text-xs text-gray-500 truncate">{subtitle}</p>}
               </div>
               <button 
                 onClick={onClose} 
-                className="w-8 h-8 rounded-full hover:bg-gray-100 flex items-center justify-center transition-colors"
+                className="w-8 h-8 rounded-full hover:bg-gray-100 flex items-center justify-center transition-colors flex-shrink-0 text-gray-400 hover:text-gray-600"
               >
-                <X className="h-5 w-5 text-gray-400" />
+                <X className="h-5 w-5" />
               </button>
             </div>
           ) : (
             /* Header — default/blue variant */
             <div className="flex items-center justify-between p-4 px-6 bg-blue-600 text-white flex-shrink-0">
-              <h3 className="text-xl font-black uppercase tracking-tight">{title}</h3>
+              <h3 className="text-lg sm:text-xl font-black uppercase tracking-tight truncate">{title}</h3>
               <button onClick={onClose} className="p-2 hover:bg-white/20 rounded-xl transition-all">
                 <X className="h-6 w-6" />
               </button>
@@ -122,11 +125,12 @@ export function Modal({
           )}
 
           {/* Scrollable body */}
-          <div className={cn(overflowVisible ? "overflow-visible flex-1" : "overflow-y-auto flex-1", padding)}>
+          <div className={cn(overflowVisible ? "overflow-visible flex-1 min-h-0" : "overflow-y-auto flex-1 min-h-0", padding)}>
             {children}
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

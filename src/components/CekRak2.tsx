@@ -4163,6 +4163,8 @@ export function CekRak2() {
         setIsLoadingOutLogs(true);
         setSelectedOutLog(null);
         try {
+            const clean = sku.trim();
+
             // 1. Dapatkan daftar log_id yang SEDANG AKTIF di wadah karantina revisi
             const activeKarantinaLogIds = new Set<string>();
             try {
@@ -4178,32 +4180,66 @@ export function CekRak2() {
                 console.warn('Gagal memuat id karantina aktif untuk filter:', kErr);
             }
 
-            // 2. Ambil data log OUT dan MOVE (REVISI_KARANTINA)
-            const { data, error } = await supabase
+            // 2. Kumpulkan candidate SKU dari tabel products & stock_items agar query ke database_log sangat cepat dan tidak timeout
+            const candidateSkus = new Set<string>([clean, clean.toUpperCase()]);
+            try {
+                const [pRes, sRes] = await Promise.all([
+                    supabase.from('products').select('nama').ilike('nama', `%${clean}%`).limit(25),
+                    supabase.from('stock_items').select('nama_produk').ilike('nama_produk', `%${clean}%`).limit(25)
+                ]);
+                (pRes.data || []).forEach((p: any) => p.nama && candidateSkus.add(p.nama));
+                (sRes.data || []).forEach((s: any) => s.nama_produk && candidateSkus.add(s.nama_produk));
+            } catch (candErr) {
+                console.warn('Gagal mencari kandidat SKU dari master:', candErr);
+            }
+
+            const skuList = Array.from(candidateSkus);
+
+            // 3. Query database_log dengan .in('sku', skuList) tanpa .order('created_at') untuk menghindari PostgreSQL Statement Timeout
+            let { data, error } = await supabase
                 .from('database_log')
                 .select('*')
-                .ilike('sku', `%${sku.trim()}%`)
+                .in('sku', skuList)
                 .in('type', ['OUT', 'MOVE'])
-                .order('created_at', { ascending: false })
                 .limit(100);
 
-            if (error) throw error;
+            if (error) {
+                console.warn('Error in query, fallback to prefix ilike:', error);
+            }
 
-            // Filter log yang relevan untuk ditarik
+            // Fallback jika tidak ada data dan clean >= 3 karakter
+            if ((!data || data.length === 0) && clean.length >= 3) {
+                const { data: fallbackData } = await supabase
+                    .from('database_log')
+                    .select('*')
+                    .ilike('sku', `${clean}%`)
+                    .in('type', ['OUT', 'MOVE'])
+                    .limit(50);
+                if (fallbackData && fallbackData.length > 0) {
+                    data = fallbackData;
+                }
+            }
+
+            // 4. Filter log yang relevan untuk ditarik
             const filtered = (data || []).filter(log => {
                 const logIdStr = String(log.id);
                 const uName = (log.user_name || log.user || '').toLowerCase().trim();
                 const gudang = (log.gudang || '').toUpperCase().trim();
-                const status = (log.status || log.keterangan || '').toUpperCase().trim();
+                const status = (log.status || '').toUpperCase().trim();
+                const logUpdate = (log.log_update_user || log.keterangan || '').toUpperCase().trim();
                 const type = (log.type || '').toUpperCase().trim();
 
-                // Jangan tampilkan jika log ini SEDANG AKTIF di wadah karantina
-                if (activeKarantinaLogIds.has(logIdStr)) {
+                // Jangan tampilkan jika log ini bertipe MOVE dan SEDANG AKTIF di wadah karantina
+                if (type === 'MOVE' && activeKarantinaLogIds.has(logIdStr)) {
                     return false;
                 }
 
-                // Jika type MOVE, hanya tampilkan jika log tersebut bekas REVISI_KARANTINA yang sudah dibatalkan/dihapus
-                if (type === 'MOVE' && status !== 'REVISI_KARANTINA') {
+                // Jika type MOVE: tampilkan jika statusnya REVISI_KARANTINA atau catatan logUpdate mengandung kata REVISI KARANTINA / KARANTINA / DIPULIHKAN
+                const isRevisiKarantina = status === 'REVISI_KARANTINA' || 
+                                          logUpdate.includes('REVISI KARANTINA') || 
+                                          logUpdate.includes('DIPULIHKAN') ||
+                                          logUpdate.includes('KARANTINA');
+                if (type === 'MOVE' && !isRevisiKarantina) {
                     return false;
                 }
 
@@ -4223,6 +4259,13 @@ export function CekRak2() {
                 }
 
                 return true;
+            });
+
+            // 5. Urutkan secara akurat berdasarkan Tanggal Transaksi OUT (tgl + waktu) terbaru di JavaScript
+            filtered.sort((a, b) => {
+                const timeA = (a.tgl || '') + ' ' + (a.waktu || '') + ' ' + (a.created_at || '');
+                const timeB = (b.tgl || '') + ' ' + (b.waktu || '') + ' ' + (b.created_at || '');
+                return timeB.localeCompare(timeA);
             });
 
             setOutTraceLogs(filtered.slice(0, 30));
@@ -7864,20 +7907,47 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                         {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
                                                     </div>
                                                     <div>
-                                                        <div className="flex items-center gap-2">
+                                                        <div className="flex items-center gap-1.5 flex-wrap">
                                                             <span className="font-black text-xs text-slate-900 uppercase">
                                                                 {log.sku}
                                                             </span>
-                                                            <span className="text-[10px] font-bold text-slate-400">
-                                                                ID #{log.id}
+                                                            {log.is_adjustment && (
+                                                                <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                                                                    PENYESUAIAN
+                                                                </span>
+                                                            )}
+                                                            <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded border ${
+                                                                (log.type || '').toUpperCase() === 'MOVE'
+                                                                    ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                                                    : 'bg-rose-50 text-rose-700 border-rose-200'
+                                                            }`}>
+                                                                {log.type || 'OUT'}
+                                                            </span>
+                                                            <span className="text-[10px] font-bold text-slate-400 font-mono">
+                                                                #{String(log.id).substring(0, 8)}
                                                             </span>
                                                         </div>
-                                                        <p className="text-[11px] text-slate-500 mt-0.5">
-                                                            Tgl: <strong>{log.tgl_scan || log.tgl || '-'}</strong> • User: <strong>{log.user_name || '-'}</strong> • Rak: {log.rak || '-'}
-                                                        </p>
-                                                        {log.keterangan && (
-                                                            <p className="text-[10px] text-slate-400 italic truncate max-w-sm mt-0.5">
-                                                                Ket: {log.keterangan}
+                                                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-slate-600 mt-1">
+                                                            <span>
+                                                                Tgl Transaksi: <strong className="text-slate-800">{log.tgl || '-'}</strong> {log.waktu && <span className="text-slate-500 font-mono text-[10px]">({log.waktu})</span>}
+                                                            </span>
+                                                            {log.tgl_scan && (
+                                                                <span>
+                                                                    • Tgl Scan: <strong className="text-slate-700">{log.tgl_scan}</strong>
+                                                                </span>
+                                                            )}
+                                                            <span>
+                                                                • Rak: <strong className="text-slate-800">{log.rak || '-'}</strong>
+                                                            </span>
+                                                            {log.user_name && (
+                                                                <span>
+                                                                    • User: <strong className="text-slate-700">{log.user_name}</strong>
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        {(log.log_update_user || log.keterangan) && (
+                                                            <p className="text-[10px] text-slate-500 italic truncate max-w-md mt-1 bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
+                                                                {log.log_update_user || log.keterangan}
                                                             </p>
                                                         )}
                                                     </div>

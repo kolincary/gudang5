@@ -1391,6 +1391,37 @@ export const DatabaseService = {
     if (idStr) matchIds.add(idStr);
     if (origIdStr && origIdStr !== 'null' && origIdStr !== 'undefined') matchIds.add(origIdStr);
 
+    let finalOrigIdStr = origIdStr;
+    if (!finalOrigIdStr && isNumericId) {
+      try {
+        const { data: itemData } = await supabase
+          .from('karantina_revisi_out')
+          .select('original_log_id')
+          .eq('id', Number(idStr))
+          .maybeSingle();
+        if (itemData?.original_log_id) {
+          finalOrigIdStr = String(itemData.original_log_id).trim();
+          matchIds.add(finalOrigIdStr);
+        }
+      } catch (errFind) {
+        console.warn('Error resolving original_log_id for delete:', errFind);
+      }
+    } else if (!finalOrigIdStr && isUuid) {
+      try {
+        const { data: qItem } = await supabase
+          .from('quarantined_items')
+          .select('original_row_id')
+          .eq('id', idStr)
+          .maybeSingle();
+        if (qItem?.original_row_id) {
+          finalOrigIdStr = String(qItem.original_row_id).trim();
+          matchIds.add(finalOrigIdStr);
+        }
+      } catch (errFindQ) {
+        console.warn('Error resolving original_row_id for delete:', errFindQ);
+      }
+    }
+
     // 1. Delete from LocalStorage strictly by any matching id or original_log_id
     if (typeof window !== 'undefined') {
       try {
@@ -1419,8 +1450,8 @@ export const DatabaseService = {
         if (isNumericId) {
           await supabase.from('karantina_revisi_out').delete().eq('id', Number(idStr));
         }
-        if (origIdStr) {
-          await supabase.from('karantina_revisi_out').delete().eq('original_log_id', origIdStr);
+        if (finalOrigIdStr) {
+          await supabase.from('karantina_revisi_out').delete().eq('original_log_id', finalOrigIdStr);
         }
         if (!isNumericId && idStr) {
           await supabase.from('karantina_revisi_out').delete().eq('original_log_id', idStr);
@@ -1434,10 +1465,10 @@ export const DatabaseService = {
         if (isUuid) {
           await supabase.from('quarantined_items').delete().eq('id', idStr);
         }
-        if (origIdStr) {
-          await supabase.from('quarantined_items').delete().eq('original_row_id', origIdStr);
+        if (finalOrigIdStr) {
+          await supabase.from('quarantined_items').delete().eq('original_row_id', finalOrigIdStr);
         }
-        if (idStr && idStr !== origIdStr) {
+        if (idStr && idStr !== finalOrigIdStr) {
           await supabase.from('quarantined_items').delete().eq('original_row_id', idStr);
         }
       } catch (e) {
@@ -1446,8 +1477,11 @@ export const DatabaseService = {
 
       // 4. Auto-restore original log in database_log if originalLogId exists
       const targetLogIds = new Set<string>();
-      if (origIdStr && origIdStr !== 'null' && origIdStr !== 'undefined') targetLogIds.add(origIdStr);
-      if (isUuid) targetLogIds.add(idStr);
+      if (finalOrigIdStr && finalOrigIdStr !== 'null' && finalOrigIdStr !== 'undefined') targetLogIds.add(finalOrigIdStr);
+      if (isUuid && idStr !== finalOrigIdStr) {
+        // Only add if it's actually a log ID
+        targetLogIds.add(idStr);
+      }
 
       for (const tLogId of targetLogIds) {
         try {

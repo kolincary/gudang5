@@ -271,10 +271,7 @@ export function InputBarangKeluar() {
     const isMovingMinusRef = React.useRef(false);
     const [stockItems, setStockItems] = useState<StockItem[]>([]);
     const [rackLocations, setRackLocations] = useState<RackLocation[]>([]);
-    const [devMode, setDevMode] = useState(() => {
-        const isDevUser = userEmail?.toLowerCase().includes('devmode');
-        return isDevUser || localStorage.getItem('devmode') === 'true';
-    });
+    const [devMode, setDevMode] = useState<boolean>(false);
     // States for Massal 2
     const [isMassal2ModalOpen, setIsMassal2ModalOpen] = useState(false);
     const [massal2InputText, setMassal2InputText] = useState('');
@@ -732,10 +729,8 @@ export function InputBarangKeluar() {
 
     useEffect(() => {
         let keySequence = '';
-        let devModeSequence = '';
         let showMenuSequence = '';
         const targetSequence = 'SHOW';
-        const devModeTarget = 'DEVMODE';
         const showMenuTarget = 'SHOWMENU';
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -743,19 +738,14 @@ export function InputBarangKeluar() {
                 const target = event.target as HTMLElement;
                 if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
                     keySequence = ''; // Reset jika user mengetik di tempat lain
-                    devModeSequence = '';
                     showMenuSequence = '';
                     return;
                 }
                 const char = event.key.toUpperCase();
                 keySequence += char;
-                devModeSequence += char;
                 showMenuSequence += char;
                 if (keySequence.length > targetSequence.length) {
                     keySequence = keySequence.slice(-targetSequence.length);
-                }
-                if (devModeSequence.length > devModeTarget.length) {
-                    devModeSequence = devModeSequence.slice(-devModeTarget.length);
                 }
                 if (showMenuSequence.length > showMenuTarget.length) {
                     showMenuSequence = showMenuSequence.slice(-showMenuTarget.length);
@@ -778,20 +768,6 @@ export function InputBarangKeluar() {
                 if (keySequence === targetSequence) {
                     setShowAdvancedButtons(prev => !prev);
                     keySequence = ''; // Reset sequence setelah berhasil
-                }
-                if (devModeSequence === devModeTarget) {
-                    setDevMode(prev => {
-                        const next = !prev;
-                        if (next) {
-                            localStorage.setItem('devmode', 'true');
-                            showToast('Developer mode diaktifkan!', 'success');
-                        } else {
-                            localStorage.removeItem('devmode');
-                            showToast('Developer mode dinonaktifkan.', 'warning');
-                        }
-                        return next;
-                    });
-                    devModeSequence = '';
                 }
             }
         };
@@ -947,6 +923,43 @@ export function InputBarangKeluar() {
     });
     const [showColumnToggle, setShowColumnToggle] = useState(false);
     const columnToggleRef = useRef<HTMLDivElement>(null);
+
+    // DevMode state detection - default non-aktif saat buka/refresh halaman (kolom tgl_scan terkunci)
+    const [isDevMode, setIsDevMode] = useState<boolean>(false);
+
+    // Listener ketik 'devmode' dari keyboard untuk toggle aktif/nonaktif
+    useEffect(() => {
+        let keyBuffer = '';
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Backspace') {
+                keyBuffer = keyBuffer.slice(0, -1);
+                return;
+            }
+            if (event.key === 'Escape') {
+                keyBuffer = '';
+                return;
+            }
+            if (event.key.length !== 1) return;
+            keyBuffer = (keyBuffer + event.key.toLowerCase()).slice(-25);
+            if (keyBuffer.endsWith('devmode')) {
+                keyBuffer = '';
+                setDevMode(prev => {
+                    const next = !prev;
+                    setIsDevMode(next);
+                    if (next) {
+                        setVisibleColumns(cols => ({ ...cols, tgl_scan: true }));
+                        showToast('🚀 Dev Mode Aktif! Kolom Tgl Scan dibuka & dapat diinput manual.', 'success');
+                    } else {
+                        showToast('🔒 Dev Mode Dinonaktifkan. Kolom Tgl Scan dikunci.', 'warning');
+                    }
+                    return next;
+                });
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
     const showToast = (message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
         setToast({ isOpen: true, message, type });
         setTimeout(() => {
@@ -1208,19 +1221,7 @@ export function InputBarangKeluar() {
     // ====================================================================
     // END: FUNGSI YANG DIPERBAIKI
     // ====================================================================
-    useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => {
-            if (columnToggleRef.current && !columnToggleRef.current.contains(event.target as Node)) {
-                setShowColumnToggle(false);
-            }
-        };
-        if (showColumnToggle) {
-            document.addEventListener('mousedown', handleClickOutside);
-        }
-        return () => {
-            document.removeEventListener('mousedown', handleClickOutside);
-        };
-    }, [showColumnToggle]);
+
     const addRow = () => {
         const firstRowGudang = rows.length > 0 ? rows[0].gudang : '';
         const firstRowTanggal = rows.length > 0 ? rows[0].tanggal : currentDate;
@@ -1430,7 +1431,8 @@ export function InputBarangKeluar() {
             }
 
             const uniqueVariations = Array.from(variations);
-            console.log(`🔍 Checking batch stock with date variations:`, uniqueVariations);
+            const rakNorm = rak.trim().toUpperCase();
+            console.log(`🔍 Checking batch stock for rak=${rakNorm} with date variations:`, uniqueVariations);
 
             // Special check for TEMP rack: stock_items direct check
             if (rak.toUpperCase().startsWith('TEMP')) {
@@ -1446,28 +1448,43 @@ export function InputBarangKeluar() {
                 }
             }
 
-            const { data: logs, error } = await supabase
+            // Query 1: logs where rak matches (IN, OUT, MOVE)
+            const { data: logsRak, error: errRak } = await supabase
                 .from('database_log')
-                .select('jumlah, type, tgl_scan, rak, rak_tujuan, rak_asal')
+                .select('id, jumlah, type, tgl_scan, rak, sub_rak')
                 .ilike('sku', sku.trim())
-                .or(`rak.ilike.${rak.trim()},rak_tujuan.ilike.${rak.trim()}`)
+                .ilike('rak', rak.trim())
                 .in('tgl_scan', uniqueVariations);
 
-            if (error) {
-                console.error('Error fetching batch logs:', error);
-            }
+            // Query 2: logs where sub_rak matches
+            const { data: logsSubRak, error: errSubRak } = await supabase
+                .from('database_log')
+                .select('id, jumlah, type, tgl_scan, rak, sub_rak')
+                .ilike('sku', sku.trim())
+                .ilike('sub_rak', rak.trim())
+                .in('tgl_scan', uniqueVariations);
 
-            let totalIn = (logs || [])
-                .filter(l => l.type === 'IN' || (l.type === 'MOVE' && ((l.rak_tujuan || l.rak || '').trim().toUpperCase() === rak.trim().toUpperCase())))
+            if (errRak) console.error('Error fetching batch logs (rak):', errRak);
+            if (errSubRak) console.error('Error fetching batch logs (sub_rak):', errSubRak);
+
+            // Merge and deduplicate by id
+            const logMap = new Map<string, any>();
+            (logsRak || []).forEach(l => { if (l.id) logMap.set(l.id, l); });
+            (logsSubRak || []).forEach(l => { if (l.id) logMap.set(l.id, l); });
+            const allLogs = Array.from(logMap.values());
+
+            let totalIn = allLogs
+                .filter(l => l.type === 'IN')
                 .reduce((sum, l) => sum + (l.jumlah || 0), 0);
 
-            let totalOut = (logs || [])
-                .filter(l => l.type === 'OUT' && (l.rak || '').trim().toUpperCase() === rak.trim().toUpperCase())
+            let totalOut = allLogs
+                .filter(l => l.type === 'OUT')
                 .reduce((sum, l) => sum + (l.jumlah || 0), 0);
 
             let sisa = totalIn - totalOut;
 
             if (totalIn > 0) {
+                console.log(`✅ Batch check found: totalIn=${totalIn}, totalOut=${totalOut}, sisa=${sisa}`);
                 return {
                     sisa: Math.max(0, sisa),
                     hasIn: true
@@ -1475,6 +1492,7 @@ export function InputBarangKeluar() {
             }
 
             // Fallback 1: Cek stok fisik yang tersedia langsung di stock_items untuk rak tersebut
+            // Jika stock_items menunjukkan ada stok tersedia, berarti pernah ada IN (data stok sumber kebenaran)
             const { data: currentStock } = await supabase
                 .from('stock_items')
                 .select('tersedia')
@@ -1483,11 +1501,41 @@ export function InputBarangKeluar() {
                 .limit(1);
 
             if (currentStock && currentStock.length > 0 && (currentStock[0].tersedia || 0) > 0) {
-                console.log(`📦 Fallback to available rack stock in stock_items for ${sku} in ${rak}: ${currentStock[0].tersedia}`);
+                console.log(`📦 Fallback: stock_items shows tersedia=${currentStock[0].tersedia} for ${sku} in ${rak}. Treating as hasIn=true.`);
                 return { sisa: currentStock[0].tersedia, hasIn: true };
             }
 
-            // Fallback 2: Auto-Bridge SO Fallback for Batch Stock: If no valid batch in origin rak, check the TEMP rack
+            // Fallback 2: Query tanpa filter tgl_scan — cek apakah pernah ada IN di rak ini
+            // Ini untuk kasus di mana tgl_scan tidak cocok format tapi stok fisik ada
+            const { data: anyInLogs } = await supabase
+                .from('database_log')
+                .select('jumlah, type, tgl_scan')
+                .ilike('sku', sku.trim())
+                .ilike('rak', rak.trim())
+                .eq('type', 'IN')
+                .limit(5);
+
+            if (anyInLogs && anyInLogs.length > 0) {
+                // Ada log IN di rak ini tanpa filter tanggal — tgl_scan mungkin format berbeda
+                // Hitung total IN dan OUT semua batch di rak ini
+                const { data: allRakLogs } = await supabase
+                    .from('database_log')
+                    .select('jumlah, type')
+                    .ilike('sku', sku.trim())
+                    .ilike('rak', rak.trim())
+                    .in('type', ['IN', 'OUT']);
+
+                const totalRakIn = (allRakLogs || []).filter(l => l.type === 'IN').reduce((s, l) => s + (l.jumlah || 0), 0);
+                const totalRakOut = (allRakLogs || []).filter(l => l.type === 'OUT').reduce((s, l) => s + (l.jumlah || 0), 0);
+                const sisaRak = totalRakIn - totalRakOut;
+
+                if (sisaRak > 0) {
+                    console.log(`📦 Fallback2: rak-level stock (ignoring tgl_scan) = ${sisaRak}. Date format mismatch suspected.`);
+                    return { sisa: sisaRak, hasIn: true };
+                }
+            }
+
+            // Fallback 3: Auto-Bridge SO Fallback for Batch Stock: If no valid batch in origin rak, check the TEMP rack
             if (!rak.toUpperCase().startsWith('TEMP') && isOpnameZoneActive(rak)) {
                 const tempRak = getTempRackForPrefix(rak);
                 if (tempRak) {
@@ -1505,6 +1553,7 @@ export function InputBarangKeluar() {
                 }
             }
 
+            console.warn(`❌ checkBatchStock: no stock found for ${sku} in rak=${rak} with tgl_scan=${tglScan}`);
             return {
                 sisa: 0,
                 hasIn: false
@@ -1747,11 +1796,15 @@ export function InputBarangKeluar() {
                         .ilike('sku', row.nama_produk.trim())
                         .in('tgl_scan', [...new Set(variations)])
                         .eq('type', 'IN')
-                        .limit(1);
+                        .limit(5);
+
+                    const foundOtherRacks = (otherRacks || [])
+                        .map(r => (r.rak || '').trim())
+                        .filter(r => r && r.toUpperCase() !== row.rak.trim().toUpperCase());
 
                     let errorMsg = `Barang "${row.nama_produk}" dengan Tgl Scan ${row.tgl_scan} TIDAK ditemukan masuk di rak ${row.rak}.`;
-                    if (otherRacks && otherRacks.length > 0) {
-                        errorMsg += ` Seharusnya cek di rak ${otherRacks[0].rak}.`;
+                    if (foundOtherRacks.length > 0) {
+                        errorMsg += ` Seharusnya cek di rak ${foundOtherRacks[0]}.`;
                     }
 
                     scanDateErrors.push(errorMsg);
@@ -3173,52 +3226,7 @@ export function InputBarangKeluar() {
                         </div>
                     </div>
                 </div>
-                {/* Column toggle overlay - Only for Mobile */}
-                <div className="lg:hidden">
-                    {showColumnToggle && (
-                        <div
-                            ref={columnToggleRef}
-                            className="fixed inset-x-4 top-1/2 transform -translate-y-1/2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-[500] max-h-[70vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200"
-                        >
-                            <div className="p-4 border-b border-gray-100 bg-blue-600 text-white flex justify-between items-center sticky top-0">
-                                <h3 className="font-black text-sm uppercase tracking-wider">Tampilkan Kolom</h3>
-                                <button onClick={() => setShowColumnToggle(false)} className="p-1 hover:bg-white/10 rounded-full">
-                                    <X className="h-5 w-5" />
-                                </button>
-                            </div>
-                            <div className="p-4 grid grid-cols-1 gap-1">
-                                {[
-                                    { key: 'no', label: 'Nomor Urut' },
-                                    { key: 'tanggal', label: 'Tanggal Transaksi' },
-                                    { key: 'nama_produk', label: 'Nama Produk / SKU' },
-                                    { key: 'jumlah', label: 'Jumlah Barang' },
-                                    { key: 'gudang', label: 'Gudang' },
-                                    { key: 'rak', label: 'Lokasi Rak' },
-                                    { key: 'stok_tersedia', label: 'Stok Saat Ini' },
-                                    { key: 'total_stok', label: 'Estimasi Sisa' },
-                                    { key: 'tgl_scan', label: 'Waktu Scan' },
-                                    { key: 'user_name', label: 'User Penginput' },
-                                    { key: 'aksi', label: 'Aksi Hapus' }
-                                ].map(({ key, label }) => (
-                                    <label key={key} className="flex items-center space-x-3 p-3 hover:bg-gray-50 rounded-xl cursor-pointer transition-colors border border-transparent hover:border-gray-100">
-                                        <input
-                                            type="checkbox"
-                                            checked={visibleColumns[key as keyof typeof visibleColumns]}
-                                            onChange={() => toggleColumn(key as keyof typeof visibleColumns)}
-                                            className="w-5 h-5 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500 transition-all"
-                                        />
-                                        <span className="text-sm font-bold text-gray-700">{label}</span>
-                                    </label>
-                                ))}
-                            </div>
-                            <div className="p-4 border-t border-gray-100 bg-gray-50">
-                                <Button onClick={resetColumns} className="w-full h-11 bg-white text-gray-600 border border-gray-200 font-bold rounded-xl active:scale-95 shadow-sm">
-                                    Reset Pengaturan Kolom
-                                </Button>
-                            </div>
-                        </div>
-                    )}
-                </div>
+
                 {/* Action Toolbar (Visible on Desktop & Mobile, scrollable) */}
                 <div className="flex bg-white py-2 px-3 rounded-full border border-gray-100 shadow-[0_2px_15px_-5px_rgba(0,0,0,0.05)] justify-between items-center w-full mb-4 overflow-x-auto no-scrollbar gap-4">
                     <div className="flex items-center gap-2 flex-nowrap">
@@ -3317,52 +3325,15 @@ export function InputBarangKeluar() {
                     </div>
 
                     <div className="flex items-center gap-3 flex-shrink-0">
-                        <div className="relative pl-2 border-l border-gray-100">
+                        <div className="pl-2 border-l border-gray-100">
                             <Button
-                                onClick={() => setShowColumnToggle(!showColumnToggle)}
-                                className="h-10 px-5 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-full transition-all flex items-center justify-center gap-2 shadow-none border-none"
+                                onClick={() => setShowColumnToggle(true)}
+                                className="h-10 px-5 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-full transition-all flex items-center justify-center gap-2 shadow-none border-none active:scale-95 cursor-pointer"
+                                title="Pengaturan Tampilan Kolom"
                             >
                                 <LayoutGrid className="h-4 w-4" />
                                 <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">Kolom ({getVisibleColumnsCount()})</span>
                             </Button>
-
-                            {showColumnToggle && (
-                                <div
-                                    ref={columnToggleRef}
-                                    className="absolute top-full right-0 mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 min-w-[280px] max-h-80 overflow-y-auto animate-in fade-in slide-in-from-top-2"
-                                >
-                                    <div className="p-4 border-b border-gray-100 bg-gray-50/50 sticky top-0 backdrop-blur-md flex justify-between items-center">
-                                        <h3 className="font-black text-xs uppercase tracking-widest text-gray-500">Kolom</h3>
-                                        <button onClick={() => setShowColumnToggle(false)} className="p-1 hover:bg-gray-200 rounded-full"><X className="h-4 w-4" /></button>
-                                    </div>
-                                    <div className="p-2 grid grid-cols-1 gap-1">
-                                        {[
-                                            { key: 'no', label: 'No' },
-                                            { key: 'tanggal', label: 'Tanggal' },
-                                            { key: 'nama_produk', label: 'Nama Produk' },
-                                            { key: 'jumlah', label: 'Jumlah' },
-                                            { key: 'gudang', label: 'Gudang' },
-                                            { key: 'rak', label: 'Rak' },
-                                            { key: 'stok_tersedia', label: 'Tersedia' },
-                                            { key: 'total_stok', label: 'Sisa' },
-                                            { key: 'aksi', label: 'Aksi' }
-                                        ].map(({ key, label }) => (
-                                            <label key={key} className="flex items-center space-x-3 p-3 hover:bg-blue-50 rounded-xl cursor-pointer">
-                                                <input type="checkbox" checked={visibleColumns[key as keyof typeof visibleColumns]} onChange={() => toggleColumn(key as keyof typeof visibleColumns)} className="w-4 h-4 rounded border-gray-300" />
-                                                <span className="text-sm font-bold text-gray-600 uppercase tracking-tight">{label}</span>
-                                            </label>
-                                        ))}
-                                    </div>
-                                    <div className="p-3 border-t border-gray-100 bg-gray-50 rounded-b-2xl">
-                                        <Button
-                                            onClick={resetColumns}
-                                            className="w-full text-xs h-9 bg-white hover:bg-gray-100 text-gray-600 font-bold border border-gray-200 rounded-xl"
-                                        >
-                                            Reset Semua Kolom
-                                        </Button>
-                                    </div>
-                                </div>
-                            )}
                         </div>
                     </div>
                 </div>
@@ -3398,7 +3369,18 @@ export function InputBarangKeluar() {
                                             {visibleColumns.rak && <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-32 whitespace-nowrap uppercase tracking-wider">Rak</th>}
                                             {visibleColumns.stok_tersedia && <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-28 whitespace-nowrap uppercase tracking-wider">Tersedia</th>}
                                             {visibleColumns.total_stok && <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-28 whitespace-nowrap uppercase tracking-wider">Total</th>}
-                                            {visibleColumns.tgl_scan && <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-36 whitespace-nowrap uppercase tracking-wider">Tgl Scan</th>}
+                                            {visibleColumns.tgl_scan && (
+                                                <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-36 whitespace-nowrap uppercase tracking-wider">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span>Tgl Scan</span>
+                                                        {(isDevMode || devMode) && (
+                                                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-400 text-emerald-950 font-black shadow-sm">
+                                                                MANUAL
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </th>
+                                            )}
                                             {visibleColumns.user_name && <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-32 whitespace-nowrap uppercase tracking-wider">User</th>}
                                             {visibleColumns.aksi && <th className="px-4 py-4 text-center font-bold w-24 whitespace-nowrap uppercase tracking-wider">Aksi</th>}
                                         </tr>
@@ -3538,11 +3520,19 @@ export function InputBarangKeluar() {
                                                 {visibleColumns.tgl_scan && <td className="px-4 py-3 border-r border-gray-100">
                                                     <input
                                                         type="text"
-                                                        value={row.tgl_scan}
-                                                        className="w-full px-2 py-2 border border-gray-100 rounded-lg text-xs bg-gray-50 text-gray-500 text-center"
-                                                        placeholder="Scan Date"
-                                                        readOnly
-                                                        disabled
+                                                        value={row.tgl_scan || ''}
+                                                        onChange={(e) => updateRow(row.id, 'tgl_scan', e.target.value)}
+                                                        className={cn(
+                                                            "w-full px-2 py-2 border rounded-lg text-xs text-center transition-all",
+                                                            row.validationErrors?.includes('tgl_scan')
+                                                                ? "border-red-500 bg-red-50 text-red-900 font-bold focus:ring-2 focus:ring-red-500/20"
+                                                                : (isDevMode || devMode)
+                                                                    ? "bg-white border-blue-300 text-blue-900 font-bold focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 shadow-sm"
+                                                                    : "bg-gray-50 border-gray-100 text-gray-500 cursor-not-allowed"
+                                                        )}
+                                                        placeholder={(isDevMode || devMode) ? "DD/MM/YYYY" : "Scan Date"}
+                                                        readOnly={!(isDevMode || devMode)}
+                                                        disabled={!(isDevMode || devMode)}
                                                     />
                                                 </td>}
                                                 {visibleColumns.user_name && <td className="px-4 py-3 border-r border-gray-100">
@@ -3703,6 +3693,36 @@ export function InputBarangKeluar() {
                                                 )}
                                             </div>
                                         </div>
+
+                                        {/* Tgl Scan (Mobile) */}
+                                        {visibleColumns.tgl_scan && (
+                                            <div className="space-y-1.5">
+                                                <div className="flex items-center justify-between pl-1">
+                                                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Tgl Scan</label>
+                                                    {(isDevMode || devMode) && (
+                                                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-black">
+                                                            MANUAL
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <input
+                                                    type="text"
+                                                    value={row.tgl_scan || ''}
+                                                    onChange={(e) => updateRow(row.id, 'tgl_scan', e.target.value)}
+                                                    readOnly={!(isDevMode || devMode)}
+                                                    disabled={!(isDevMode || devMode)}
+                                                    placeholder={(isDevMode || devMode) ? "DD/MM/YYYY" : "Scan Date"}
+                                                    className={cn(
+                                                        "w-full h-11 px-3 border rounded-xl text-xs font-bold transition-all text-center",
+                                                        row.validationErrors?.includes('tgl_scan')
+                                                            ? "border-red-500 bg-red-50 text-red-900"
+                                                            : (isDevMode || devMode)
+                                                                ? "bg-white border-blue-300 text-blue-900 ring-2 ring-blue-50 shadow-sm"
+                                                                : "bg-gray-50 border-gray-200 text-gray-500 cursor-not-allowed"
+                                                    )}
+                                                />
+                                            </div>
+                                        )}
 
                                         {/* Meta Info */}
                                         {(row.tgl_scan || row.user_name || row.nama_produk || row.total_stok !== undefined) && (
@@ -3992,6 +4012,121 @@ export function InputBarangKeluar() {
                                     </Button>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </Modal>
+
+                {/* Modal Pengaturan Kolom - Buka di Atas Permukaan (Desktop & Mobile) */}
+                <Modal
+                    isOpen={showColumnToggle}
+                    onClose={() => setShowColumnToggle(false)}
+                    title="Pengaturan Kolom"
+                    subtitle="Pilih kolom yang ingin ditampilkan pada tabel barang keluar"
+                    size="2xl"
+                    headerVariant="premium"
+                    icon={<LayoutGrid className="h-5 w-5 text-white" />}
+                >
+                    <div className="flex flex-col space-y-4">
+                        {/* Summary & Quick Actions */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-gray-50 rounded-2xl border border-gray-100 flex-shrink-0">
+                            <div className="flex items-center gap-2">
+                                <span className="px-2.5 py-1 bg-orange-100 text-orange-700 text-xs font-black rounded-lg uppercase tracking-wider">
+                                    {getVisibleColumnsCount()} Kolom Aktif
+                                </span>
+                                <span className="text-xs text-gray-500 font-medium hidden sm:inline">
+                                    Centang untuk menampilkan kolom di tabel
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setVisibleColumns(prev => {
+                                            const updated = { ...prev };
+                                            (Object.keys(updated) as (keyof typeof prev)[]).forEach(k => {
+                                                updated[k] = true;
+                                            });
+                                            return updated;
+                                        });
+                                    }}
+                                    className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:bg-blue-50 px-2.5 py-1 rounded-lg transition-all"
+                                >
+                                    Pilih Semua
+                                </button>
+                                <span className="text-gray-300">|</span>
+                                <button
+                                    type="button"
+                                    onClick={resetColumns}
+                                    className="text-xs font-bold text-gray-600 hover:text-gray-800 hover:bg-gray-200 px-2.5 py-1 rounded-lg transition-all"
+                                >
+                                    Reset Default
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* List of Columns */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-h-[50vh] sm:max-h-[55vh] overflow-y-auto p-1 pr-2">
+                            {[
+                                { key: 'no', label: 'No', desc: 'Nomor baris' },
+                                { key: 'tanggal', label: 'Tanggal', desc: 'Tanggal transaksi' },
+                                { key: 'waktu', label: 'Waktu', desc: 'Jam transaksi' },
+                                { key: 'nama_produk', label: 'Nama Produk', desc: 'SKU / Master Produk' },
+                                { key: 'jumlah', label: 'Jumlah', desc: 'Qty barang keluar' },
+                                { key: 'type', label: 'Type', desc: 'Tipe OUT' },
+                                { key: 'gudang', label: 'Gudang', desc: 'Lokasi gudang' },
+                                { key: 'rak', label: 'Rak', desc: 'Lokasi rak penyimpanan' },
+                                { key: 'stok_tersedia', label: 'Tersedia', desc: 'Stok saat ini' },
+                                { key: 'total_stok', label: 'Total', desc: 'Estimasi sisa stok' },
+                                { key: 'tgl_scan', label: 'Tgl Scan', desc: 'Waktu scan barcode' },
+                                { key: 'user_name', label: 'User', desc: 'User penginput' },
+                                { key: 'aksi', label: 'Aksi', desc: 'Tombol hapus baris' }
+                            ].map(({ key, label, desc }, idx) => {
+                                const isChecked = visibleColumns[key as keyof typeof visibleColumns];
+                                return (
+                                    <label
+                                        key={key}
+                                        className={cn(
+                                            "flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all select-none",
+                                            isChecked
+                                                ? "bg-blue-50/70 border-blue-200 text-blue-900 shadow-sm"
+                                                : "bg-gray-50/40 border-gray-100 text-gray-400 hover:bg-gray-100/60"
+                                        )}
+                                    >
+                                        <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                                            <div
+                                                className={cn(
+                                                    "w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs flex-shrink-0 transition-colors",
+                                                    isChecked ? "bg-blue-600 text-white shadow-sm" : "bg-gray-200 text-gray-500"
+                                                )}
+                                            >
+                                                {idx + 1}
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className={cn("text-xs font-black uppercase tracking-wider truncate", isChecked ? "text-gray-900" : "text-gray-400")}>
+                                                    {label}
+                                                </p>
+                                                <p className="text-[10px] text-gray-400 font-medium truncate">{desc}</p>
+                                            </div>
+                                        </div>
+                                        <input
+                                            type="checkbox"
+                                            checked={isChecked}
+                                            onChange={() => toggleColumn(key as keyof typeof visibleColumns)}
+                                            className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300 transition-all cursor-pointer flex-shrink-0"
+                                        />
+                                    </label>
+                                );
+                            })}
+                        </div>
+
+                        {/* Footer button */}
+                        <div className="pt-3 border-t border-gray-100 flex justify-end flex-shrink-0">
+                            <Button
+                                onClick={() => setShowColumnToggle(false)}
+                                className="w-full sm:w-auto px-8 h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95"
+                            >
+                                Selesai
+                            </Button>
                         </div>
                     </div>
                 </Modal>

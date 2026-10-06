@@ -24,8 +24,12 @@ export function ValidationAlert({ isOpen, onClose, invalidCount, errors }: Valid
                   </div>
                 </div>
                 <div>
-                  <h3 className="text-xl font-bold text-red-800">Oops! Data Belum Lengkap</h3>
-                  <p className="text-sm text-red-600 mt-1">Mohon lengkapi data yang diperlukan</p>
+                  <h3 className="text-xl font-bold text-red-800">
+                    {errors.includes('batch_stok') && errors.length === 1 ? 'Validasi Stok Batch Gagal' : 'Oops! Data Belum Lengkap'}
+                  </h3>
+                  <p className="text-sm text-red-600 mt-1">
+                    {errors.includes('batch_stok') && errors.length === 1 ? 'Stok batch tanggal scan tidak sesuai atau tidak mencukupi' : 'Mohon lengkapi data yang diperlukan'}
+                  </p>
                 </div>
               </div>
               <button
@@ -45,11 +49,15 @@ export function ValidationAlert({ isOpen, onClose, invalidCount, errors }: Valid
                     <span className="text-white text-sm font-bold">{invalidCount}</span>
                   </div>
                   <p className="text-gray-800 font-medium">
-                    {invalidCount === 1 ? 'Ada 1 baris' : `Ada ${invalidCount} baris`} yang belum lengkap
+                    {errors.includes('batch_stok') && errors.length === 1
+                      ? `${invalidCount === 1 ? 'Ada 1 baris' : `Ada ${invalidCount} baris`} dengan kendala stok batch / tanggal scan`
+                      : `${invalidCount === 1 ? 'Ada 1 baris' : `Ada ${invalidCount} baris`} yang belum lengkap`}
                   </p>
                 </div>
                 <p className="text-sm text-gray-600">
-                  Silakan periksa dan lengkapi data pada baris yang ditandai dengan warna merah.
+                  {errors.includes('batch_stok') && errors.length === 1
+                    ? 'Silakan periksa detail notifikasi error dan sesuaikan tanggal scan atau rak pada baris yang ditandai border merah.'
+                    : 'Silakan periksa dan lengkapi data pada baris yang ditandai dengan warna merah.'}
                 </p>
               </div>
 

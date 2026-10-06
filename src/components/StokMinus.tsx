@@ -447,80 +447,100 @@ export const StokMinus: React.FC = () => {
                 return;
             }
 
-            // Hitung stok aktual dinamis dari database_log untuk setiap baris minus
-            const updatedRows = await Promise.all(
-                minusData.map(async (row) => {
-                    const sku = (row.nama_produk || '').trim();
-                    const rak = (row.rak || '').trim();
-                    const tglScan = (row.tgl_scan || '').trim();
+            // OPTIMIZED: Batch fetch stock_items & database_log in 2 queries instead of 2*N unindexed queries
+            const uniqueSkus = Array.from(new Set(minusData.map(r => (r.nama_produk || '').trim()).filter(Boolean)));
+            const rowsWithTgl = minusData.filter(r => r.tgl_scan && r.tgl_scan.trim() !== '');
+            const allVariations = Array.from(new Set(rowsWithTgl.flatMap(r => normalizeDateVariations(r.tgl_scan))));
+            const skusWithTgl = Array.from(new Set(rowsWithTgl.map(r => (r.nama_produk || '').trim()).filter(Boolean)));
 
-                    if (!sku || !rak) {
-                        return {
-                            ...row,
-                            stok_tersedia: 0,
-                            total_stok: 0 - (row.jumlah || 0)
-                        };
+            // 1. Batch fetch physical available stock from stock_items
+            const stockMap = new Map<string, number>();
+            if (uniqueSkus.length > 0) {
+                const { data: stockItemsData } = await supabase
+                    .from('stock_items')
+                    .select('nama_produk, rak, tersedia')
+                    .in('nama_produk', uniqueSkus);
+
+                (stockItemsData || []).forEach(item => {
+                    const sKey = (item.nama_produk || '').trim().toUpperCase();
+                    const rKey = (item.rak || '').trim().toUpperCase();
+                    stockMap.set(`${sKey}|||${rKey}`, item.tersedia || 0);
+                });
+            }
+
+            // 2. Batch fetch batch logs for rows that have tgl_scan
+            const batchLogMap = new Map<string, { in: number; out: number }>();
+            if (skusWithTgl.length > 0 && allVariations.length > 0) {
+                const { data: batchLogs } = await supabase
+                    .from('database_log')
+                    .select('sku, rak, sub_rak, tgl_scan, jumlah, type')
+                    .in('sku', skusWithTgl)
+                    .in('tgl_scan', allVariations)
+                    .in('type', ['IN', 'OUT']);
+
+                (batchLogs || []).forEach(l => {
+                    const sKey = (l.sku || '').trim().toUpperCase();
+                    const rKey = (l.rak || l.sub_rak || '').trim().toUpperCase();
+                    const dKey = (l.tgl_scan || '').trim();
+                    const compositeKey = `${sKey}|||${rKey}|||${dKey}`;
+
+                    if (!batchLogMap.has(compositeKey)) {
+                        batchLogMap.set(compositeKey, { in: 0, out: 0 });
                     }
+                    const entry = batchLogMap.get(compositeKey)!;
+                    if (l.type === 'IN') entry.in += (l.jumlah || 0);
+                    else if (l.type === 'OUT') entry.out += (l.jumlah || 0);
+                });
+            }
 
-                    const variations = normalizeDateVariations(tglScan);
+            // 3. Fast in-memory mapping without extra network requests
+            const updatedRows = minusData.map(row => {
+                const sku = (row.nama_produk || '').trim().toUpperCase();
+                const rak = (row.rak || '').trim().toUpperCase();
+                const variations = normalizeDateVariations(row.tgl_scan);
 
-                    // 1. Jika ada tgl_scan, prioritaskan cek batch logs untuk tgl_scan tersebut
-                    if (variations.length > 0) {
-                        const { data: batchLogs, error: batchError } = await supabase
-                            .from('database_log')
-                            .select('jumlah, type, tgl_scan')
-                            .ilike('sku', sku)
-                            .ilike('rak', rak)
-                            .in('tgl_scan', variations);
-
-                        if (!batchError && batchLogs && batchLogs.length > 0) {
-                            const totalIn = batchLogs
-                                .filter(l => l.type === 'IN')
-                                .reduce((sum, l) => sum + (l.jumlah || 0), 0);
-                            const totalOut = batchLogs
-                                .filter(l => l.type === 'OUT')
-                                .reduce((sum, l) => sum + (l.jumlah || 0), 0);
-
-                            const stokTersedia = totalIn - totalOut;
-                            return {
-                                ...row,
-                                stok_tersedia: stokTersedia,
-                                total_stok: stokTersedia - (row.jumlah || 0)
-                            };
-                        }
-                    }
-
-                    // 2. Fallback jika tidak ada tgl_scan atau tidak ada log batch spesifik: hitung total log rak
-                    const { data: allLogs, error: allLogsError } = await supabase
-                        .from('database_log')
-                        .select('jumlah, type')
-                        .ilike('sku', sku)
-                        .ilike('rak', rak)
-                        .in('type', ['IN', 'OUT']);
-
-                    if (!allLogsError && allLogs) {
-                        const totalIn = allLogs
-                            .filter(l => l.type === 'IN')
-                            .reduce((sum, l) => sum + (l.jumlah || 0), 0);
-                        const totalOut = allLogs
-                            .filter(l => l.type === 'OUT')
-                            .reduce((sum, l) => sum + (l.jumlah || 0), 0);
-
-                        const stokTersedia = totalIn - totalOut;
-                        return {
-                            ...row,
-                            stok_tersedia: stokTersedia,
-                            total_stok: stokTersedia - (row.jumlah || 0)
-                        };
-                    }
-
+                if (!sku || !rak) {
                     return {
                         ...row,
                         stok_tersedia: 0,
                         total_stok: 0 - (row.jumlah || 0)
                     };
-                })
-            );
+                }
+
+                let stokTersedia: number | null = null;
+
+                // Priority 1: Check batch log map if tgl_scan exists
+                if (variations.length > 0) {
+                    let totalIn = 0;
+                    let totalOut = 0;
+                    let foundAnyBatch = false;
+
+                    for (const v of variations) {
+                        const entry = batchLogMap.get(`${sku}|||${rak}|||${v}`);
+                        if (entry) {
+                            totalIn += entry.in;
+                            totalOut += entry.out;
+                            foundAnyBatch = true;
+                        }
+                    }
+
+                    if (foundAnyBatch && totalIn > 0) {
+                        stokTersedia = Math.max(0, totalIn - totalOut);
+                    }
+                }
+
+                // Priority 2: Fallback to stock_items available stock for this rak
+                if (stokTersedia === null) {
+                    stokTersedia = stockMap.get(`${sku}|||${rak}`) ?? 0;
+                }
+
+                const finalTersedia = Math.max(0, stokTersedia);
+                return {
+                    ...row,
+                    stok_tersedia: finalTersedia,
+                    total_stok: finalTersedia - (row.jumlah || 0)
+                };
+            });
 
             setRows(updatedRows);
         } catch (error) {

@@ -69,10 +69,12 @@ export const DataKarantina: React.FC = () => {
     const [actionConfirm, setActionConfirm] = useState<{
         isOpen: boolean;
         rowId: string | number | null;
+        originalLogId?: string | number | null;
         action: 'delete_validation' | 'resend_validation' | 'delete_revisi' | 'complete_revisi' | null;
     }>({
         isOpen: false,
         rowId: null,
+        originalLogId: null,
         action: null
     });
     const [clearConfirm, setClearConfirm] = useState(false);
@@ -193,14 +195,14 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
     const handleDeleteRevisi = async () => {
         if (!actionConfirm.rowId || actionConfirm.action !== 'delete_revisi') return;
         try {
-            await DatabaseService.deleteKarantina(actionConfirm.rowId);
+            await DatabaseService.deleteKarantina(actionConfirm.rowId, 'both', actionConfirm.originalLogId || undefined);
             showToast('Data berhasil dihapus dari Wadah Karantina Revisi OUT', 'success');
             loadAllData();
         } catch (error) {
             console.error('Error deleting revisi item:', error);
             showToast('Gagal menghapus data', 'error');
         } finally {
-            setActionConfirm({ isOpen: false, rowId: null, action: null });
+            setActionConfirm({ isOpen: false, rowId: null, originalLogId: null, action: null });
         }
     };
 
@@ -670,7 +672,7 @@ _Mohon Tim Crosscheck memeriksa dan merevisi/membatalkan potong stok nota terkai
                                                             )}
 
                                                             <button
-                                                                onClick={() => setActionConfirm({ isOpen: true, rowId: item.id, action: 'delete_revisi' })}
+                                                                onClick={() => setActionConfirm({ isOpen: true, rowId: item.id, originalLogId: item.original_log_id, action: 'delete_revisi' })}
                                                                 className="h-8 w-8 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold rounded-lg flex items-center justify-center border border-rose-200 transition-all active:scale-95"
                                                                 title="Hapus dari Karantina"
                                                             >

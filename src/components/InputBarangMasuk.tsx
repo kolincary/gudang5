@@ -34,6 +34,7 @@ interface TransactionRow {
     gudang: string;
     rak: string;
     tgl_scan?: string;
+    user_name?: string;
     stok_tersedia: number;
     total_stok: number;
     unique_code: string;
@@ -338,7 +339,7 @@ export function InputBarangMasuk() {
         type: 'info'
     });
 
-    // Column visibility state
+    // Column visibility state (default semua kolom aktif kecuali tgl_scan dan user_name)
     const [visibleColumns, setVisibleColumns] = useState({
         no: true,
         tanggal: true,
@@ -350,7 +351,10 @@ export function InputBarangMasuk() {
         rak: true,
         stok_tersedia: true,
         total_stok: true,
+        jumlah_karton: true,
         unique_code: true,
+        tgl_scan: false,
+        user_name: false,
         aksi: true
     });
 
@@ -1024,6 +1028,16 @@ export function InputBarangMasuk() {
         return `${visibleCount}/${totalColumns}`;
     };
 
+    const selectAllColumns = () => {
+        setVisibleColumns(prev => {
+            const updated = { ...prev };
+            (Object.keys(updated) as (keyof typeof prev)[]).forEach(k => {
+                updated[k] = true;
+            });
+            return updated;
+        });
+    };
+
     const resetColumns = () => {
         setVisibleColumns({
             no: true,
@@ -1036,7 +1050,10 @@ export function InputBarangMasuk() {
             rak: true,
             stok_tersedia: true,
             total_stok: true,
+            jumlah_karton: true,
             unique_code: true,
+            tgl_scan: false,
+            user_name: false,
             aksi: true
         });
     };
@@ -1799,7 +1816,7 @@ export function InputBarangMasuk() {
                     </Button>
 
                     <Button
-                        onClick={() => setShowColumnToggle(!showColumnToggle)}
+                        onClick={() => setShowColumnToggle(true)}
                         variant="secondary"
                         className="bg-white text-amber-600 border border-amber-100 rounded-xl h-10 px-0 flex flex-col items-center justify-center gap-0.5 active:scale-95 shadow-sm"
                     >
@@ -1832,50 +1849,6 @@ export function InputBarangMasuk() {
                                 <Layers className="h-4 w-4" />
                                 <span className="text-[10px] font-bold uppercase">Massal 2</span>
                             </Button>
-                        </div>
-                    )}
-
-                    {showColumnToggle && (
-                        <div
-                            ref={columnToggleRef}
-                            className="fixed inset-x-4 top-1/2 transform -translate-y-1/2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 max-h-[70vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200"
-                        >
-                            <div className="p-4 border-b border-gray-100 bg-blue-600 text-white flex justify-between items-center sticky top-0 transition-all">
-                                <h3 className="font-black text-sm uppercase tracking-wider">Tampilkan Kolom</h3>
-                                <button onClick={() => setShowColumnToggle(false)} className="p-1 hover:bg-white/10 rounded-full">
-                                    <X className="h-5 w-5" />
-                                </button>
-                            </div>
-                            <div className="p-4 grid grid-cols-1 gap-1">
-                                {[
-                                    { key: 'no', label: 'Nomor Urut' },
-                                    { key: 'tanggal', label: 'Tanggal' },
-                                    { key: 'waktu', label: 'Waktu' },
-                                    { key: 'nama_produk', label: 'Nama Produk' },
-                                    { key: 'jumlah', label: 'Jumlah' },
-                                    { key: 'type', label: 'Type' },
-                                    { key: 'gudang', label: 'Gudang' },
-                                    { key: 'rak', label: 'Rak' },
-                                    { key: 'stok_tersedia', label: 'Tersedia' },
-                                    { key: 'total_stok', label: 'Total' },
-                                    { key: 'aksi', label: 'Aksi' }
-                                ].map(({ key, label }) => (
-                                    <label key={key} className="flex items-center space-x-3 p-3 hover:bg-gray-50 rounded-xl cursor-pointer transition-colors border border-transparent hover:border-gray-100">
-                                        <input
-                                            type="checkbox"
-                                            checked={visibleColumns[key as keyof typeof visibleColumns]}
-                                            onChange={() => toggleColumn(key as keyof typeof visibleColumns)}
-                                            className="w-5 h-5 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500 transition-all"
-                                        />
-                                        <span className="text-sm font-bold text-gray-700">{label}</span>
-                                    </label>
-                                ))}
-                            </div>
-                            <div className="p-4 border-t border-gray-100 bg-gray-50">
-                                <Button onClick={resetColumns} className="w-full h-11 bg-white text-gray-600 border border-gray-200 font-bold rounded-xl active:scale-95 shadow-sm">
-                                    Reset Pengaturan Kolom
-                                </Button>
-                            </div>
                         </div>
                     )}
                 </div>
@@ -1949,42 +1922,15 @@ export function InputBarangMasuk() {
                         </Button>
                     </div>
 
-                    <div className="relative pl-4 flex-shrink-0 border-l border-gray-100">
+                    <div className="pl-4 flex-shrink-0 border-l border-gray-100">
                         <Button
-                            onClick={() => setShowColumnToggle(!showColumnToggle)}
-                            className="h-10 px-5 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-full transition-all flex items-center justify-center gap-2 shadow-none border-none"
+                            onClick={() => setShowColumnToggle(true)}
+                            className="h-10 px-5 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-full transition-all flex items-center justify-center gap-2 shadow-none border-none active:scale-95 cursor-pointer"
+                            title="Pengaturan Tampilan Kolom"
                         >
                             <LayoutGrid className="h-4 w-4" />
                             <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">Kolom ({getVisibleColumnsCount()})</span>
                         </Button>
-
-                        {showColumnToggle && (
-                            <div
-                                ref={columnToggleRef}
-                                className="absolute top-full right-0 mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl z-50 min-w-[280px] max-h-80 overflow-y-auto animate-in fade-in slide-in-from-top-2"
-                            >
-                                <div className="p-4 border-b border-gray-100 bg-gray-50/50 sticky top-0 backdrop-blur-md flex justify-between items-center">
-                                    <h3 className="font-black text-xs uppercase tracking-widest text-gray-500">Kolom</h3>
-                                    <button onClick={() => setShowColumnToggle(false)} className="p-1 hover:bg-gray-200 rounded-full"><X className="h-4 w-4" /></button>
-                                </div>
-                                <div className="p-2 grid grid-cols-1 gap-1">
-                                    {[
-                                        { key: 'no', label: 'No' },
-                                        { key: 'tanggal', label: 'Tanggal' },
-                                        { key: 'nama_produk', label: 'Nama Produk' },
-                                        { key: 'jumlah', label: 'Jumlah' },
-                                        { key: 'gudang', label: 'Gudang' },
-                                        { key: 'rak', label: 'Rak' },
-                                        { key: 'aksi', label: 'Aksi' }
-                                    ].map(({ key, label }) => (
-                                        <label key={key} className="flex items-center space-x-3 p-3 hover:bg-blue-50 rounded-xl cursor-pointer">
-                                            <input type="checkbox" checked={visibleColumns[key as keyof typeof visibleColumns]} onChange={() => toggleColumn(key as keyof typeof visibleColumns)} className="w-4 h-4 rounded border-gray-300" />
-                                            <span className="text-sm font-bold text-gray-600 uppercase tracking-tight">{label}</span>
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
                     </div>
                 </div>
 
@@ -2014,8 +1960,10 @@ export function InputBarangMasuk() {
                                             {visibleColumns.rak && <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-32 whitespace-nowrap uppercase tracking-wider">Rak</th>}
                                             {visibleColumns.stok_tersedia && <th className="px-4 py-4 text-center font-bold border-r border-blue-500 w-24 whitespace-nowrap uppercase tracking-wider text-xs">Tersedia</th>}
                                             {visibleColumns.total_stok && <th className="px-4 py-4 text-center font-bold border-r border-blue-500 w-24 whitespace-nowrap uppercase tracking-wider text-xs">Total</th>}
-                                            {isDevMode && visibleColumns.jumlah_karton && <th className="px-4 py-4 text-center font-bold border-r border-blue-500 w-24 whitespace-nowrap uppercase tracking-wider text-xs bg-amber-700/50">Karton</th>}
+                                            {visibleColumns.jumlah_karton && <th className="px-4 py-4 text-center font-bold border-r border-blue-500 w-24 whitespace-nowrap uppercase tracking-wider text-xs bg-amber-700/50">Karton</th>}
                                             {visibleColumns.unique_code && <th className="px-4 py-4 text-center font-bold border-r border-blue-500 w-40 whitespace-nowrap uppercase tracking-wider text-xs bg-blue-700/50">Kode Unik (SN)</th>}
+                                            {visibleColumns.tgl_scan && <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-36 whitespace-nowrap uppercase tracking-wider">Tgl Scan</th>}
+                                            {visibleColumns.user_name && <th className="px-4 py-4 text-left font-bold border-r border-blue-500 w-32 whitespace-nowrap uppercase tracking-wider">User</th>}
                                             {visibleColumns.aksi && <th className="px-4 py-4 text-center font-bold w-20 whitespace-nowrap uppercase tracking-wider">Aksi</th>}
                                         </tr>
                                     </thead>
@@ -2157,7 +2105,7 @@ export function InputBarangMasuk() {
                                                         {row.total_stok}
                                                     </div>
                                                 </td>}
-                                                {isDevMode && visibleColumns.jumlah_karton && <td className="px-4 py-3 text-center border-r border-gray-100 bg-amber-50/30">
+                                                {visibleColumns.jumlah_karton && <td className="px-4 py-3 text-center border-r border-gray-100 bg-amber-50/30">
                                                     <div className="text-xs font-black text-amber-700">
                                                         {row.jumlah_karton || 0} CTN
                                                     </div>
@@ -2178,6 +2126,30 @@ export function InputBarangMasuk() {
                                                          </button>
                                                      </div>
                                                  </td>}
+                                                {visibleColumns.tgl_scan && (
+                                                    <td className="px-4 py-3 border-r border-gray-100">
+                                                        <input
+                                                            type="text"
+                                                            value={row.tgl_scan || ''}
+                                                            readOnly
+                                                            disabled
+                                                            placeholder="Scan Date"
+                                                            className="w-full px-2 py-2 border border-gray-100 rounded-lg text-xs bg-gray-50 text-gray-500 text-center truncate cursor-not-allowed"
+                                                        />
+                                                    </td>
+                                                )}
+                                                {visibleColumns.user_name && (
+                                                    <td className="px-4 py-3 border-r border-gray-100">
+                                                        <input
+                                                            type="text"
+                                                            value={row.user_name || userEmail || ''}
+                                                            readOnly
+                                                            disabled
+                                                            placeholder="User"
+                                                            className="w-full px-2 py-2 border border-gray-100 rounded-lg text-xs bg-gray-50 text-gray-500 text-center truncate cursor-not-allowed"
+                                                        />
+                                                    </td>
+                                                )}
                                                 {visibleColumns.aksi && <td className="px-4 py-3 text-center">
                                                     <Button
                                                         onClick={() => handleDeleteClick(row)}
@@ -2923,6 +2895,115 @@ export function InputBarangMasuk() {
 
                         <div className="pt-2 text-center">
                             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter italic">*Data disalin dengan pemisah Tab (Excel-ready)</p>
+                        </div>
+                    </div>
+                </Modal>
+
+                {/* Modal Pengaturan Kolom - Buka di Atas Permukaan (Desktop & Mobile) */}
+                <Modal
+                    isOpen={showColumnToggle}
+                    onClose={() => setShowColumnToggle(false)}
+                    title="Pengaturan Kolom"
+                    subtitle="Pilih kolom yang ingin ditampilkan pada tabel barang masuk"
+                    size="2xl"
+                    headerVariant="premium"
+                    icon={<LayoutGrid className="h-5 w-5 text-white" />}
+                >
+                    <div className="flex flex-col space-y-4">
+                        {/* Summary & Quick Actions */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-gray-50 rounded-2xl border border-gray-100 flex-shrink-0">
+                            <div className="flex items-center gap-2">
+                                <span className="px-2.5 py-1 bg-orange-100 text-orange-700 text-xs font-black rounded-lg uppercase tracking-wider">
+                                    {getVisibleColumnsCount()} Kolom Aktif
+                                </span>
+                                <span className="text-xs text-gray-500 font-medium hidden sm:inline">
+                                    Centang untuk menampilkan kolom di tabel
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={selectAllColumns}
+                                    className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:bg-blue-50 px-2.5 py-1 rounded-lg transition-all"
+                                >
+                                    Pilih Semua
+                                </button>
+                                <span className="text-gray-300">|</span>
+                                <button
+                                    type="button"
+                                    onClick={resetColumns}
+                                    className="text-xs font-bold text-gray-600 hover:text-gray-800 hover:bg-gray-200 px-2.5 py-1 rounded-lg transition-all"
+                                >
+                                    Reset Default
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* List of Columns */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-h-[50vh] sm:max-h-[55vh] overflow-y-auto p-1 pr-2">
+                            {[
+                                { key: 'no', label: 'No', desc: 'Nomor baris' },
+                                { key: 'tanggal', label: 'Tanggal', desc: 'Tanggal transaksi' },
+                                { key: 'waktu', label: 'Waktu', desc: 'Jam transaksi' },
+                                { key: 'nama_produk', label: 'Nama Produk', desc: 'SKU / Master Produk' },
+                                { key: 'jumlah', label: 'Jumlah', desc: 'Qty barang masuk' },
+                                { key: 'type', label: 'Type', desc: 'Tipe IN' },
+                                { key: 'gudang', label: 'Gudang', desc: 'Lokasi gudang' },
+                                { key: 'rak', label: 'Rak', desc: 'Lokasi rak penyimpanan' },
+                                { key: 'stok_tersedia', label: 'Tersedia', desc: 'Stok saat ini' },
+                                { key: 'total_stok', label: 'Total', desc: 'Estimasi total stok' },
+                                { key: 'jumlah_karton', label: 'Karton', desc: 'Jumlah karton (CTN)' },
+                                { key: 'unique_code', label: 'Kode Unik (SN)', desc: 'Serial Number / QR' },
+                                { key: 'tgl_scan', label: 'Tgl Scan', desc: 'Waktu scan barcode' },
+                                { key: 'user_name', label: 'User', desc: 'User penginput' },
+                                { key: 'aksi', label: 'Aksi', desc: 'Tombol hapus baris' }
+                            ].map(({ key, label, desc }, idx) => {
+                                const isChecked = !!visibleColumns[key as keyof typeof visibleColumns];
+                                return (
+                                    <label
+                                        key={key}
+                                        className={cn(
+                                            "flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all select-none",
+                                            isChecked
+                                                ? "bg-blue-50/70 border-blue-200 text-blue-900 shadow-sm"
+                                                : "bg-gray-50/40 border-gray-100 text-gray-400 hover:bg-gray-100/60"
+                                        )}
+                                    >
+                                        <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                                            <div
+                                                className={cn(
+                                                    "w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs flex-shrink-0 transition-colors",
+                                                    isChecked ? "bg-blue-600 text-white shadow-sm" : "bg-gray-200 text-gray-500"
+                                                )}
+                                            >
+                                                {idx + 1}
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className={cn("text-xs font-black uppercase tracking-wider truncate", isChecked ? "text-gray-900" : "text-gray-400")}>
+                                                    {label}
+                                                </p>
+                                                <p className="text-[10px] text-gray-400 font-medium truncate">{desc}</p>
+                                            </div>
+                                        </div>
+                                        <input
+                                            type="checkbox"
+                                            checked={isChecked}
+                                            onChange={() => toggleColumn(key as keyof typeof visibleColumns)}
+                                            className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300 transition-all cursor-pointer flex-shrink-0"
+                                        />
+                                    </label>
+                                );
+                            })}
+                        </div>
+
+                        {/* Footer button */}
+                        <div className="pt-3 border-t border-gray-100 flex justify-end flex-shrink-0">
+                            <Button
+                                onClick={() => setShowColumnToggle(false)}
+                                className="w-full sm:w-auto px-8 h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95"
+                            >
+                                Selesai
+                            </Button>
                         </div>
                     </div>
                 </Modal>
