@@ -4159,12 +4159,11 @@ export function CekRak2() {
     };
 
     const fetchOutLogsForSku = async (sku: string) => {
-        if (!sku.trim()) return;
+        const queryTerm = sku.trim();
+        if (!queryTerm) return;
         setIsLoadingOutLogs(true);
         setSelectedOutLog(null);
         try {
-            const clean = sku.trim();
-
             // 1. Dapatkan daftar log_id yang SEDANG AKTIF di wadah karantina revisi
             const activeKarantinaLogIds = new Set<string>();
             try {
@@ -4180,67 +4179,47 @@ export function CekRak2() {
                 console.warn('Gagal memuat id karantina aktif untuk filter:', kErr);
             }
 
-            // 2. Kumpulkan candidate SKU dari tabel products & stock_items agar query ke database_log sangat cepat dan tidak timeout
-            const candidateSkus = new Set<string>([clean, clean.toUpperCase()]);
-            try {
-                const [pRes, sRes] = await Promise.all([
-                    supabase.from('products').select('nama').ilike('nama', `%${clean}%`).limit(25),
-                    supabase.from('stock_items').select('nama_produk').ilike('nama_produk', `%${clean}%`).limit(25)
-                ]);
-                (pRes.data || []).forEach((p: any) => p.nama && candidateSkus.add(p.nama));
-                (sRes.data || []).forEach((s: any) => s.nama_produk && candidateSkus.add(s.nama_produk));
-            } catch (candErr) {
-                console.warn('Gagal mencari kandidat SKU dari master:', candErr);
-            }
-
-            const skuList = Array.from(candidateSkus);
-
-            // 3. Query database_log dengan .in('sku', skuList) tanpa .order('created_at') untuk menghindari PostgreSQL Statement Timeout
-            let { data, error } = await supabase
+            // 2. Query log OUT dan MOVE
+            // Catatan: Hindari order('created_at', { ascending: false }) di SQL database_log karena memicu query sequential scan berat & statement timeout (57014)
+            let query = supabase
                 .from('database_log')
                 .select('*')
-                .in('sku', skuList)
-                .in('type', ['OUT', 'MOVE'])
-                .limit(100);
+                .in('type', ['OUT', 'MOVE']);
 
-            if (error) {
-                console.warn('Error in query, fallback to prefix ilike:', error);
+            if (queryTerm.includes('-') || queryTerm.includes('/')) {
+                query = query.or(`sku.ilike.%${queryTerm}%,tgl.ilike.%${queryTerm}%,tgl_scan.ilike.%${queryTerm}%`);
+            } else {
+                query = query.ilike('sku', `%${queryTerm}%`);
             }
 
-            // Fallback jika tidak ada data dan clean >= 3 karakter
-            if ((!data || data.length === 0) && clean.length >= 3) {
-                const { data: fallbackData } = await supabase
-                    .from('database_log')
-                    .select('*')
-                    .ilike('sku', `${clean}%`)
-                    .in('type', ['OUT', 'MOVE'])
-                    .limit(50);
-                if (fallbackData && fallbackData.length > 0) {
-                    data = fallbackData;
-                }
-            }
+            const { data, error } = await query.limit(100);
 
-            // 4. Filter log yang relevan untuk ditarik
+            if (error) throw error;
+
+            // Filter log yang relevan untuk ditarik
             const filtered = (data || []).filter(log => {
                 const logIdStr = String(log.id);
                 const uName = (log.user_name || log.user || '').toLowerCase().trim();
                 const gudang = (log.gudang || '').toUpperCase().trim();
                 const status = (log.status || '').toUpperCase().trim();
-                const logUpdate = (log.log_update_user || log.keterangan || '').toUpperCase().trim();
+                const ket = (log.keterangan || '').toUpperCase().trim();
+                const logUpdate = (log.log_update_user || '').toUpperCase().trim();
                 const type = (log.type || '').toUpperCase().trim();
 
-                // Jangan tampilkan jika log ini bertipe MOVE dan SEDANG AKTIF di wadah karantina
-                if (type === 'MOVE' && activeKarantinaLogIds.has(logIdStr)) {
+                // Jangan tampilkan jika log ini SEDANG AKTIF di wadah karantina (masih menunggu revisi)
+                if (activeKarantinaLogIds.has(logIdStr)) {
                     return false;
                 }
 
-                // Jika type MOVE: tampilkan jika statusnya REVISI_KARANTINA atau catatan logUpdate mengandung kata REVISI KARANTINA / KARANTINA / DIPULIHKAN
-                const isRevisiKarantina = status === 'REVISI_KARANTINA' || 
-                                          logUpdate.includes('REVISI KARANTINA') || 
-                                          logUpdate.includes('DIPULIHKAN') ||
-                                          logUpdate.includes('KARANTINA');
-                if (type === 'MOVE' && !isRevisiKarantina) {
-                    return false;
+                // Jika type MOVE, izinkan jika terkait proses revisi karantina
+                if (type === 'MOVE') {
+                    const isRevisi = 
+                        status.includes('REVISI') || 
+                        ket.includes('REVISI') || 
+                        logUpdate.includes('REVISI');
+                    if (!isRevisi) {
+                        return false;
+                    }
                 }
 
                 // Abaikan log internal transfer
@@ -4261,14 +4240,19 @@ export function CekRak2() {
                 return true;
             });
 
-            // 5. Urutkan secara akurat berdasarkan Tanggal Transaksi OUT (tgl + waktu) terbaru di JavaScript
+            // Urutkan data secara memori dari tgl transaksi / created_at terbaru
             filtered.sort((a, b) => {
-                const timeA = (a.tgl || '') + ' ' + (a.waktu || '') + ' ' + (a.created_at || '');
-                const timeB = (b.tgl || '') + ' ' + (b.waktu || '') + ' ' + (b.created_at || '');
-                return timeB.localeCompare(timeA);
+                const timeA = new Date(a.created_at || a.tgl).getTime();
+                const timeB = new Date(b.created_at || b.tgl).getTime();
+                if (!isNaN(timeA) && !isNaN(timeB)) {
+                    return timeB - timeA;
+                }
+                const dateStrA = String(a.tgl || a.tgl_scan || '');
+                const dateStrB = String(b.tgl || b.tgl_scan || '');
+                return dateStrB.localeCompare(dateStrA);
             });
 
-            setOutTraceLogs(filtered.slice(0, 30));
+            setOutTraceLogs(filtered.slice(0, 50));
         } catch (err: any) {
             console.error('Error fetching OUT logs for trace:', err);
             setToast({
@@ -7831,7 +7815,12 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                             type="text"
                                             value={outTraceSku}
                                             onChange={(e) => setOutTraceSku(e.target.value)}
-                                            placeholder="Ketik SKU untuk dicari..."
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    fetchOutLogsForSku(outTraceSku);
+                                                }
+                                            }}
+                                            placeholder="Ketik SKU atau Tanggal (misal: 209A / 2026-03-26)..."
                                             className="w-full px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 focus:border-amber-500 focus:ring-2 focus:ring-amber-200 outline-none uppercase"
                                         />
                                         <button
@@ -7890,6 +7879,7 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                 <div className="space-y-2">
                                     {outTraceLogs.map((log) => {
                                         const isSelected = selectedOutLog?.id === log.id;
+                                        const isMove = String(log.type || '').toUpperCase() === 'MOVE';
                                         return (
                                             <div
                                                 key={log.id}
@@ -7900,61 +7890,68 @@ _Mohon Tim Crosscheck memeriksa dan membatalkan/revisi potong stok nota tersebut
                                                         : 'bg-white border-slate-200 hover:border-amber-300 hover:bg-slate-50/80 shadow-xs'
                                                 }`}
                                             >
-                                                <div className="flex items-center gap-3">
-                                                    <div className={`w-5 h-5 rounded-full border flex items-center justify-center ${
+                                                <div className="flex items-center gap-3 min-w-0">
+                                                    <div className={`w-5 h-5 rounded-full border shrink-0 flex items-center justify-center ${
                                                         isSelected ? 'border-amber-600 bg-amber-600 text-white' : 'border-slate-300 bg-white'
                                                     }`}>
                                                         {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
                                                     </div>
-                                                    <div>
+                                                    <div className="min-w-0">
                                                         <div className="flex items-center gap-1.5 flex-wrap">
                                                             <span className="font-black text-xs text-slate-900 uppercase">
                                                                 {log.sku}
                                                             </span>
+                                                            {/* Badge Type (OUT vs MOVE) */}
+                                                            {isMove ? (
+                                                                <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[9px] font-black border border-purple-200 uppercase tracking-wider">
+                                                                    MOVE
+                                                                </span>
+                                                            ) : (
+                                                                <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-[9px] font-black border border-rose-200 uppercase tracking-wider">
+                                                                    OUT
+                                                                </span>
+                                                            )}
+                                                            {/* Badge Penyesuaian */}
                                                             {log.is_adjustment && (
-                                                                <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                                                                <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9px] font-black border border-amber-300 uppercase tracking-wider">
                                                                     PENYESUAIAN
                                                                 </span>
                                                             )}
-                                                            <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded border ${
-                                                                (log.type || '').toUpperCase() === 'MOVE'
-                                                                    ? 'bg-blue-50 text-blue-700 border-blue-200'
-                                                                    : 'bg-rose-50 text-rose-700 border-rose-200'
-                                                            }`}>
-                                                                {log.type || 'OUT'}
-                                                            </span>
-                                                            <span className="text-[10px] font-bold text-slate-400 font-mono">
-                                                                #{String(log.id).substring(0, 8)}
+                                                            <span className="text-[10px] font-bold text-slate-400">
+                                                                ID #{String(log.id).slice(0, 8)}...
                                                             </span>
                                                         </div>
-                                                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-slate-600 mt-1">
+
+                                                        {/* Transaction and Scan Date details */}
+                                                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-600 mt-1">
                                                             <span>
-                                                                Tgl Transaksi: <strong className="text-slate-800">{log.tgl || '-'}</strong> {log.waktu && <span className="text-slate-500 font-mono text-[10px]">({log.waktu})</span>}
+                                                                Tgl OUT (Transaksi): <strong className="text-slate-900">{log.tgl || '-'}{log.waktu ? ` ${log.waktu}` : ''}</strong>
                                                             </span>
-                                                            {log.tgl_scan && (
-                                                                <span>
-                                                                    • Tgl Scan: <strong className="text-slate-700">{log.tgl_scan}</strong>
-                                                                </span>
-                                                            )}
+                                                            <span className="text-slate-300">•</span>
                                                             <span>
-                                                                • Rak: <strong className="text-slate-800">{log.rak || '-'}</strong>
+                                                                Tgl Scan Masuk: <strong className="text-slate-800">{log.tgl_scan || '-'}</strong>
                                                             </span>
-                                                            {log.user_name && (
-                                                                <span>
-                                                                    • User: <strong className="text-slate-700">{log.user_name}</strong>
-                                                                </span>
-                                                            )}
+                                                            <span className="text-slate-300">•</span>
+                                                            <span>
+                                                                Rak: <strong className="text-slate-800">{log.rak || log.sub_rak || '-'}</strong>
+                                                            </span>
+                                                            <span className="text-slate-300">•</span>
+                                                            <span>
+                                                                User: <strong className="text-slate-800">{log.user_name || log.user || '-'}</strong>
+                                                            </span>
                                                         </div>
-                                                        {(log.log_update_user || log.keterangan) && (
-                                                            <p className="text-[10px] text-slate-500 italic truncate max-w-md mt-1 bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
-                                                                {log.log_update_user || log.keterangan}
+
+                                                        {/* Note / Info Update */}
+                                                        {(log.keterangan || log.log_update_user) && (
+                                                            <p className="text-[10px] text-amber-800/90 italic truncate max-w-md mt-0.5">
+                                                                {log.log_update_user ? `Info: ${log.log_update_user}` : `Ket: ${log.keterangan}`}
                                                             </p>
                                                         )}
                                                     </div>
                                                 </div>
 
                                                 <div className="text-right shrink-0">
-                                                    <span className="text-base font-black text-rose-600 block">
+                                                    <span className={`text-base font-black block ${isMove ? 'text-purple-600' : 'text-rose-600'}`}>
                                                         -{Number(log.jumlah).toLocaleString()} <span className="text-[10px] uppercase text-slate-400">pcs</span>
                                                     </span>
                                                     <span className="text-[10px] font-black uppercase text-amber-700 bg-amber-100 px-2 py-0.5 rounded">
