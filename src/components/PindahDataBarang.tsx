@@ -7,7 +7,7 @@ import { supabase, fetchAllStockItems } from '../lib/supabase';
 import { DatabaseService } from '../lib/DatabaseService';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
-import { getRealtimeDateTime } from '../lib/transferDateHelper';
+import { getRealtimeDateTime, getOriginalReceiptDate } from '../lib/transferDateHelper';
 import { AutoKlopMinusModal, getRackBatchKey, getRackBatchLabel } from './AutoKlopMinusModal';
 import { toggleOpnameZoneSession } from '../services/opnameZoneBridgeService';
 
@@ -118,6 +118,43 @@ export function PindahDataBarang() {
   });
   const keystrokeBufferRef = useRef<string>('');
   const lastKeyTimeRef = useRef<number>(0);
+
+  // Original incoming receipt date detection for standard transfer
+  const [detectedReceiptDate, setDetectedReceiptDate] = useState<{
+    tgl: string;
+    tgl_scan: string;
+    waktu: string;
+    loading: boolean;
+  } | null>(null);
+
+  // Auto-detect original receipt date when an item is selected
+  useEffect(() => {
+    if (!selectedItem) {
+      setDetectedReceiptDate(null);
+      return;
+    }
+
+    let isMounted = true;
+    setDetectedReceiptDate({ tgl: '', tgl_scan: '', waktu: '', loading: true });
+
+    getOriginalReceiptDate(selectedItem.nama_produk, selectedItem.rak)
+      .then(info => {
+        if (isMounted) {
+          setDetectedReceiptDate({ ...info, loading: false });
+        }
+      })
+      .catch(err => {
+        console.error('Error fetching original receipt date:', err);
+        if (isMounted) {
+          const { todayTgl, nowWaktu } = getRealtimeDateTime();
+          setDetectedReceiptDate({ tgl: todayTgl, tgl_scan: todayTgl, waktu: nowWaktu, loading: false });
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedItem]);
 
   // Modal State for Real-Time Transfer & Auto-Klop (Developer & Admin)
   const [showRealtimeModal, setShowRealtimeModal] = useState(false);
@@ -866,8 +903,12 @@ export function PindahDataBarang() {
 
       updateProgress(operationSteps[1], 1);
 
-      // Realtime timestamp for transfer log
+      // Fetch true original supplier receipt date & scan date
+      const originalInfo = await getOriginalReceiptDate(selectedItem.nama_produk, selectedItem.rak);
       const { todayTgl, nowWaktu } = getRealtimeDateTime();
+      const tglNotaAsli = originalInfo.tgl || todayTgl;
+      const tglScanAsli = originalInfo.tgl_scan || tglNotaAsli;
+      const waktuAsli = originalInfo.waktu || nowWaktu;
 
       // Use current timestamp for created_at so transaction logs sort properly to the top
       const createdAtOut = new Date(now.getTime() + 1000).toISOString();
@@ -875,40 +916,49 @@ export function PindahDataBarang() {
 
       const logEntries = [
         {
-          tgl: todayTgl,
-          waktu: nowWaktu,
+          tgl: tglNotaAsli,
+          waktu: waktuAsli,
           sku: selectedItem.nama_produk,
           jumlah: moveData.jumlah_pindah,
           type: 'OUT',
           gudang: 'TRANSFER',
           rak: selectedItem.rak,
-          tgl_scan: todayTgl,
+          tgl_scan: tglScanAsli,
           user_name: user?.user_metadata?.full_name || user?.email || userRole || 'System (Pindah Standar)',
           sub_rak: selectedItem.sub_rak || selectedItem.rak,
           created_at: createdAtOut
         },
         {
-          tgl: todayTgl,
-          waktu: nowWaktu,
+          tgl: tglNotaAsli,
+          waktu: waktuAsli,
           sku: selectedItem.nama_produk,
           jumlah: moveData.jumlah_pindah,
           type: 'IN',
           gudang: 'TRANSFER',
           rak: rakTujuanFinal,
-          tgl_scan: todayTgl,
+          tgl_scan: tglScanAsli,
           user_name: user?.user_metadata?.full_name || user?.email || userRole || 'System (Pindah Standar)',
           sub_rak: rakTujuanFinal,
           created_at: createdAtIn
         }
       ];
 
-      const { error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
+      const { data: insertedData, error: logError } = await DatabaseService.insertLogs(logEntries, writeMode);
 
       if (logError) {
         console.error('Error creating log entries:', logError);
         showToast(`Gagal mencatat perpindahan barang: ${logError.message}`, 'error');
         setOperationProgress(prev => ({ ...prev, isVisible: false }));
         return;
+      }
+
+      // Pastikan tgl dan tgl_scan tidak ter-override oleh database trigger/defaults
+      if (insertedData && insertedData.length > 0) {
+        for (const l of insertedData) {
+          if (l.id && (l.tgl_scan !== tglScanAsli || l.tgl !== tglNotaAsli)) {
+            await DatabaseService.updateLog(l.id, { tgl_scan: tglScanAsli, tgl: tglNotaAsli }, writeMode);
+          }
+        }
       }
 
       updateProgress(operationSteps[3], 3);
@@ -3010,7 +3060,24 @@ export function PindahDataBarang() {
                   {/* Selected Item Info */}
                   {selectedItem && (
                     <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                      <h4 className="font-medium text-green-800 mb-2">Barang Terpilih:</h4>
+                      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                        <h4 className="font-medium text-green-800">Barang Terpilih:</h4>
+                        {detectedReceiptDate && (
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-100 text-blue-900 border border-blue-300 rounded-lg text-xs font-bold shadow-xs">
+                            {detectedReceiptDate.loading ? (
+                              <>
+                                <RefreshCw className="h-3 w-3 animate-spin text-blue-600" />
+                                <span>Mendeteksi Tgl Nota...</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>📅 Tgl Nota Masuk:</span>
+                                <span className="font-black text-blue-950 underline">{detectedReceiptDate.tgl}</span>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
                       <div className="text-sm text-green-700 space-y-1">
                         <div><strong>Nama:</strong> {selectedItem.nama_produk}</div>
                         <div><strong>Rak Asal:</strong> {selectedItem.rak}</div>
@@ -3184,6 +3251,12 @@ export function PindahDataBarang() {
                       <div className="flex justify-between">
                         <span className="text-gray-600">Barang:</span>
                         <span className="font-medium">{selectedItem.nama_produk}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Tgl Nota/Scan Digunakan:</span>
+                        <span className="font-bold text-blue-700">
+                          {detectedReceiptDate ? (detectedReceiptDate.loading ? 'Mendeteksi...' : `${detectedReceiptDate.tgl} (Scan: ${detectedReceiptDate.tgl_scan})`) : '-'}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-600">Jumlah Pindah:</span>
