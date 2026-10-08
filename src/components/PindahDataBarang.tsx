@@ -109,6 +109,16 @@ export function PindahDataBarang() {
     jumlah_pindah: ''
   });
 
+  // DevGod Mode State - Typing 'devgod' unlocks restricted racks (LANTAI 4, LANTAI 2, ECER-N, ECER-O, ECER-M, BLOK-I)
+  const [isDevGod, setIsDevGod] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('pindah_devgod_active') === 'true';
+    }
+    return false;
+  });
+  const keystrokeBufferRef = useRef<string>('');
+  const lastKeyTimeRef = useRef<number>(0);
+
   // Modal State for Real-Time Transfer & Auto-Klop (Developer & Admin)
   const [showRealtimeModal, setShowRealtimeModal] = useState(false);
   const [realtimeModalMode, setRealtimeModalMode] = useState<'SINGLE' | 'BATCH'>('SINGLE');
@@ -602,6 +612,50 @@ export function PindahDataBarang() {
     }, 4000);
   }, []);
 
+  // Secret Keystroke Sequence Listener: Typing 'devgod' anywhere toggles DevGod Mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key && e.key.length === 1) {
+        const now = Date.now();
+        // Reset buffer if idle for more than 3.5 seconds
+        if (now - lastKeyTimeRef.current > 3500) {
+          keystrokeBufferRef.current = '';
+        }
+        lastKeyTimeRef.current = now;
+
+        keystrokeBufferRef.current = (keystrokeBufferRef.current + e.key.toLowerCase()).slice(-10);
+        if (keystrokeBufferRef.current.endsWith('devgod')) {
+          keystrokeBufferRef.current = '';
+          setIsDevGod(prev => {
+            const next = !prev;
+            if (typeof window !== 'undefined') {
+              sessionStorage.setItem('pindah_devgod_active', String(next));
+            }
+            if (next) {
+              showToast('⚡ Mode DevGod AKTIF! Rak terlarang (LANTAI 4, LANTAI 2, ECER-N, ECER-O, ECER-M, BLOK-I) kini terbuka!', 'success');
+            } else {
+              showToast('🔒 Mode DevGod DINONAKTIFKAN! Rak khusus kembali dikunci.', 'info');
+              // Reset rak_tujuan if currently selecting a restricted rack
+              setMoveData(curr => {
+                if (RESTRICTED_RACKS.includes(curr.rak_tujuan.toUpperCase().trim())) {
+                  return { ...curr, rak_tujuan: '' };
+                }
+                return curr;
+              });
+              setIsRakTujuanValidated(false);
+            }
+            return next;
+          });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showToast]);
+
   useEffect(() => {
     loadInitialData();
   }, []);
@@ -695,12 +749,27 @@ export function PindahDataBarang() {
   }, [stockItems, searchTerm]);
 
   const filteredRacks = useMemo(() => {
-    return rackLocations.filter(rack =>
+    // If DevGod is active, ensure all RESTRICTED_RACKS exist in candidates even if not loaded from DB
+    const allRacks = [...rackLocations];
+    if (isDevGod) {
+      const existingUpperNames = new Set(allRacks.map(r => r.nama.toUpperCase()));
+      RESTRICTED_RACKS.forEach(restrictedName => {
+        if (!existingUpperNames.has(restrictedName)) {
+          allRacks.push({
+            id: `devgod-${restrictedName.toLowerCase().replace(/\s+/g, '-')}`,
+            nama: restrictedName,
+            status: 'Aktif'
+          });
+        }
+      });
+    }
+
+    return allRacks.filter(rack =>
       rack.nama.toLowerCase().includes(moveData.rak_tujuan.toLowerCase()) &&
       rack.nama !== selectedItem?.rak && // Exclude current rack
-      !RESTRICTED_RACKS.includes(rack.nama.toUpperCase()) // Exclude restricted racks
-    );
-  }, [rackLocations, moveData.rak_tujuan, selectedItem]);
+      (isDevGod || !RESTRICTED_RACKS.includes(rack.nama.toUpperCase())) // Only allow restricted racks if DevGod is active
+    ).sort((a, b) => a.nama.localeCompare(b.nama));
+  }, [rackLocations, moveData.rak_tujuan, selectedItem, isDevGod]);
 
   const handleItemSelect = (item: StockItem) => {
     setSelectedItem(item);
@@ -719,7 +788,7 @@ export function PindahDataBarang() {
   const handleRakTujuanSelect = (rakNama: string) => {
     const upperValue = rakNama.toUpperCase().trim();
 
-    if (RESTRICTED_RACKS.includes(upperValue)) {
+    if (!isDevGod && RESTRICTED_RACKS.includes(upperValue)) {
       showToast(`Rak ${upperValue} tidak diizinkan sebagai tujuan pemindahan`, 'error');
       return;
     }
@@ -754,7 +823,7 @@ export function PindahDataBarang() {
     }
 
     const rakTujuanUpper = moveData.rak_tujuan.toUpperCase().trim();
-    if (RESTRICTED_RACKS.includes(rakTujuanUpper)) {
+    if (!isDevGod && RESTRICTED_RACKS.includes(rakTujuanUpper)) {
       showToast(`Tidak diperbolehkan memindahkan barang ke Rak ${rakTujuanUpper}`, 'error');
       return;
     }
@@ -2779,6 +2848,16 @@ export function PindahDataBarang() {
                   </button>
                 )}
 
+                {isDevGod && (
+                  <div
+                    className="h-12 px-4 bg-gradient-to-r from-purple-700 via-indigo-600 to-purple-800 text-white font-black rounded-2xl shadow-lg shadow-purple-950/40 flex items-center justify-center gap-2 border border-purple-400/50 animate-pulse"
+                    title="Mode DevGod Aktif: Rak khusus (LANTAI 4, LANTAI 2, ECER-N, ECER-O, ECER-M, BLOK-I) terbuka"
+                  >
+                    <Zap className="h-4 w-4 text-yellow-300 fill-yellow-300" />
+                    <span className="uppercase text-xs font-black tracking-wider">DEVGOD AKTIF</span>
+                  </div>
+                )}
+
                 <button
                   onClick={loadInitialData}
                   disabled={loading}
@@ -2794,22 +2873,36 @@ export function PindahDataBarang() {
 
         <div className="lg:px-10 pb-12 -mt-6 lg:-mt-10">
           {/* Marquee/Running Text */}
-          <div className="bg-gradient-to-r from-blue-700 via-blue-800 to-blue-700 text-white py-2.5 px-6 rounded-2xl overflow-hidden shadow-xl border border-blue-900/50 mb-8 relative z-20">
+          <div className={`py-2.5 px-6 rounded-2xl overflow-hidden shadow-xl border mb-8 relative z-20 transition-all duration-300 ${
+            isDevGod
+              ? 'bg-gradient-to-r from-purple-900 via-indigo-950 to-purple-900 text-purple-100 border-purple-500/50 shadow-purple-950/40'
+              : 'bg-gradient-to-r from-blue-700 via-blue-800 to-blue-700 text-white border-blue-900/50 shadow-blue-900/20'
+          }`}>
             <div className="flex items-center whitespace-nowrap animate-marquee">
               <div className="flex items-center space-x-4 pr-12">
-                <span className="flex items-center gap-2 font-black uppercase tracking-wider text-[10px] bg-amber-400 text-blue-900 px-3 py-1 rounded-full shadow-sm">
-                  <AlertCircle className="h-3 w-3" /> PENTING
+                <span className={`flex items-center gap-2 font-black uppercase tracking-wider text-[10px] px-3 py-1 rounded-full shadow-sm ${
+                  isDevGod ? 'bg-yellow-400 text-purple-950 animate-pulse' : 'bg-amber-400 text-blue-900'
+                }`}>
+                  {isDevGod ? <Zap className="h-3 w-3 fill-purple-950 text-purple-950" /> : <AlertCircle className="h-3 w-3" />}
+                  {isDevGod ? 'DEVGOD AKTIF' : 'PENTING'}
                 </span>
                 <span className="font-bold text-xs lg:text-sm tracking-tight uppercase">
-                  Pindah data hanya diperbolehkan dari **Rak Utama** ke **Rak Utama** lainnya. Transaksi ke rak restricted (Eceran/Lantai tertentu) tidak diizinkan.
+                  {isDevGod
+                    ? '⚡ MODE DEVGOD AKTIF: Rak Terlarang (LANTAI 4, LANTAI 2, ECER-N, ECER-O, ECER-M, BLOK-I) kini terbuka dan dapat digunakan! Ketik "devgod" lagi untuk menonaktifkan.'
+                    : 'Pindah data hanya diperbolehkan dari Rak Utama ke Rak Utama lainnya. Transaksi ke rak restricted (Eceran/Lantai tertentu) tidak diizinkan.'}
                 </span>
               </div>
               <div className="flex items-center space-x-4 pr-12">
-                <span className="flex items-center gap-2 font-black uppercase tracking-wider text-[10px] bg-amber-400 text-blue-900 px-3 py-1 rounded-full shadow-sm">
-                  <AlertCircle className="h-3 w-3" /> PENTING
+                <span className={`flex items-center gap-2 font-black uppercase tracking-wider text-[10px] px-3 py-1 rounded-full shadow-sm ${
+                  isDevGod ? 'bg-yellow-400 text-purple-950 animate-pulse' : 'bg-amber-400 text-blue-900'
+                }`}>
+                  {isDevGod ? <Zap className="h-3 w-3 fill-purple-950 text-purple-950" /> : <AlertCircle className="h-3 w-3" />}
+                  {isDevGod ? 'DEVGOD AKTIF' : 'PENTING'}
                 </span>
                 <span className="font-bold text-xs lg:text-sm tracking-tight uppercase">
-                  Pindah data hanya diperbolehkan dari **Rak Utama** ke **Rak Utama** lainnya. Transaksi ke rak restricted (Eceran/Lantai tertentu) tidak diizinkan.
+                  {isDevGod
+                    ? '⚡ MODE DEVGOD AKTIF: Rak Terlarang (LANTAI 4, LANTAI 2, ECER-N, ECER-O, ECER-M, BLOK-I) kini terbuka dan dapat digunakan! Ketik "devgod" lagi untuk menonaktifkan.'
+                    : 'Pindah data hanya diperbolehkan dari Rak Utama ke Rak Utama lainnya. Transaksi ke rak restricted (Eceran/Lantai tertentu) tidak diizinkan.'}
                 </span>
               </div>
             </div>
@@ -2969,16 +3062,29 @@ export function PindahDataBarang() {
                         {showRakTujuanDropdown && (
                           <div ref={rakDropdownRef} className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-300 rounded-md shadow-lg z-50 max-h-48 overflow-y-auto">
                             {filteredRacks.length > 0 ? (
-                              filteredRacks.map((rack, index) => (
-                                <div
-                                  key={rack.id}
-                                  onClick={() => handleRakTujuanSelect(rack.nama)}
-                                  className={`px-3 py-2 text-sm cursor-pointer border-b border-gray-100 last:border-b-0 ${index === highlightedRakIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                              filteredRacks.map((rack, index) => {
+                                const isRestricted = RESTRICTED_RACKS.includes(rack.nama.toUpperCase());
+                                return (
+                                  <div
+                                    key={rack.id}
+                                    onClick={() => handleRakTujuanSelect(rack.nama)}
+                                    className={`px-3 py-2 text-sm cursor-pointer border-b border-gray-100 last:border-b-0 flex items-center justify-between ${
+                                      index === highlightedRakIndex
+                                        ? (isRestricted ? 'bg-purple-100 text-purple-950 font-bold' : 'bg-blue-100')
+                                        : (isRestricted ? 'bg-purple-50/40 hover:bg-purple-100/70 text-purple-900 font-medium' : 'hover:bg-blue-50')
                                     }`}
-                                >
-                                  {rack.nama}
-                                </div>
-                              ))
+                                  >
+                                    <span className="flex items-center gap-2">
+                                      {rack.nama}
+                                    </span>
+                                    {isRestricted && (
+                                      <span className="px-1.5 py-0.5 text-[10px] font-black uppercase rounded bg-purple-700 text-yellow-300 shadow-sm flex items-center gap-1">
+                                        <Zap className="w-2.5 h-2.5 fill-yellow-300 text-yellow-300" /> DEVGOD
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })
                             ) : (
                               <div className="px-3 py-2 text-sm text-gray-500">
                                 {moveData.rak_tujuan ? 'Tidak ada rak yang cocok' : 'Ketik untuk mencari rak...'}
