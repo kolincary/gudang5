@@ -42,6 +42,7 @@ import { DailyQuestManager } from './components/DailyQuestManager';
 import { DatabaseSettings } from './components/DatabaseSettings';
 import { DevModeSettings } from './components/DevModeSettings';
 import { SupabaseConfig } from './components/SupabaseConfig';
+import { FirestoreLog } from './components/FirestoreLog';
 import { DatabaseHotSwapListener } from './components/DatabaseHotSwapListener';
 import { RoleNotificationBlocker } from './components/RoleNotificationBlocker';
 import { ManageRoleNotifications } from './components/ManageRoleNotifications';
@@ -125,6 +126,7 @@ function AuthenticatedApp() {
           <Route path="/daily-quest-manager" element={<DailyQuestManager />} />
           <Route path="/database-settings" element={<DatabaseSettings />} />
           <Route path="/db-config" element={<SupabaseConfig />} />
+          <Route path="/firestore-log" element={<FirestoreLog />} />
           <Route path="/dev-settings" element={<DevModeSettings />} />
           <Route path="/manage-role-notifications" element={<ManageRoleNotifications />} />
         </Routes>

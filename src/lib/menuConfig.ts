@@ -22,7 +22,8 @@ import {
   Activity,
   Ban,
   Upload,
-  Boxes
+  Boxes,
+  Flame
 } from 'lucide-react';
 
 export const navigationItems = [
@@ -40,6 +41,7 @@ export const navigationItems = [
 
 export const devNavigationItems = [
   { name: 'Supabase DB Config', href: '/db-config', icon: DatabaseIcon },
+  { name: 'Firestore DB Log', href: '/firestore-log', icon: Flame },
   { name: 'Import Data Closing', href: '/import-data-export', icon: Upload },
   { name: 'Transfer Sync Manager', href: '/transfer-sync', icon: ArrowRightLeft },
   { name: 'Perbaiki Sinkronisasi Stok', href: '/fix-stock-sync', icon: DatabaseIcon },
