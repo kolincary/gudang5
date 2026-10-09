@@ -189,6 +189,86 @@ export const normalizeFilterDate = (dateStr: string): string => {
   return cleanStr;
 };
 
+// Rak yang dilarang dipindahkan (baik sebagai rak asal maupun rak tujuan perpindahan)
+export const FORBIDDEN_TRANSFER_RACKS = [
+  'ECER-M',
+  'ECER-N',
+  'ECER-O',
+  'LANTAI 2',
+  'LANTAI 4',
+  'BLOK-I'
+];
+
+export const isForbiddenTransferRack = (rak: string): boolean => {
+  if (!rak) return false;
+  const clean = rak.trim().toUpperCase().replace(/\s+/g, ' ');
+  const compact = clean.replace(/[\s\-_\.]+/g, '');
+
+  // Cek ECER / CER (ECER-M, ECER-N, ECER-O, CER-M, CER-N, CER-O)
+  if (
+    compact === 'ECERM' || compact.startsWith('ECERM') || compact === 'CERM' || compact.startsWith('CERM') ||
+    compact === 'ECERN' || compact.startsWith('ECERN') || compact === 'CERN' || compact.startsWith('CERN') ||
+    compact === 'ECERO' || compact.startsWith('ECERO') || compact === 'CERO' || compact.startsWith('CERO')
+  ) {
+    return true;
+  }
+
+  // Cek LANTAI 2 / 4 (LANTAI 2, LT 2, LT. 2, LANTAI 4, LT 4, LT. 4)
+  if (
+    compact === 'LANTAI2' || compact.startsWith('LANTAI2') || compact === 'LT2' || compact.startsWith('LT2') ||
+    compact === 'LANTAI4' || compact.startsWith('LANTAI4') || compact === 'LT4' || compact.startsWith('LT4')
+  ) {
+    return true;
+  }
+
+  // Cek BLOK-I / BLOK-1 (BLOK-I, BLOK I, BLOK 1, BLOK-1)
+  if (
+    compact === 'BLOKI' || compact.startsWith('BLOKI') || compact === 'BLOK1' || compact.startsWith('BLOK1')
+  ) {
+    return true;
+  }
+
+  for (const forbidden of FORBIDDEN_TRANSFER_RACKS) {
+    const fCompact = forbidden.replace(/[\s\-_\.]+/g, '');
+    if (compact.includes(fCompact)) return true;
+  }
+  return false;
+};
+
+export const FORBIDDEN_DESTINATION_RACKS = FORBIDDEN_TRANSFER_RACKS;
+export const isForbiddenDestinationRack = isForbiddenTransferRack;
+
+// Helper to extract redistribute info from log_update_user
+export const getRedistributeMoveInfo = (logUpdateUser?: string) => {
+  if (!logUpdateUser) return null;
+  const match = logUpdateUser.match(/Redistribute\s+Move\s+([^\s->]+)\s*->\s*([^\s]+)/i);
+  if (match) {
+    return { fromRak: match[1], toRak: match[2] };
+  }
+  return null;
+};
+
+// Generate single move report sentence: [SKU] di rak [fromRak] seharusnya rak [toRak]
+export const formatMoveReportSentence = (sku: string, fromRak: string, toRak: string) => {
+  return `${sku} di rak ${fromRak} seharusnya rak ${toRak}`;
+};
+
+// Generate single deficit / lebih potong report sentence
+export const formatDeficitReportSentence = (
+  sku: string,
+  rak: string,
+  tglScan: string,
+  deficitQty: number,
+  totalIn?: number,
+  totalOut?: number
+) => {
+  const inOutText = (totalIn !== undefined && totalOut !== undefined)
+    ? ` (Total IN: ${totalIn.toLocaleString()}, OUT: ${totalOut.toLocaleString()})`
+    : '';
+  const tglText = tglScan ? ` (Tgl Scan: ${formatDateDisplay(tglScan)})` : '';
+  return `${sku} di rak ${rak}${tglText} lebih potong ${Math.abs(deficitQty).toLocaleString()} pcs${inOutText}`;
+};
+
 export interface DatabaseLogProps {
   initialGudangFilter?: string;
   bypassPin?: boolean;
@@ -741,14 +821,16 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
               surplusQty: s.balance
             }));
 
-          const otherRakSurpluses = surplusGroups
-            .filter(s => s.rak.toUpperCase() !== g.rak.toUpperCase())
-            .map(s => ({
-              rak: s.rak,
-              tglScan: s.tglScan,
-              rawTglScan: s.rawTglScan,
-              surplusQty: s.balance
-            }));
+          const otherRakSurpluses = !isForbiddenTransferRack(g.rak)
+            ? surplusGroups
+                .filter(s => s.rak.toUpperCase() !== g.rak.toUpperCase() && !isForbiddenTransferRack(s.rak))
+                .map(s => ({
+                  rak: s.rak,
+                  tglScan: s.tglScan,
+                  rawTglScan: s.rawTglScan,
+                  surplusQty: s.balance
+                }))
+            : [];
 
           g.availableSurplusesSameRak = sameRakSurpluses;
           g.availableSurplusesOtherRak = otherRakSurpluses;
@@ -955,8 +1037,10 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       });
 
       // Phase 2: Cross-Rak Redistribution (if deficits still remain and other raks have surplus)
-      const remainingDeficits = groupList.filter(g => g.balance < 0 && !checkIfExcluded(g));
-      const remainingSurpluses = groupList.filter(g => g.balance > 0 && !checkIfExcluded(g)).sort((a, b) => b.balance - a.balance);
+      const remainingDeficits = groupList.filter(g => g.balance < 0 && !checkIfExcluded(g) && !isForbiddenTransferRack(g.rak));
+      const remainingSurpluses = groupList
+        .filter(g => g.balance > 0 && !checkIfExcluded(g) && !isForbiddenTransferRack(g.rak))
+        .sort((a, b) => b.balance - a.balance);
 
       if (remainingDeficits.length > 0 && remainingSurpluses.length > 0) {
         remainingDeficits.forEach(negG => {
@@ -964,7 +1048,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
           for (const row of rows) {
             if (negG.balance >= 0) break;
-            const targetEntry = remainingSurpluses.find(tg => tg.balance > 0);
+            const targetEntry = remainingSurpluses.find(tg => tg.balance > 0 && !isForbiddenTransferRack(tg.rak));
             if (targetEntry) {
               moves.push({
                 id: row.id,
@@ -3016,6 +3100,140 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
   };
 
+  const handleCopySelectedMoveReport = async () => {
+    if (selectedIds.size === 0) {
+      showToast('Pilih setidaknya satu data terlebih dahulu', 'warning');
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const selectedArray = Array.from(selectedIds);
+      let selectedEntries: any[] = [];
+
+      const entriesMap = new Map<string, any>();
+      filteredEntries.forEach(item => {
+        if (item.id) entriesMap.set(item.id, item);
+      });
+
+      const allInCurrentPage = selectedArray.every(id => entriesMap.has(id));
+      if (allInCurrentPage) {
+        selectedEntries = selectedArray.map(id => entriesMap.get(id)).filter(Boolean);
+      } else {
+        const batchSize = 50;
+        for (let i = 0; i < selectedArray.length; i += batchSize) {
+          const chunk = selectedArray.slice(i, i + batchSize);
+          const { data, error } = await supabase
+            .from('database_log')
+            .select('id, sku, rak, sub_rak, tgl, tgl_scan, type, jumlah, log_update_user')
+            .in('id', chunk);
+          if (error) throw error;
+          if (data) selectedEntries.push(...data);
+        }
+      }
+
+      const lines: string[] = [];
+      selectedEntries.forEach(e => {
+        const redistInfo = getRedistributeMoveInfo(e.log_update_user);
+        if (redistInfo) {
+          lines.push(formatMoveReportSentence(e.sku, redistInfo.fromRak, redistInfo.toRak));
+        } else {
+          lines.push(`${e.sku} di rak ${e.rak || '-'}`);
+        }
+      });
+
+      const uniqueLines = Array.from(new Set(lines));
+      if (uniqueLines.length === 0) {
+        showToast('Tidak ada data yang dapat disalin', 'warning');
+        return;
+      }
+
+      const textToCopy = uniqueLines.join('\n');
+      await navigator.clipboard.writeText(textToCopy);
+      showToast(`Berhasil menyalin ${uniqueLines.length} baris Laporan Pindah Rak ke clipboard!`, 'success');
+    } catch (err: any) {
+      console.error('Error copying move report:', err);
+      showToast(`Gagal menyalin laporan: ${err.message}`, 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
+  const handleCopySelectedDeficitReport = async () => {
+    if (selectedIds.size === 0) {
+      showToast('Pilih setidaknya satu data terlebih dahulu', 'warning');
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const selectedArray = Array.from(selectedIds);
+      let selectedEntries: any[] = [];
+
+      const entriesMap = new Map<string, any>();
+      filteredEntries.forEach(item => {
+        if (item.id) entriesMap.set(item.id, item);
+      });
+
+      const allInCurrentPage = selectedArray.every(id => entriesMap.has(id));
+      if (allInCurrentPage) {
+        selectedEntries = selectedArray.map(id => entriesMap.get(id)).filter(Boolean);
+      } else {
+        const batchSize = 50;
+        for (let i = 0; i < selectedArray.length; i += batchSize) {
+          const chunk = selectedArray.slice(i, i + batchSize);
+          const { data, error } = await supabase
+            .from('database_log')
+            .select('id, sku, rak, sub_rak, tgl, tgl_scan, type, jumlah, log_update_user')
+            .in('id', chunk);
+          if (error) throw error;
+          if (data) selectedEntries.push(...data);
+        }
+      }
+
+      // Group by SKU + Rak + Tgl Scan to compute net deficit
+      const map = new Map<string, { sku: string; rak: string; tglScan: string; inQty: number; outQty: number }>();
+      selectedEntries.forEach(e => {
+        const key = `${e.sku}|${e.rak}|${e.tgl_scan || ''}`;
+        if (!map.has(key)) {
+          map.set(key, { sku: e.sku, rak: e.rak, tglScan: e.tgl_scan || '', inQty: 0, outQty: 0 });
+        }
+        const g = map.get(key)!;
+        if ((e.type || '').toUpperCase() === 'IN') g.inQty += (e.jumlah || 0);
+        else g.outQty += (e.jumlah || 0);
+      });
+
+      const lines: string[] = [];
+      map.forEach(g => {
+        const balance = g.inQty - g.outQty;
+        if (balance < 0) {
+          lines.push(formatDeficitReportSentence(g.sku, g.rak, g.tglScan, balance, g.inQty, g.outQty));
+        }
+      });
+
+      if (lines.length === 0) {
+        // Fallback: list selected OUT rows
+        selectedEntries.filter(e => (e.type || '').toUpperCase() === 'OUT').forEach(e => {
+          lines.push(`${e.sku} di rak ${e.rak} (Tgl Scan: ${formatDateDisplay(e.tgl_scan || e.tgl)}) Qty OUT: ${e.jumlah} pcs`);
+        });
+      }
+
+      if (lines.length === 0) {
+        showToast('Tidak ditemukan transaksi pemotongan (OUT) / lebih potong pada data terpilih.', 'warning');
+        return;
+      }
+
+      const textToCopy = lines.join('\n');
+      await navigator.clipboard.writeText(textToCopy);
+      showToast(`Berhasil menyalin ${lines.length} baris Laporan Lebih Potong ke clipboard!`, 'success');
+    } catch (err: any) {
+      console.error('Error copying deficit report:', err);
+      showToast(`Gagal menyalin laporan lebih potong: ${err.message}`, 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
   const handleSyncTglScanWithTgl = async () => {
     if (selectedIds.size === 0) return;
 
@@ -4585,6 +4803,53 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     </button>
                   </div>
                 )}
+
+                {isGroupedMode && batchSummaryStats.mismatchGroups > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const mismatchGroups = batchGroupData.filter(g => g.hasRakMismatch);
+                      const lines: string[] = [];
+                      mismatchGroups.forEach(g => {
+                        const outRaks = Array.from(new Set(g.outEntries.filter(e => e.isRakMismatch).map(e => e.rak)));
+                        const inRak = g.initialInRaksList[0] || 'UTAMA';
+                        outRaks.forEach(r => {
+                          lines.push(formatMoveReportSentence(g.sku, r, inRak));
+                        });
+                      });
+                      const unique = Array.from(new Set(lines));
+                      if (unique.length === 0) return;
+                      navigator.clipboard.writeText(unique.join('\n'));
+                      showToast(`${unique.length} baris Laporan Rak Beda disalin!`, 'success');
+                    }}
+                    className="px-3 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300 shadow-xs"
+                    title="Salin kalimat laporan semua rak beda untuk tim crosscheck (format: [SKU] di rak [OUT] seharusnya rak [IN])"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Copy Laporan Rak</span>
+                  </button>
+                )}
+
+                {isGroupedMode && batchSummaryStats.deficitGroups > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const deficitGroups = batchGroupData.filter(g => g.balance < 0);
+                      const lines = deficitGroups.map(g => {
+                        const rak = g.initialInRaksList[0] || g.sortedEntries[0]?.rak || '-';
+                        return formatDeficitReportSentence(g.sku, rak, g.tglScan, g.balance, g.totalIn, g.totalOut);
+                      });
+                      if (lines.length === 0) return;
+                      navigator.clipboard.writeText(lines.join('\n'));
+                      showToast(`${lines.length} baris Laporan Lebih Potong disalin!`, 'success');
+                    }}
+                    className="px-3 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border bg-rose-50 hover:bg-rose-100 text-rose-800 border-rose-300 shadow-xs"
+                    title="Salin kalimat laporan semua batch defisit / lebih potong"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Copy Laporan Lebih Potong</span>
+                  </button>
+                )}
               </div>
 
               {Boolean(filters.sku || filters.type || filters.gudang || filters.rak || filters.user || filters.tanggal || filters.tglScan || filters.waktu || filters.subRak || filters.logUpdateUser || filters.isAdjustment) && (
@@ -4943,7 +5208,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                 </select>
               </div>
 
-              <div className="flex items-end gap-2">
+              <div className="flex items-end gap-2 col-span-1 sm:col-span-2 xl:col-span-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -4955,7 +5220,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     setCurrentPage(1);
                   }}
                   disabled={!dataLoaded}
-                  className={`w-1/2 h-[42px] font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1.5 border text-xs tracking-wider disabled:opacity-50 cursor-pointer ${
+                  className={`flex-1 min-w-0 px-3.5 h-[42px] font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2 border text-xs tracking-wider disabled:opacity-50 cursor-pointer ${
                     filters.excludeTransfer
                       ? 'bg-amber-600 text-white border-amber-700 shadow-amber-600/30 ring-2 ring-amber-400'
                       : 'bg-amber-50 hover:bg-amber-100 active:bg-amber-200 text-amber-800 border-amber-300'
@@ -4963,7 +5228,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   title={filters.excludeTransfer ? "Filter 'Tanpa Transfer' Aktif (gudang != 'TRANSFER'). Klik untuk menonaktifkan" : "Filter data agar tidak menampilkan gudang TRANSFER (gudang != 'TRANSFER')"}
                 >
                   <ArrowRightLeft className={`w-3.5 h-3.5 shrink-0 ${filters.excludeTransfer ? 'text-white' : 'text-amber-600'}`} />
-                  <span className="truncate uppercase font-black text-[11px]">
+                  <span className="whitespace-nowrap uppercase font-black text-[11px] sm:text-xs">
                     {filters.excludeTransfer ? 'Non-Transfer ✓' : 'Tanpa Transfer'}
                   </span>
                 </button>
@@ -4971,11 +5236,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                 <button
                   onClick={clearAllFilters}
                   disabled={!dataLoaded}
-                  className="w-1/2 h-[42px] bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1.5 border border-rose-300 disabled:opacity-50 cursor-pointer"
+                  className="px-4 h-[42px] bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1.5 border border-rose-300 disabled:opacity-50 cursor-pointer shrink-0"
                   title="Bersihkan Semua Filter"
                 >
                   <RotateCcw className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                  <span className="tracking-wider uppercase text-[11px] font-black truncate">Clear</span>
+                  <span className="tracking-wider uppercase text-[11px] font-black whitespace-nowrap">Clear</span>
                 </button>
               </div>
             </div>
@@ -5100,6 +5365,24 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     >
                       <Tag className="h-3.5 w-3.5 mr-1.5" />
                       <span className="text-[10px] uppercase tracking-wider">Adjust</span>
+                    </Button>
+                    <Button
+                      onClick={handleCopySelectedMoveReport}
+                      className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg border border-emerald-200 shadow-sm transition-all flex items-center justify-center"
+                      disabled={isBulkOperationLoading}
+                      title="Salin kalimat laporan pindah rak (format: SKU di rak [asal] seharusnya rak [tujuan])"
+                    >
+                      <Copy className="h-3.5 w-3.5 mr-1.5" />
+                      <span className="text-[10px] uppercase tracking-wider font-extrabold">Copy Laporan Rak</span>
+                    </Button>
+                    <Button
+                      onClick={handleCopySelectedDeficitReport}
+                      className="h-9 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-lg border border-rose-200 shadow-sm transition-all flex items-center justify-center"
+                      disabled={isBulkOperationLoading}
+                      title="Salin laporan data lebih potong / minus dari baris terpilih"
+                    >
+                      <Copy className="h-3.5 w-3.5 mr-1.5" />
+                      <span className="text-[10px] uppercase tracking-wider font-extrabold">Copy Laporan Lebih Potong</span>
                     </Button>
                     <Button
                       onClick={handleBulkDelete}
@@ -5342,10 +5625,28 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
                                       <div className="flex items-center gap-2 text-xs">
                                         {group.hasRakMismatch ? (
-                                          <span className="bg-amber-500/25 text-amber-300 border border-amber-500/40 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-2xs">
-                                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                                            {group.mismatchCount} Rak OUT Berbeda
-                                          </span>
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="bg-amber-500/25 text-amber-300 border border-amber-500/40 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-2xs">
+                                              <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                                              {group.mismatchCount} Rak OUT Berbeda
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                const mismatchOutEntries = group.outEntries.filter(e => e.isRakMismatch);
+                                                const inRak = group.initialInRaksList[0] || 'UTAMA';
+                                                const lines = mismatchOutEntries.map(e => formatMoveReportSentence(group.sku, e.rak, inRak));
+                                                const text = Array.from(new Set(lines)).join('\n');
+                                                navigator.clipboard.writeText(text);
+                                                showToast(`Laporan Pindah Rak disalin: "${text}"`, 'success');
+                                              }}
+                                              className="px-2 py-0.5 bg-amber-400/20 hover:bg-amber-400/30 text-amber-300 rounded border border-amber-400/40 transition-all flex items-center gap-1 text-[10px] font-bold cursor-pointer"
+                                              title="Salin kalimat laporan rak beda untuk tim crosscheck"
+                                            >
+                                              <Copy className="w-3 h-3" />
+                                              <span>Copy Laporan</span>
+                                            </button>
+                                          </div>
                                         ) : (
                                           <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-2xs">
                                             <Check className="w-3.5 h-3.5 text-emerald-400" />
@@ -5466,6 +5767,25 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                       <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600 font-mono text-xs">{entry.log_update_user}</td>
                                       <td className="px-4 py-2 text-center">
                                         <div className="flex justify-center space-x-1.5">
+                                          {(() => {
+                                            const redistInfo = getRedistributeMoveInfo(entry.log_update_user);
+                                            if (redistInfo) {
+                                              const reportText = formatMoveReportSentence(entry.sku, redistInfo.fromRak, redistInfo.toRak);
+                                              return (
+                                                <Button
+                                                  onClick={() => {
+                                                    navigator.clipboard.writeText(reportText);
+                                                    showToast(`Laporan Pindah Rak disalin: "${reportText}"`, 'success');
+                                                  }}
+                                                  className="h-8 w-8 p-0 bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-700 rounded-lg transition-all border border-emerald-300 flex items-center justify-center cursor-pointer shadow-2xs"
+                                                  title={`Salin Laporan Pindah Rak: "${reportText}"`}
+                                                >
+                                                  <Copy className="h-4 w-4" />
+                                                </Button>
+                                              );
+                                            }
+                                            return null;
+                                          })()}
                                           <Button
                                             onClick={() => handleOpenSubsequentLogs(entry)}
                                             className="h-8 w-8 p-0 bg-purple-500/10 hover:bg-purple-500/25 text-purple-700 rounded-lg transition-all border border-purple-200 backdrop-blur-sm flex items-center justify-center cursor-pointer"
@@ -5517,9 +5837,24 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                         Sisa: +{group.balance.toLocaleString()}
                                       </span>
                                     ) : (
-                                      <span className="inline-flex px-2.5 py-1 rounded-md bg-red-100 text-red-800 font-black text-[11px] border border-red-300">
-                                        Sisa: {group.balance.toLocaleString()}
-                                      </span>
+                                      <div className="inline-flex items-center gap-1.5 justify-center">
+                                        <span className="inline-flex px-2.5 py-1 rounded-md bg-red-100 text-red-800 font-black text-[11px] border border-red-300">
+                                          Sisa: {group.balance.toLocaleString()}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const primaryRak = group.initialInRaksList[0] || group.sortedEntries[0]?.rak || '-';
+                                            const text = formatDeficitReportSentence(group.sku, primaryRak, group.tglScan, group.balance, group.totalIn, group.totalOut);
+                                            navigator.clipboard.writeText(text);
+                                            showToast(`Laporan Lebih Potong disalin: "${text}"`, 'success');
+                                          }}
+                                          className="p-1 bg-red-100 hover:bg-red-200 text-red-800 rounded border border-red-300 transition-all cursor-pointer shadow-2xs"
+                                          title="Salin kalimat laporan lebih potong ini"
+                                        >
+                                          <Copy className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
                                     )}
                                   </td>
                                   <td colSpan={7} className="px-4 py-2.5 text-left text-slate-600">
@@ -5647,6 +5982,25 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                               <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600 font-mono text-xs">{entry.log_update_user}</td>
                               <td className="px-4 py-2 text-center">
                                 <div className="flex justify-center space-x-1.5">
+                                  {(() => {
+                                    const redistInfo = getRedistributeMoveInfo(entry.log_update_user);
+                                    if (redistInfo) {
+                                      const reportText = formatMoveReportSentence(entry.sku, redistInfo.fromRak, redistInfo.toRak);
+                                      return (
+                                        <Button
+                                          onClick={() => {
+                                            navigator.clipboard.writeText(reportText);
+                                            showToast(`Laporan Pindah Rak disalin: "${reportText}"`, 'success');
+                                          }}
+                                          className="h-8 w-8 p-0 bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-700 rounded-lg transition-all border border-emerald-300 flex items-center justify-center cursor-pointer shadow-2xs"
+                                          title={`Salin Laporan Pindah Rak: "${reportText}"`}
+                                        >
+                                          <Copy className="h-4 w-4" />
+                                        </Button>
+                                      );
+                                    }
+                                    return null;
+                                  })()}
                                   <Button
                                     onClick={() => handleOpenSubsequentLogs(entry)}
                                     className="h-8 w-8 p-0 bg-purple-500/10 hover:bg-purple-500/25 text-purple-700 rounded-lg transition-all border border-purple-200 backdrop-blur-sm flex items-center justify-center cursor-pointer"
@@ -6638,15 +6992,34 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   <span>{isAnalyzing ? 'Menganalisis...' : 'Mulai Analisis'}</span>
                 </Button>
                 {analysisResults.some(r => r.balance < 0) && (
-                  <Button
-                    onClick={handlePrepareRedistribute}
-                    disabled={isAnalyzing || isProcessingRemediation}
-                    className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95"
-                    title="Perbaiki semua selisih secara otomatis ke tanggal atau rak yang memiliki surplus"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    <span>Auto-Fix Semua</span>
-                  </Button>
+                  <>
+                    <Button
+                      onClick={handlePrepareRedistribute}
+                      disabled={isAnalyzing || isProcessingRemediation}
+                      className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95"
+                      title="Perbaiki semua selisih secara otomatis ke tanggal atau rak yang memiliki surplus"
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                      <span>Auto-Fix Semua</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        const deficits = analysisResults.filter(r => r.balance < 0);
+                        const lines = deficits.map(d =>
+                          formatDeficitReportSentence(analysisSku, d.rak, d.tglScan, d.balance, d.totalIn, d.totalOut)
+                        );
+                        const text = `LAPORAN LEBIH POTONG (SKU: ${analysisSku}):\n` + lines.join('\n');
+                        navigator.clipboard.writeText(text);
+                        showToast(`${lines.length} baris Laporan Lebih Potong disalin!`, 'success');
+                      }}
+                      className="h-11 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-300 shadow-sm transition-all flex items-center justify-center space-x-1.5 active:scale-95"
+                      title="Salin seluruh baris laporan lebih potong untuk tim"
+                    >
+                      <Copy className="h-4 w-4" />
+                      <span>Copy Laporan Lebih Potong</span>
+                    </Button>
+                  </>
                 )}
               </div>
 
@@ -6925,6 +7298,19 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                             ? 'DAPAT DIALIHKAN (RAK LAIN)'
                                             : 'LEBIH POTONG MURNI'}
                                       </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const text = formatDeficitReportSentence(analysisSku, res.rak, res.tglScan, res.balance, res.totalIn, res.totalOut);
+                                          navigator.clipboard.writeText(text);
+                                          showToast(`Laporan Lebih Potong disalin: "${text}"`, 'success');
+                                        }}
+                                        className="px-2 py-0.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded border border-rose-200 transition-all flex items-center gap-1 text-[10px] font-bold cursor-pointer"
+                                        title="Salin kalimat laporan lebih potong ini"
+                                      >
+                                        <Copy className="w-3 h-3" />
+                                        <span>Salin Laporan</span>
+                                      </button>
                                     </div>
                                     <p className="text-xs text-slate-700 font-medium">
                                       {res.recommendedAction}
@@ -7429,6 +7815,7 @@ function RedistributionPreviewModal({ isOpen, onClose, moves, isProcessing, onCo
                   <th className="px-4 py-2.5 text-left">Dari (Asal)</th>
                   <th className="px-4 py-2.5 text-left">Ke (Tujuan Surplus)</th>
                   <th className="px-4 py-2.5 text-center">Qty Dipindah</th>
+                  <th className="px-3 py-2.5 text-center w-12">Salin</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -7453,6 +7840,20 @@ function RedistributionPreviewModal({ isOpen, onClose, moves, isProcessing, onCo
                         <div className="text-xs text-emerald-600 font-mono font-bold">Tgl: {m.toTgl || '(KOSONG)'}</div>
                       </td>
                       <td className="px-4 py-2.5 text-center font-black text-blue-700">{m.jumlah} pcs</td>
+                      <td className="px-3 py-2.5 text-center">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const text = `${m.sku} di rak ${m.rak} seharusnya rak ${m.toRak || m.rak}`;
+                            navigator.clipboard.writeText(text);
+                            alert(`Tersalin: "${text}"`);
+                          }}
+                          className="p-1 hover:bg-emerald-50 text-slate-400 hover:text-emerald-700 rounded transition-all cursor-pointer"
+                          title={`Salin: "${m.sku} di rak ${m.rak} seharusnya rak ${m.toRak || m.rak}"`}
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
@@ -7461,18 +7862,35 @@ function RedistributionPreviewModal({ isOpen, onClose, moves, isProcessing, onCo
           </div>
         </div>
 
-        <div className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-200">
+        <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 bg-gray-50 p-4 rounded-xl border border-gray-200">
           <div className="text-sm font-medium text-gray-700">
             Total Rekomendasi: <span className="text-blue-600 font-bold">{moves.length} baris transaksi</span>
           </div>
-          <div className="flex space-x-3">
-            <Button onClick={onClose} variant="secondary" disabled={isProcessing}>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Button
+              type="button"
+              onClick={() => {
+                const rackMoves = moves.filter(m => m.toRak && m.toRak.toUpperCase() !== m.rak.toUpperCase());
+                const targetMoves = rackMoves.length > 0 ? rackMoves : moves;
+                if (targetMoves.length === 0) return;
+                const lines = targetMoves.map(m => `${m.sku} di rak ${m.rak} seharusnya rak ${m.toRak || m.rak}`);
+                navigator.clipboard.writeText(lines.join('\n'));
+                alert(`${lines.length} baris laporan pindah rak disalin ke clipboard!`);
+              }}
+              variant="secondary"
+              className="flex items-center space-x-1.5 font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 cursor-pointer text-xs"
+              title="Salin semua kalimat laporan pindah rak"
+            >
+              <Copy className="h-3.5 w-3.5" />
+              <span>Copy Laporan Pindah Rak</span>
+            </Button>
+            <Button onClick={onClose} variant="secondary" disabled={isProcessing} className="cursor-pointer text-xs">
               Batal
             </Button>
             <Button
               onClick={onConfirm}
               disabled={isProcessing}
-              className="px-8 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-bold rounded-xl shadow-lg flex items-center space-x-2"
+              className="px-6 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-bold rounded-xl shadow-lg flex items-center space-x-2 cursor-pointer text-xs"
             >
               {isProcessing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
               <span>{isProcessing ? 'Memproses...' : 'Terapkan Perbaikan'}</span>

@@ -88,16 +88,7 @@ export async function auditSkuCasing(
     stage: 'fetching',
     current: 70,
     total: 100,
-    message: 'Memuat data database_log untuk pengecekan transaksi...'
-  });
-
-  const logs = await fetchAllTableRows<{ id: string; sku: string }>('database_log', 'id, sku');
-
-  onProgress?.({
-    stage: 'fetching',
-    current: 90,
-    total: 100,
-    message: 'Menganalisis perbedaan huruf besar/kecil...'
+    message: 'Menganalisis perbedaan huruf besar/kecil di stock_items...'
   });
 
   const skuStats = new Map<string, SkuCasingMismatchItem>();
@@ -151,49 +142,28 @@ export async function auditSkuCasing(
     }
   });
 
-  logs.forEach(l => {
-    if (!l.sku) return;
-    const cur = l.sku.trim();
-    const curLower = cur.toLowerCase();
+  // Fast check database_log only for mismatched SKUs (avoids fetching 250,000 rows!)
+  if (skuStats.size > 0) {
+    onProgress?.({
+      stage: 'fetching',
+      current: 90,
+      total: 100,
+      message: 'Mengecek dampak di database_log...'
+    });
 
-    let targetName: string | null = null;
-    let idBarang = '-';
-
-    const directMaster = masterMap.get(curLower);
-    if (directMaster && directMaster.nama !== cur) {
-      targetName = directMaster.nama;
-      idBarang = directMaster.id_barang || '-';
-    } else {
-      const suffixMatch = cur.match(/^(.*?)\s*(\([^\)]+\))\s*$/);
-      if (suffixMatch) {
-        const baseNameLower = suffixMatch[1].trim().toLowerCase();
-        const suffix = suffixMatch[2].trim();
-        const baseMaster = masterMap.get(baseNameLower);
-        if (baseMaster) {
-          const expectedFullName = `${baseMaster.nama} ${suffix}`;
-          if (expectedFullName !== cur) {
-            targetName = expectedFullName;
-            idBarang = baseMaster.id_barang || '-';
-          }
-        }
+    const entries = Array.from(skuStats.values());
+    for (const item of entries) {
+      try {
+        const { count } = await supabase
+          .from('database_log')
+          .select('id', { count: 'exact', head: true })
+          .eq('sku', item.currentName);
+        item.logRows = count || 0;
+      } catch (err) {
+        console.warn(`Error counting log rows for ${item.currentName}:`, err);
       }
     }
-
-    if (targetName) {
-      if (skuStats.has(cur)) {
-        skuStats.get(cur)!.logRows++;
-      } else {
-        skuStats.set(cur, {
-          idBarang,
-          currentName: cur,
-          targetName,
-          stockRows: 0,
-          logRows: 1,
-          racks: []
-        });
-      }
-    }
-  });
+  }
 
   const items = Array.from(skuStats.values()).sort((a, b) => a.currentName.localeCompare(b.currentName));
   const totalStockMismatchRows = items.reduce((acc, item) => acc + item.stockRows, 0);
@@ -248,23 +218,29 @@ export async function executeSkuCasingSync(
         if (stockErr) throw stockErr;
         if (stockData) updatedStockRows += stockData.length;
 
-        // Also update Firebase Firestore stock_items
-        try {
-          const q = query(collection(db, 'stock_items'), where('nama_produk', '==', item.currentName));
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            const batch = writeBatch(db);
-            snap.docs.forEach(d => {
-              batch.update(doc(db, 'stock_items', d.id), {
-                nama_produk: item.targetName,
-                updated_at: new Date().toISOString()
+        // Asynchronously update Firebase Firestore stock_items with a timeout so it never blocks
+        (async () => {
+          try {
+            const q = query(collection(db, 'stock_items'), where('nama_produk', '==', item.currentName));
+            const snap = await Promise.race([
+              getDocs(q),
+              new Promise<any>((_, reject) => setTimeout(() => reject(new Error('Firebase timeout')), 2000))
+            ]);
+            if (snap && !snap.empty) {
+              const batch = writeBatch(db);
+              snap.docs.forEach((d: any) => {
+                batch.update(doc(db, 'stock_items', d.id), {
+                  nama_produk: item.targetName,
+                  updated_at: new Date().toISOString()
+                });
               });
-            });
-            await batch.commit();
+              await batch.commit();
+            }
+          } catch (fbErr) {
+            // Non-blocking Firebase warning
+            console.warn(`Firebase async sync warning for "${item.currentName}":`, fbErr);
           }
-        } catch (fbErr) {
-          console.warn('Firebase sync warning:', fbErr);
-        }
+        })();
       }
 
       // Update database_log in Supabase

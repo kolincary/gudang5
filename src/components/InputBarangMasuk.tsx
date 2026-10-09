@@ -224,38 +224,34 @@ export function InputBarangMasuk() {
             return isAllowedInputMasukRack(s.rak);
         });
 
-        // 2. Cek apakah ada pengaturan eksplisit di menu Prioritas Rak (product_rack_exclusions)
-        const exclusionsForSku: { rak: string; isExcluded: boolean }[] = [];
-        ALLOWED_INPUT_MASUK_RACKS.forEach(rak => {
-            const exclKey = `${normSku}|${rak}`;
-            if (productExclusions.has(exclKey)) {
-                exclusionsForSku.push({
-                    rak,
-                    isExcluded: productExclusions.get(exclKey) === true
-                });
-            }
-        });
+        // 2. Cek status eksklusi dari menu Prioritas Rak (product_rack_exclusions)
+        const isUtamaExcluded = productExclusions.get(`${normSku}|UTAMA`) === true;
 
-        const explicitNonExcluded = exclusionsForSku.filter(e => !e.isExcluded);
-        const explicitExcluded = exclusionsForSku.filter(e => e.isExcluded);
-
-        // Jika UTAMA dinonaktifkan di Prioritas Rak dan ada rak khusus (misal LANTAI 4 / LANTAI 2) yang aktif
-        if (explicitExcluded.some(e => e.rak === 'UTAMA') && explicitNonExcluded.length > 0) {
-            return explicitNonExcluded[0].rak;
-        }
-
-        // 3. Cek stok fisik yang tersedia di rak-rak masuk yang TIDAK dieksklusi
+        // Ambil rak-rak masuk yang TIDAK dieksklusi
         const validStockRacks = matchingStock
             .map(s => ({
                 rak: normalizeInputMasukRack(s.rak),
-                tersedia: s.tersedia || 0
+                tersedia: s.tersedia || 0,
+                masuk: s.masuk || 0
             }))
             .filter(item => {
                 const isExcluded = productExclusions.get(`${normSku}|${item.rak}`);
                 return isExcluded !== true;
             });
 
-        // Prioritaskan rak yang memiliki stok fisik tersedia > 0
+        // 3. Cek pengaturan eksplisit non-excluded di product_rack_exclusions
+        const explicitNonExcludedRacks = ALLOWED_INPUT_MASUK_RACKS.filter(rak => {
+            const exclKey = `${normSku}|${rak}`;
+            return productExclusions.has(exclKey) && productExclusions.get(exclKey) === false;
+        });
+
+        // a) Jika ada rak khusus non-UTAMA yang secara eksplisit aktif di Prioritas Rak
+        const explicitSpecialActive = explicitNonExcludedRacks.find(r => r !== 'UTAMA');
+        if (explicitSpecialActive) {
+            return explicitSpecialActive;
+        }
+
+        // b) Prioritas 1: Jika ada rak masuk non-excluded yang punya stok tersedia > 0
         const racksWithPositiveStock = validStockRacks.filter(s => s.tersedia > 0);
         if (racksWithPositiveStock.length > 0) {
             // Jika ada rak khusus non-UTAMA yang ada stok > 0 (contoh CORRECTION-1BOX di LANTAI 4), utamakan rak tersebut
@@ -263,18 +259,38 @@ export function InputBarangMasuk() {
             if (specialRackWithStock) {
                 return specialRackWithStock.rak;
             }
-            // Urutkan berdasarkan stok terbanyak
             racksWithPositiveStock.sort((a, b) => b.tersedia - a.tersedia);
             return racksWithPositiveStock[0].rak;
         }
 
-        // 4. Cek jika ada rak aktif non-UTAMA di Prioritas Rak (misal diatur aktif di LANTAI 2 / LANTAI 4)
-        const specialActiveExcl = explicitNonExcluded.find(e => e.rak !== 'UTAMA');
-        if (specialActiveExcl) {
-            return specialActiveExcl.rak;
+        // c) Prioritas 2: Jika ada rak khusus non-UTAMA yang memiliki histori masuk (masuk > 0) dan tidak dieksklusi
+        // (contoh: MONEYDETECTOR-MD-100 di LANTAI 4 dengan masuk 36.024 pcs)
+        const specialWithHistory = validStockRacks.find(s => s.rak !== 'UTAMA' && s.masuk > 0);
+        if (specialWithHistory) {
+            return specialWithHistory.rak;
         }
 
-        // 5. Default rak masuk utama gudang
+        // d) Prioritas 3: Jika ada entri rak khusus non-UTAMA yang terdaftar di stock dan tidak dieksklusi
+        const specialRegistered = validStockRacks.find(s => s.rak !== 'UTAMA');
+        if (specialRegistered && (isUtamaExcluded || validStockRacks.length === 1)) {
+            return specialRegistered.rak;
+        }
+
+        // e) Prioritas 4: Jika UTAMA tidak dieksklusi, default ke UTAMA
+        if (!isUtamaExcluded) {
+            return 'UTAMA';
+        }
+
+        // f) Jika UTAMA dieksklusi, pilih rak non-excluded dari stock_items atau rak masuk yang sah
+        if (validStockRacks.length > 0) {
+            return validStockRacks[0].rak;
+        }
+
+        const remainingAllowed = ALLOWED_INPUT_MASUK_RACKS.filter(r => r !== 'UTAMA' && productExclusions.get(`${normSku}|${r}`) !== true);
+        if (remainingAllowed.length > 0) {
+            return remainingAllowed[0];
+        }
+
         return 'UTAMA';
     }, [stockItems, productExclusions, ALLOWED_INPUT_MASUK_RACKS, isAllowedInputMasukRack, normalizeInputMasukRack]);
 

@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle, PackageCheck, RotateCcw, EyeOff } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle, PackageCheck, RotateCcw, EyeOff, Copy } from 'lucide-react';
 import { EntriDataModal } from './EntriDataModal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
@@ -14,6 +14,7 @@ import { verifyPin } from '../lib/pinValidator';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { DatabaseService } from '../lib/DatabaseService';
 import { SyncSkuCasingModal } from './SyncSkuCasingModal';
+import { getMasterProductsMap, normalizeSkuSync } from '../services/skuNormalizationService';
 
 export interface RedistributionMove {
   id: string;
@@ -51,6 +52,55 @@ const formatDateDisplay = (dateStr: string): string => {
   return cleanStr;
 };
 
+// Rak yang dilarang dipindahkan (baik sebagai rak asal maupun rak tujuan perpindahan)
+export const FORBIDDEN_TRANSFER_RACKS = [
+  'ECER-M',
+  'ECER-N',
+  'ECER-O',
+  'LANTAI 2',
+  'LANTAI 4',
+  'BLOK-I'
+];
+
+export const isForbiddenTransferRack = (rak: string): boolean => {
+  if (!rak) return false;
+  const clean = rak.trim().toUpperCase().replace(/\s+/g, ' ');
+  const compact = clean.replace(/[\s\-_\.]+/g, '');
+
+  // Cek ECER / CER (ECER-M, ECER-N, ECER-O, CER-M, CER-N, CER-O)
+  if (
+    compact === 'ECERM' || compact.startsWith('ECERM') || compact === 'CERM' || compact.startsWith('CERM') ||
+    compact === 'ECERN' || compact.startsWith('ECERN') || compact === 'CERN' || compact.startsWith('CERN') ||
+    compact === 'ECERO' || compact.startsWith('ECERO') || compact === 'CERO' || compact.startsWith('CERO')
+  ) {
+    return true;
+  }
+
+  // Cek LANTAI 2 / 4 (LANTAI 2, LT 2, LT. 2, LANTAI 4, LT 4, LT. 4)
+  if (
+    compact === 'LANTAI2' || compact.startsWith('LANTAI2') || compact === 'LT2' || compact.startsWith('LT2') ||
+    compact === 'LANTAI4' || compact.startsWith('LANTAI4') || compact === 'LT4' || compact.startsWith('LT4')
+  ) {
+    return true;
+  }
+
+  // Cek BLOK-I / BLOK-1 (BLOK-I, BLOK I, BLOK 1, BLOK-1)
+  if (
+    compact === 'BLOKI' || compact.startsWith('BLOKI') || compact === 'BLOK1' || compact.startsWith('BLOK1')
+  ) {
+    return true;
+  }
+
+  for (const forbidden of FORBIDDEN_TRANSFER_RACKS) {
+    const fCompact = forbidden.replace(/[\s\-_\.]+/g, '');
+    if (compact.includes(fCompact)) return true;
+  }
+  return false;
+};
+
+// Alias untuk kompatibilitas
+export const FORBIDDEN_DESTINATION_RACKS = FORBIDDEN_TRANSFER_RACKS;
+export const isForbiddenDestinationRack = isForbiddenTransferRack;
 
 // Global Cache for instant load & PIN Session
 let globalStockCache: any[] = [];
@@ -988,9 +1038,14 @@ export function DataGudang() {
         // PHASE 1: Cross-Rak Fix for the EXACT SAME Tgl Scan (e.g. IN at B7 on 2025-09-12, OUT at UTAMA on 2025-09-12)
         deficitGroups.forEach(negG => {
           if (negG.balance >= 0) return;
+          // Dilarang memindahkan stok dari rak khusus (ECER-M, ECER-N, ECER-O, LANTAI 2, LANTAI 4, BLOK-I)
+          if (isForbiddenTransferRack(negG.rak)) return;
 
           const sameDateSurplus = surplusGroups.find(
-            posG => posG.balance > 0 && posG.normalizedTglScan === negG.normalizedTglScan && posG.rak.toUpperCase() !== negG.rak.toUpperCase()
+            posG => posG.balance > 0 &&
+                    posG.normalizedTglScan === negG.normalizedTglScan &&
+                    posG.rak.toUpperCase() !== negG.rak.toUpperCase() &&
+                    !isForbiddenTransferRack(posG.rak)
           );
 
           if (sameDateSurplus) {
@@ -1052,9 +1107,13 @@ export function DataGudang() {
         // PHASE 3: Cross-Rak, Nearest Date Proximity (Fallback if any remaining)
         deficitGroups.forEach(negG => {
           if (negG.balance >= 0) return;
+          // Dilarang memindahkan stok dari rak khusus (ECER-M, ECER-N, ECER-O, LANTAI 2, LANTAI 4, BLOK-I)
+          if (isForbiddenTransferRack(negG.rak)) return;
 
           const crossSurpluses = surplusGroups
-            .filter(posG => posG.balance > 0)
+            .filter(posG => posG.balance > 0 &&
+                            posG.rak.toUpperCase() !== negG.rak.toUpperCase() &&
+                            !isForbiddenTransferRack(posG.rak))
             .sort((a, b) => Math.abs(a.tglScanTime - negG.tglScanTime) - Math.abs(b.tglScanTime - negG.tglScanTime));
 
           for (const posG of crossSurpluses) {
@@ -1099,20 +1158,36 @@ export function DataGudang() {
   };
 
   const handleExecuteRedistribute = async () => {
-    if (redistributeMoves.length === 0) return;
+    // Filter strictly to ensure no moves touch forbidden transfer racks
+    const movesToExecute = redistributeMoves.filter(m => {
+      if (m.toRak && m.toRak.toUpperCase() !== m.fromRak.toUpperCase()) {
+        if (isForbiddenTransferRack(m.fromRak) || isForbiddenTransferRack(m.toRak)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    if (movesToExecute.length === 0) {
+      showToast('Tidak ada pemindahan valid yang dapat dieksekusi.', 'warning');
+      setIsRedistributePreviewOpen(false);
+      return;
+    }
 
     try {
       setIsExecutingBalanceFix(true);
-      showToast(`Memproses ${redistributeMoves.length} pembaruan perbaikan saldo & rak...`, 'info');
+      showToast(`Memproses ${movesToExecute.length} pembaruan perbaikan saldo & rak...`, 'info');
 
       const batchSize = 50;
       let successCount = 0;
 
-      for (let i = 0; i < redistributeMoves.length; i += batchSize) {
-        const batch = redistributeMoves.slice(i, i + batchSize);
+      for (let i = 0; i < movesToExecute.length; i += batchSize) {
+        const batch = movesToExecute.slice(i, i + batchSize);
         const promises = batch.map(move => {
           const updatePayload: Record<string, any> = {
-            log_update_user: 'DEVMODE: Smart Balance Fix'
+            log_update_user: move.toRak !== move.fromRak
+              ? `DEVMODE: Redistribute Move ${move.fromRak}->${move.toRak}`
+              : 'DEVMODE: Redistribute Tgl Scan'
           };
           if (move.toTgl !== move.fromTgl) {
             updatePayload.tgl_scan = move.toTgl;
@@ -1148,9 +1223,19 @@ export function DataGudang() {
 
   // Filtered redistribution moves for preview modal
   const filteredMoves = useMemo(() => {
-    if (!previewSearchTerm) return redistributeMoves;
+    // Strictly exclude any cross-rak moves where source or destination is a forbidden transfer rack
+    const validMoves = redistributeMoves.filter(m => {
+      if (m.toRak && m.toRak.toUpperCase() !== m.fromRak.toUpperCase()) {
+        if (isForbiddenTransferRack(m.fromRak) || isForbiddenTransferRack(m.toRak)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    if (!previewSearchTerm) return validMoves;
     const term = previewSearchTerm.toLowerCase();
-    return redistributeMoves.filter(
+    return validMoves.filter(
       m =>
         m.sku.toLowerCase().includes(term) ||
         m.fromRak.toLowerCase().includes(term) ||
@@ -1343,8 +1428,9 @@ export function DataGudang() {
         }
       }
 
+      const masterMap = await getMasterProductsMap();
       const supabaseItems = newItems.map(item => ({
-        nama_produk: item.nama_produk,
+        nama_produk: normalizeSkuSync(item.nama_produk, masterMap),
         packing: item.packing,
         rak: item.rak,
         sub_rak: item.sub_rak,
@@ -1524,6 +1610,8 @@ export function DataGudang() {
 
     try {
       const updatedItem = updatedItems[0];
+      const masterMap = await getMasterProductsMap();
+      updatedItem.nama_produk = normalizeSkuSync(updatedItem.nama_produk, masterMap);
 
       // Pengecekan Duplikat (Kecuali ID yang sedang di-edit)
       if (writeMode !== 'firebase') {
@@ -2543,13 +2631,15 @@ export function DataGudang() {
       const total = dataLines.length;
       setImportProgress(prev => ({ ...prev, total, message: `Memproses ${total} baris data...` }));
 
+      const masterMap = await getMasterProductsMap();
       const importData: any[] = [];
       let duplicateCount = 0;
 
       for (let i = 0; i < dataLines.length; i++) {
         const line = dataLines[i];
         const columns = line.includes(';') ? line.split(';') : line.split(',');
-        const [nama_produk, packing = 'CTN/', rak, sub_rak = '', satuan = 'PCS'] = columns.map(c => c.trim().replace(/^"|"$/g, ''));
+        const [raw_nama_produk, packing = 'CTN/', rak, sub_rak = '', satuan = 'PCS'] = columns.map(c => c.trim().replace(/^"|"$/g, ''));
+        const nama_produk = normalizeSkuSync(raw_nama_produk, masterMap);
 
         if (nama_produk && rak) {
           const { data: existing } = await supabase.from('stock_items').select('id').eq('nama_produk', nama_produk).eq('rak', rak).limit(1);
@@ -4047,16 +4137,39 @@ export function DataGudang() {
               </p>
             </div>
 
-            {/* Search within Preview */}
-            <div className="relative">
-              <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-              <input
-                type="text"
-                value={previewSearchTerm}
-                onChange={(e) => setPreviewSearchTerm(e.target.value)}
-                placeholder="Cari SKU, Rak, Tanggal, atau Keterangan..."
-                className="w-full pl-10 pr-4 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-gray-800"
-              />
+            {/* Search within Preview & Copy Laporan */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                <input
+                  type="text"
+                  value={previewSearchTerm}
+                  onChange={(e) => setPreviewSearchTerm(e.target.value)}
+                  placeholder="Cari SKU, Rak, Tanggal, atau Keterangan..."
+                  className="w-full pl-10 pr-4 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-gray-800"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const rackMoves = filteredMoves.filter(m => m.fromRak.toUpperCase() !== m.toRak.toUpperCase());
+                  const targetMoves = rackMoves.length > 0 ? rackMoves : filteredMoves;
+                  if (targetMoves.length === 0) {
+                    showToast('Tidak ada data pemindahan untuk disalin.', 'warning');
+                    return;
+                  }
+                  const lines = targetMoves.map(m => `${m.sku} di rak ${m.fromRak} seharusnya rak ${m.toRak}`);
+                  const text = lines.join('\n');
+                  navigator.clipboard.writeText(text);
+                  showToast(`${lines.length} baris Laporan Pindah Rak disalin!`, 'success');
+                }}
+                disabled={filteredMoves.length === 0}
+                className="h-[38px] px-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-xl border border-indigo-200 shadow-sm transition-all flex items-center justify-center gap-2 text-xs shrink-0 cursor-pointer disabled:opacity-50"
+                title="Salin kalimat laporan untuk tim crosscheck (format: SKU di rak [asal] seharusnya rak [tujuan])"
+              >
+                <Copy className="h-3.5 w-3.5" />
+                <span>Copy Laporan Pindah Rak</span>
+              </button>
             </div>
 
             {/* Table of Recommended Moves */}
@@ -4071,12 +4184,13 @@ export function DataGudang() {
                     <th className="py-2.5 px-3 text-center">Perubahan Tgl Scan</th>
                     <th className="py-2.5 px-3 text-center">Qty</th>
                     <th className="py-2.5 px-3">Keterangan</th>
+                    <th className="py-2.5 px-2 text-center w-12">Aksi</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 bg-white">
                   {filteredMoves.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-gray-400 font-medium">
+                      <td colSpan={8} className="py-8 text-center text-gray-400 font-medium">
                         Tidak ada data rekomendasi yang sesuai dengan pencarian.
                       </td>
                     </tr>
@@ -4143,6 +4257,20 @@ export function DataGudang() {
                         </td>
                         <td className="py-2.5 px-3 text-gray-600 text-[11px] font-medium">
                           {move.keterangan}
+                        </td>
+                        <td className="py-2.5 px-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const text = `${move.sku} di rak ${move.fromRak} seharusnya rak ${move.toRak}`;
+                              navigator.clipboard.writeText(text);
+                              showToast(`Tersalin: "${text}"`, 'success');
+                            }}
+                            className="p-1 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 rounded transition-all cursor-pointer"
+                            title={`Salin: "${move.sku} di rak ${move.fromRak} seharusnya rak ${move.toRak}"`}
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </button>
                         </td>
                       </tr>
                     ))
