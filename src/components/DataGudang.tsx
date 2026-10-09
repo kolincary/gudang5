@@ -242,11 +242,34 @@ const FilterPopover: React.FC<{
   );
 };
 
+export const RACK_BATCH_OPTIONS = [
+  { value: '', label: 'Semua Batch Rak' },
+  { value: 'A', label: 'Rak A (A1 - A999)' },
+  { value: 'B', label: 'Rak B (B1 - B999)' },
+  { value: 'C', label: 'Rak C (C1 - C999)' },
+  { value: 'D', label: 'Rak D (D1 - D999)' },
+  { value: 'E', label: 'Rak E (E1 - E999)' },
+  { value: 'F', label: 'Rak F (F1 - F999)' },
+  { value: 'G', label: 'Rak G (G1 - G999)' },
+  { value: 'H', label: 'Rak H (H1 - H999)' },
+  { value: 'I', label: 'Rak I (I1 - I999)' },
+  { value: 'J', label: 'Rak J (J1 - J999)' },
+  { value: 'K', label: 'Rak K (K1 - K999)' },
+  { value: 'L', label: 'Rak L (L1 - L999)' },
+  { value: 'LANTAI', label: 'LANTAI (Lantai 2, 4, dll)' },
+  { value: 'LORONG', label: 'LORONG' },
+  { value: 'BLOK', label: 'BLOK' },
+  { value: 'ECER', label: 'ECER' },
+  { value: 'TEMP', label: 'TEMP / TRANSIT' },
+  { value: 'UTAMA', label: 'UTAMA' },
+];
+
 export function DataGudang() {
   const { readMode, writeMode } = useDatabaseConfig();
   // State management
   const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' }>({ key: 'created_at', direction: 'desc' });
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedRackBatch, setSelectedRackBatch] = useState('');
   const [selectedRack, setSelectedRack] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(50);
@@ -432,7 +455,7 @@ export function DataGudang() {
     showAvailableOnlyRef.current = showAvailableOnly;
   }, [showAvailableOnly]);
 
-  const isRakFiltered = Boolean(selectedRack && selectedRack !== 'Semua Rak');
+  const isRakFiltered = Boolean((selectedRack && selectedRack !== 'Semua Rak') || selectedRackBatch);
 
   // Otomatis nonaktifkan filter stok tersedia jika filter rak di-reset / dikosongkan
   useEffect(() => {
@@ -443,7 +466,7 @@ export function DataGudang() {
 
   const handleToggleAvailableOnly = () => {
     if (!isRakFiltered) {
-      showToast('Pilih filter rak terlebih dahulu untuk mengaktifkan filter ini!', 'warning');
+      showToast('Pilih filter rak atau batch rak terlebih dahulu untuk mengaktifkan filter ini!', 'warning');
       return;
     }
     const nextState = !showAvailableOnly;
@@ -452,9 +475,10 @@ export function DataGudang() {
       setShowMinusOnly(false);
     }
     setCurrentPage(1);
+    const rakLabel = selectedRack || (selectedRackBatch ? `Batch Rak ${selectedRackBatch}` : '');
     showToast(
       nextState
-        ? `Filter aktif: Hanya menampilkan produk dengan stok tersedia (Qty ≠ 0) di rak "${selectedRack}"`
+        ? `Filter aktif: Hanya menampilkan produk dengan stok tersedia (Qty ≠ 0) di rak "${rakLabel}"`
         : 'Filter dinonaktifkan: Menampilkan semua stok',
       'info'
     );
@@ -462,6 +486,7 @@ export function DataGudang() {
 
   const hasActiveFilters = Boolean(
     searchTerm ||
+    selectedRackBatch ||
     (selectedRack && selectedRack !== 'Semua Rak') ||
     showMinusOnly ||
     showAvailableOnly ||
@@ -471,6 +496,7 @@ export function DataGudang() {
   const handleResetAllFilters = useCallback(() => {
     setSearchTerm('');
     setRackSearchTerm('');
+    setSelectedRackBatch('');
     setSelectedRack('');
     setShowRackDropdown(false);
     setShowMinusOnly(false);
@@ -607,7 +633,7 @@ export function DataGudang() {
     if (!initialLoading) {
       loadStockData();
     }
-  }, [debouncedSearchTerm, selectedRack, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly, showAvailableOnly, sortConfig]); // Menggunakan 'filters' tunggal
+  }, [debouncedSearchTerm, selectedRackBatch, selectedRack, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly, showAvailableOnly, sortConfig]);
 
   const loadInitialData = async () => {
     try {
@@ -638,6 +664,20 @@ export function DataGudang() {
       // Apply search filter
       if (debouncedSearchTerm) {
         query = query.or(`nama_produk.ilike.%${debouncedSearchTerm}%,rak.ilike.%${debouncedSearchTerm}%`);
+      }
+
+      // Apply rack batch filter (Rak A - L or special zones)
+      if (selectedRackBatch) {
+        if (['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'].includes(selectedRackBatch)) {
+          // Strictly match letter followed by optional separator then number (e.g. A1..A999, L1..L999, avoiding LANTAI/LORONG)
+          query = query.filter('rak', 'match', `^${selectedRackBatch}\\s*[-_.]?\\s*[0-9]`);
+        } else if (selectedRackBatch === 'LANTAI') {
+          query = query.or('rak.ilike.LANTAI%,rak.ilike.LT%');
+        } else if (selectedRackBatch === 'LORONG') {
+          query = query.or('rak.ilike.LORONG%,rak.ilike.LOR%');
+        } else {
+          query = query.ilike('rak', `${selectedRackBatch}%`);
+        }
       }
 
       // Apply rack filter (only if selected rack is not empty / not 'Semua Rak')
@@ -1121,14 +1161,35 @@ export function DataGudang() {
     );
   }, [redistributeMoves, previewSearchTerm]);
 
-  // Memoized filtered racks for dropdown
+  // Memoized filtered racks for dropdown (filtered by selectedRackBatch if active)
   const filteredRacks = useMemo(() => {
-    if (!rackSearchTerm.trim()) return uniqueRacks;
+    let racks = uniqueRacks;
+
+    if (selectedRackBatch) {
+      if (['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'].includes(selectedRackBatch)) {
+        const regex = new RegExp(`^${selectedRackBatch}\\s*[-_.]?\\s*[0-9]`, 'i');
+        racks = racks.filter(r => regex.test(r.trim()));
+      } else if (selectedRackBatch === 'LANTAI') {
+        racks = racks.filter(r => {
+          const upper = r.trim().toUpperCase();
+          return upper.startsWith('LANTAI') || upper.startsWith('LT');
+        });
+      } else if (selectedRackBatch === 'LORONG') {
+        racks = racks.filter(r => {
+          const upper = r.trim().toUpperCase();
+          return upper.startsWith('LORONG') || upper.startsWith('LOR');
+        });
+      } else {
+        racks = racks.filter(r => r.trim().toUpperCase().startsWith(selectedRackBatch.toUpperCase()));
+      }
+    }
+
+    if (!rackSearchTerm.trim()) return racks;
     const term = rackSearchTerm.toLowerCase().trim();
-    return uniqueRacks.filter(rack =>
+    return racks.filter(rack =>
       rack.toLowerCase().includes(term)
     );
-  }, [uniqueRacks, rackSearchTerm]);
+  }, [uniqueRacks, selectedRackBatch, rackSearchTerm]);
 
   const handlePageChange = useCallback((newPage: number) => {
     if (newPage >= 1 && newPage <= paginationInfo.totalPages) {
@@ -1166,6 +1227,7 @@ export function DataGudang() {
     // Reset filter
     clearSearch();
     clearRackFilter();
+    setSelectedRackBatch('');
     // Jika mode firebase, data sudah realtime, cukup pancing render ulang.
     // Jika supabase, paksa ambil data lagi.
     if (readMode === 'firebase') {
@@ -1940,6 +2002,17 @@ export function DataGudang() {
         if (debouncedSearchTerm) {
           query = query.or(`nama_produk.ilike.%${debouncedSearchTerm}%,rak.ilike.%${debouncedSearchTerm}%`);
         }
+        if (selectedRackBatch) {
+          if (['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'].includes(selectedRackBatch)) {
+            query = query.filter('rak', 'match', `^${selectedRackBatch}\\s*[-_.]?\\s*[0-9]`);
+          } else if (selectedRackBatch === 'LANTAI') {
+            query = query.or('rak.ilike.LANTAI%,rak.ilike.LT%');
+          } else if (selectedRackBatch === 'LORONG') {
+            query = query.or('rak.ilike.LORONG%,rak.ilike.LOR%');
+          } else {
+            query = query.ilike('rak', `${selectedRackBatch}%`);
+          }
+        }
         if (selectedRack && selectedRack !== 'Semua Rak') {
           query = query.ilike('rak', `%${selectedRack}%`);
         }
@@ -2138,7 +2211,11 @@ export function DataGudang() {
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
       link.setAttribute('href', url);
-      const filePrefix = isOnlySelected ? 'data-gudang-terpilih' : (selectedRack ? `data-gudang-rak-${selectedRack}` : 'data-gudang');
+      const filePrefix = isOnlySelected
+        ? 'data-gudang-terpilih'
+        : (selectedRack
+            ? `data-gudang-rak-${selectedRack}`
+            : (selectedRackBatch ? `data-gudang-batch-${selectedRackBatch}` : 'data-gudang'));
       link.setAttribute('download', `${filePrefix}-${new Date().toISOString().split('T')[0]}.csv`);
       link.style.visibility = 'hidden';
       document.body.appendChild(link);
@@ -3065,10 +3142,38 @@ export function DataGudang() {
               </div>
 
               {/* Filters */}
-              <div className="grid grid-cols-2 lg:grid-cols-7 gap-3 lg:col-span-7">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-9 gap-2.5 lg:col-span-7">
                 
+                {/* Batch Rak Filter (A-L, dll) */}
+                <div className="relative col-span-1 lg:col-span-3">
+                  <select
+                    value={selectedRackBatch}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSelectedRackBatch(val);
+                      setSelectedRack('');
+                      setCurrentPage(1);
+                    }}
+                    className={`w-full py-2.5 pl-3 pr-8 text-xs lg:text-sm rounded-xl border transition-all shadow-sm font-bold appearance-none cursor-pointer truncate ${
+                      selectedRackBatch
+                        ? 'bg-blue-50/90 border-blue-400 text-blue-900 ring-2 ring-blue-300'
+                        : 'bg-white border-gray-200 text-gray-700 hover:border-gray-300'
+                    }`}
+                    title="Filter Batch Rak: A1-A999 sampai L1-L999, atau zona lainnya"
+                  >
+                    {RACK_BATCH_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="absolute right-2.5 top-1/2 transform -translate-y-1/2 pointer-events-none text-gray-400">
+                    <ChevronDown className="h-4 w-4" />
+                  </div>
+                </div>
+
                 {/* Rack Filter */}
-                <div ref={rackDropdownRef} className="relative lg:col-span-3 rack-dropdown-container">
+                <div ref={rackDropdownRef} className="relative col-span-1 lg:col-span-2 rack-dropdown-container">
                   <div
                     onClick={() => {
                       if (uniqueRacks.length > 0) {
@@ -3189,7 +3294,7 @@ export function DataGudang() {
                 </div>
 
                 {/* Items per page */}
-                <div className="lg:col-span-2 relative">
+                <div className="relative col-span-1 lg:col-span-2">
                   <select
                     value={itemsPerPage}
                     onChange={(e) => handleItemsPerPageChange(Number(e.target.value))}
@@ -3206,7 +3311,7 @@ export function DataGudang() {
                 </div>
 
                 {/* Hanya Minus */}
-                <div className={`lg:col-span-2 flex items-center justify-center rounded-xl border transition-all cursor-pointer active:scale-95 py-2.5 shadow-sm ${showMinusOnly ? 'bg-rose-500 border-rose-400 text-white' : 'bg-white border-gray-200 hover:bg-gray-50 text-gray-700'}`} onClick={() => {
+                <div className={`col-span-1 lg:col-span-2 flex items-center justify-center rounded-xl border transition-all cursor-pointer active:scale-95 py-2.5 shadow-sm ${showMinusOnly ? 'bg-rose-500 border-rose-400 text-white' : 'bg-white border-gray-200 hover:bg-gray-50 text-gray-700'}`} onClick={() => {
                   setShowMinusOnly(!showMinusOnly);
                   setCurrentPage(1);
                 }}>
@@ -3220,6 +3325,11 @@ export function DataGudang() {
               <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-blue-100 flex-wrap">
                 <div className="h-1.5 w-1.5 bg-blue-300 rounded-full animate-pulse shadow-[0_0_8px_rgba(147,197,253,0.8)]"></div>
                 <span>Total {paginationInfo.totalCount.toLocaleString()} SKU Aktif</span>
+                {selectedRackBatch && (
+                  <span className="px-2 py-0.5 rounded-md bg-white/20 text-white border border-white/30 text-[10px] normal-case font-bold">
+                    Batch: {RACK_BATCH_OPTIONS.find(o => o.value === selectedRackBatch)?.label || selectedRackBatch}
+                  </span>
+                )}
                 {showAvailableOnly && (
                   <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-[10px] normal-case font-semibold">
                     Filter: Ada Stok (Qty ≠ 0)

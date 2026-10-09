@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
@@ -17,6 +17,7 @@ import { SyncOutRakModal } from './SyncOutRakModal';
 import { MismatchedOutRakItem, SyncOutRakScanResult, scanMismatchedOutLogs, restoreOutRakLogs } from '../services/syncOutRakService';
 import { SyncLt4Lt2Modal } from './SyncLt4Lt2Modal';
 import { AdjustmentStockOutModal } from './AdjustmentStockOutModal';
+import { SubsequentLogsModal } from './SubsequentLogsModal';
 
 export interface DatabaseLogEntry {
   id: string;
@@ -245,6 +246,25 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
   const [editingEntry, setEditingEntry] = useState<DatabaseLogEntry | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [subsequentModal, setSubsequentModal] = useState<{
+    isOpen: boolean;
+    referenceEntry: DatabaseLogEntry | null;
+  }>({
+    isOpen: false,
+    referenceEntry: null
+  });
+
+  const handleOpenSubsequentLogs = useCallback((entry: DatabaseLogEntry) => {
+    setSubsequentModal({
+      isOpen: true,
+      referenceEntry: entry
+    });
+  }, []);
+
+  const [isSubsequentPickerOpen, setIsSubsequentPickerOpen] = useState(false);
+  const [pickerSkuInput, setPickerSkuInput] = useState('');
+  const [recentTransfers, setRecentTransfers] = useState<DatabaseLogEntry[]>([]);
+  const [isLoadingTransfers, setIsLoadingTransfers] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(100);
@@ -1046,6 +1066,82 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const hideToast = () => {
     setToast(prev => ({ ...prev, show: false }));
   };
+
+  const handleOpenSubsequentLogsFromTop = useCallback(async (customSku?: string) => {
+    const targetSku = (customSku || filters.sku || '').trim();
+    if (targetSku) {
+      try {
+        // Try in-memory filteredEntries first
+        const inMemoryMatch = filteredEntries.find(
+          (e) =>
+            (e.sku || '').toUpperCase() === targetSku.toUpperCase() &&
+            ((e.gudang || '').toUpperCase().includes('TRANSFER') || e.type === 'MOVE')
+        ) || filteredEntries.find((e) => (e.sku || '').toUpperCase() === targetSku.toUpperCase());
+
+        if (inMemoryMatch) {
+          handleOpenSubsequentLogs(inMemoryMatch);
+          setIsSubsequentPickerOpen(false);
+          return;
+        }
+
+        // Query database for latest transfer log of this SKU
+        const { data: transferData } = await supabase
+          .from('database_log')
+          .select('*')
+          .ilike('sku', targetSku)
+          .ilike('gudang', '%TRANSFER%')
+          .order('tgl', { ascending: false })
+          .order('waktu', { ascending: false })
+          .limit(1);
+
+        if (transferData && transferData.length > 0) {
+          handleOpenSubsequentLogs(transferData[0]);
+          setIsSubsequentPickerOpen(false);
+          return;
+        }
+
+        // Fallback: any latest log for this SKU
+        const { data: anyData } = await supabase
+          .from('database_log')
+          .select('*')
+          .ilike('sku', targetSku)
+          .order('tgl', { ascending: false })
+          .order('waktu', { ascending: false })
+          .limit(1);
+
+        if (anyData && anyData.length > 0) {
+          handleOpenSubsequentLogs(anyData[0]);
+          setIsSubsequentPickerOpen(false);
+          return;
+        }
+
+        showToast(`Tidak ditemukan data transaksi untuk SKU ${targetSku}`, 'warning');
+      } catch (err: any) {
+        console.error('Error opening subsequent logs from top:', err);
+      }
+    }
+
+    // If no SKU provided or not found, open the picker modal
+    setPickerSkuInput(targetSku || '');
+    setIsSubsequentPickerOpen(true);
+    try {
+      setIsLoadingTransfers(true);
+      const { data } = await supabase
+        .from('database_log')
+        .select('*')
+        .ilike('gudang', '%TRANSFER%')
+        .order('tgl', { ascending: false })
+        .order('waktu', { ascending: false })
+        .limit(20);
+      if (data) {
+        setRecentTransfers(data);
+      }
+    } catch (err) {
+      console.error('Error fetching recent transfers:', err);
+    } finally {
+      setIsLoadingTransfers(false);
+    }
+  }, [filters.sku, filteredEntries, handleOpenSubsequentLogs, showToast]);
 
   // Global Keyboard Listener: ketik sembarang "devmode" pada keyboard untuk toggle DevMode
   useEffect(() => {
@@ -4111,6 +4207,24 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       <div className="text-xs text-slate-400 font-medium mt-0.5">Audit & perbaiki rantai transfer bertingkat</div>
                     </div>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      handleOpenSubsequentLogsFromTop();
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-purple-500/15 border border-slate-700/80 hover:border-purple-400/50 transition-all active:scale-[0.98] text-left flex flex-col gap-2.5 group cursor-pointer"
+                    title="Riwayat Mutasi Setelahnya & Perbaiki Salah Rak Transfer"
+                  >
+                    <div className="p-2.5 rounded-xl bg-purple-500/20 text-purple-400 border border-purple-400/30 group-hover:bg-purple-500 group-hover:text-white transition-colors w-fit">
+                      <History className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white group-hover:text-purple-200">Riwayat Mutasi Setelahnya</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Analisis alur mutasi & perbaiki salah rak transfer</div>
+                    </div>
+                  </button>
                 </div>
               </div>
 
@@ -4317,6 +4431,18 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   </button>
 
                   <button
+                    type="button"
+                    onClick={() => handleOpenSubsequentLogsFromTop()}
+                    className="h-11 sm:h-12 px-4 sm:px-5 bg-gradient-to-r from-purple-700 via-indigo-700 to-purple-800 hover:from-purple-600 hover:to-indigo-600 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(147,51,234,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2 border border-purple-400/50 cursor-pointer"
+                    title="Buka Riwayat Mutasi Setelahnya & Perbaiki Salah Rak Transfer"
+                  >
+                    <History className="h-4 w-4 text-purple-200" />
+                    <span className="uppercase text-[10px] sm:text-[11px] font-black tracking-wide">
+                      Riwayat Mutasi Setelahnya
+                    </span>
+                  </button>
+
+                  <button
                     onClick={handleExport}
                     className="h-11 sm:h-12 px-4 sm:px-5 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(37,99,235,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2 border border-blue-400/50 cursor-pointer"
                   >
@@ -4400,6 +4526,22 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   )}
                 </button>
 
+                {/* TOMBOL RIWAYAT MUTASI SETELAHNYA */}
+                <button
+                  type="button"
+                  onClick={() => handleOpenSubsequentLogsFromTop()}
+                  className="px-3.5 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border bg-gradient-to-r from-purple-50 to-indigo-50 hover:from-purple-100 hover:to-indigo-100 text-purple-900 border-purple-300 shadow-xs"
+                  title="Buka Riwayat Mutasi Setelahnya untuk melihat dan memperbaiki rantai mutasi transfer"
+                >
+                  <History className="w-3.5 h-3.5 text-purple-600" />
+                  <span>Riwayat Mutasi Setelahnya</span>
+                  {filters.sku && (
+                    <span className="ml-1 bg-purple-200 text-purple-800 px-1.5 py-0.2 rounded text-[10px] font-mono font-bold truncate max-w-[120px]">
+                      {filters.sku}
+                    </span>
+                  )}
+                </button>
+
                 {isGroupedMode && (
                   <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-xl border border-slate-200">
                     <button
@@ -4463,6 +4605,17 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   placeholder="Cari SKU..."
                   loading={dropdownsLoading}
                 />
+                {filters.sku && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenSubsequentLogsFromTop(filters.sku)}
+                    className="w-full mt-1.5 px-2.5 py-1.5 bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-600 hover:to-indigo-600 text-white text-[11px] font-black rounded-lg shadow-sm flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                    title={`Buka Riwayat Mutasi Setelahnya untuk ${filters.sku}`}
+                  >
+                    <History className="w-3.5 h-3.5" />
+                    <span className="truncate">Riwayat Mutasi ({filters.sku})</span>
+                  </button>
+                )}
               </div>
 
               <div>
@@ -5283,16 +5436,25 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                       <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600">{entry.sub_rak}</td>
                                       <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600 font-mono text-xs">{entry.log_update_user}</td>
                                       <td className="px-4 py-2 text-center">
-                                        <div className="flex justify-center space-x-2">
+                                        <div className="flex justify-center space-x-1.5">
+                                          <Button
+                                            onClick={() => handleOpenSubsequentLogs(entry)}
+                                            className="h-8 w-8 p-0 bg-purple-500/10 hover:bg-purple-500/25 text-purple-700 rounded-lg transition-all border border-purple-200 backdrop-blur-sm flex items-center justify-center cursor-pointer"
+                                            title="Cek Riwayat Mutasi Setelahnya (Subsequent Logs)"
+                                          >
+                                            <History className="h-4 w-4" />
+                                          </Button>
                                           <Button
                                             onClick={() => handleEdit(entry)}
                                             className="h-8 w-8 p-0 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 rounded-lg transition-all border border-blue-200 backdrop-blur-sm flex items-center justify-center"
+                                            title="Edit Transaksi"
                                           >
                                             <Edit2 className="h-4 w-4" />
                                           </Button>
                                           <Button
                                             onClick={() => handleDelete(entry.id)}
                                             className="h-8 w-8 p-0 bg-red-500/10 hover:bg-red-500/20 text-red-600 rounded-lg transition-all border border-red-200 backdrop-blur-sm flex items-center justify-center"
+                                            title="Hapus Transaksi"
                                           >
                                             <Trash2 className="h-4 w-4" />
                                           </Button>
@@ -5455,16 +5617,25 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                               <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600">{entry.sub_rak}</td>
                               <td className="px-4 py-2 text-sm border-r border-gray-200 text-gray-600 font-mono text-xs">{entry.log_update_user}</td>
                               <td className="px-4 py-2 text-center">
-                                <div className="flex justify-center space-x-2">
+                                <div className="flex justify-center space-x-1.5">
+                                  <Button
+                                    onClick={() => handleOpenSubsequentLogs(entry)}
+                                    className="h-8 w-8 p-0 bg-purple-500/10 hover:bg-purple-500/25 text-purple-700 rounded-lg transition-all border border-purple-200 backdrop-blur-sm flex items-center justify-center cursor-pointer"
+                                    title="Cek Riwayat Mutasi Setelahnya (Subsequent Logs)"
+                                  >
+                                    <History className="h-4 w-4" />
+                                  </Button>
                                   <Button
                                     onClick={() => handleEdit(entry)}
                                     className="h-8 w-8 p-0 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 rounded-lg transition-all border border-blue-200 backdrop-blur-sm flex items-center justify-center"
+                                    title="Edit Transaksi"
                                   >
                                     <Edit2 className="h-4 w-4" />
                                   </Button>
                                   <Button
                                     onClick={() => handleDelete(entry.id)}
                                     className="h-8 w-8 p-0 bg-red-500/10 hover:bg-red-500/20 text-red-600 rounded-lg transition-all border border-red-200 backdrop-blur-sm flex items-center justify-center"
+                                    title="Hapus Transaksi"
                                   >
                                     <Trash2 className="h-4 w-4" />
                                   </Button>
@@ -5604,16 +5775,23 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                         </div>
 
                                         {/* Actions */}
-                                        <div className="flex justify-end gap-2 pt-1">
+                                        <div className="flex justify-end gap-1.5 pt-1">
+                                          <Button
+                                            onClick={() => handleOpenSubsequentLogs(entry)}
+                                            className="h-8 px-2 bg-purple-50 text-purple-700 rounded-lg font-bold text-xs flex items-center justify-center border border-purple-200 flex-1"
+                                            title="Cek Riwayat Mutasi Setelahnya"
+                                          >
+                                            <History className="h-3.5 w-3.5 mr-1" /> Setelahnya
+                                          </Button>
                                           <Button
                                             onClick={() => handleEdit(entry)}
-                                            className="h-8 px-3 bg-blue-50 text-blue-600 rounded-lg font-bold text-xs flex items-center justify-center border border-blue-100 flex-1"
+                                            className="h-8 px-2 bg-blue-50 text-blue-600 rounded-lg font-bold text-xs flex items-center justify-center border border-blue-100 flex-1"
                                           >
                                             <Edit2 className="h-3.5 w-3.5 mr-1" /> Edit
                                           </Button>
                                           <Button
                                             onClick={() => handleDelete(entry.id)}
-                                            className="h-8 px-3 bg-red-50 text-red-600 rounded-lg font-bold text-xs flex items-center justify-center border border-red-100 flex-1"
+                                            className="h-8 px-2 bg-red-50 text-red-600 rounded-lg font-bold text-xs flex items-center justify-center border border-red-100 flex-1"
                                           >
                                             <Trash2 className="h-3.5 w-3.5 mr-1" /> Hapus
                                           </Button>
@@ -5767,19 +5945,27 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                 </div>
 
                                 {/* Tombol Aksi Mobile */}
-                                <div className="flex justify-end gap-2 pt-2">
+                                <div className="flex justify-end gap-1.5 pt-2">
+                                  <Button
+                                    onClick={() => handleOpenSubsequentLogs(entry)}
+                                    className="h-9 px-2.5 bg-purple-50 text-purple-700 rounded-lg font-bold text-xs flex items-center justify-center border border-purple-200 flex-1"
+                                    title="Cek Riwayat Mutasi Setelahnya"
+                                  >
+                                    <History className="h-3.5 w-3.5 mr-1" />
+                                    Setelahnya
+                                  </Button>
                                   <Button
                                     onClick={() => handleEdit(entry)}
-                                    className="h-9 px-4 bg-blue-50 text-blue-600 rounded-lg font-bold text-xs flex items-center justify-center border border-blue-100 flex-1"
+                                    className="h-9 px-2.5 bg-blue-50 text-blue-600 rounded-lg font-bold text-xs flex items-center justify-center border border-blue-100 flex-1"
                                   >
-                                    <Edit2 className="h-3.5 w-3.5 mr-1.5" />
+                                    <Edit2 className="h-3.5 w-3.5 mr-1" />
                                     Edit
                                   </Button>
                                   <Button
                                     onClick={() => handleDelete(entry.id)}
-                                    className="h-9 px-4 bg-red-50 text-red-600 rounded-lg font-bold text-xs flex items-center justify-center border border-red-100 flex-1"
+                                    className="h-9 px-2.5 bg-red-50 text-red-600 rounded-lg font-bold text-xs flex items-center justify-center border border-red-100 flex-1"
                                   >
-                                    <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                                    <Trash2 className="h-3.5 w-3.5 mr-1" />
                                     Hapus
                                   </Button>
                                 </div>
@@ -6966,6 +7152,213 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         }}
         defaultSku={filters.sku || ''}
       />
+
+      {/* MODAL RIWAYAT TRANSAKSI SETELAHNYA (SUBSEQUENT LOGS) */}
+      <SubsequentLogsModal
+        isOpen={subsequentModal.isOpen}
+        onClose={() => setSubsequentModal({ isOpen: false, referenceEntry: null })}
+        referenceEntry={subsequentModal.referenceEntry}
+        onLogUpdated={() => {
+          loadLogEntries(currentPage, itemsPerPage);
+        }}
+      />
+
+      {/* MODAL PICKER SKU UNTUK RIWAYAT MUTASI SETELAHNYA */}
+      <Modal
+        isOpen={isSubsequentPickerOpen}
+        onClose={() => setIsSubsequentPickerOpen(false)}
+        hideHeader
+        size="8xl"
+        className="w-[96vw] max-w-[1550px]"
+      >
+        <div className="space-y-4">
+          {/* Header Banner */}
+          <div className="bg-gradient-to-r from-purple-800 via-indigo-900 to-slate-900 text-white p-5 sm:p-6 rounded-2xl shadow-lg border border-purple-500/30">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-purple-500/20 text-purple-300 rounded-xl border border-purple-400/30 shrink-0">
+                  <History className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg sm:text-xl font-black tracking-wide uppercase text-white flex items-center gap-2">
+                    Buka Riwayat Mutasi Setelahnya
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-purple-500/30 text-purple-200 border border-purple-400/40">
+                      Subsequent Chain
+                    </span>
+                  </h3>
+                  <p className="text-xs sm:text-sm text-purple-200/80 font-medium mt-0.5">
+                    Pilih transaksi transfer acuan atau masukkan SKU untuk melihat riwayat mutasi dan perbaiki salah potong rak.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSubsequentPickerOpen(false)}
+                className="p-2 text-purple-200 hover:text-white hover:bg-white/10 rounded-xl transition-all cursor-pointer shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Form Input SKU */}
+          <div className="bg-slate-50 p-4 sm:p-5 rounded-2xl border border-slate-200 space-y-2.5 shadow-2xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+              <label className="text-xs font-black uppercase text-slate-700 block">
+                Cari Berdasarkan SKU Produk:
+              </label>
+              {filters.sku && (
+                <button
+                  type="button"
+                  onClick={() => setPickerSkuInput(filters.sku)}
+                  className="text-[11px] text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer self-start"
+                >
+                  Gunakan SKU Filter Aktif: <strong className="font-mono">{filters.sku}</strong>
+                </button>
+              )}
+            </div>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={pickerSkuInput}
+                  onChange={(e) => setPickerSkuInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && pickerSkuInput.trim()) {
+                      handleOpenSubsequentLogsFromTop(pickerSkuInput.trim());
+                    }
+                  }}
+                  placeholder="Ketik SKU... (Contoh: BOOK-PAD-1000)"
+                  className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono font-bold text-slate-900 shadow-2xs"
+                />
+              </div>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  if (pickerSkuInput.trim()) {
+                    handleOpenSubsequentLogsFromTop(pickerSkuInput.trim());
+                  } else {
+                    showToast('Masukkan SKU terlebih dahulu.', 'warning');
+                  }
+                }}
+                className="bg-purple-700 hover:bg-purple-800 text-white font-black text-xs px-6 py-2.5 rounded-xl cursor-pointer shadow-md gap-1.5 justify-center"
+              >
+                <History className="w-4 h-4" />
+                <span>Buka Riwayat Mutasi</span>
+              </Button>
+            </div>
+          </div>
+
+          {/* Daftar Transaksi Transfer Terkini */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black uppercase text-slate-700 tracking-wider">
+                Atau Pilih Transaksi Transfer Terkini:
+              </span>
+              {isLoadingTransfers && (
+                <span className="text-[11px] text-purple-600 font-semibold flex items-center gap-1">
+                  <RefreshCw className="w-3 h-3 animate-spin" /> Memuat data transfer...
+                </span>
+              )}
+            </div>
+
+            <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
+              <div className="max-h-[420px] overflow-y-auto overflow-x-auto">
+                <table className="w-full text-xs text-left min-w-[700px]">
+                  <thead className="bg-slate-800 text-white text-[11px] font-bold uppercase sticky top-0 z-10">
+                    <tr>
+                      <th className="py-2.5 px-3 text-center border-r border-slate-700 w-10">No</th>
+                      <th className="py-2.5 px-3 border-r border-slate-700">Tanggal & Waktu</th>
+                      <th className="py-2.5 px-3 border-r border-slate-700">SKU</th>
+                      <th className="py-2.5 px-3 text-center border-r border-slate-700 w-16">Tipe</th>
+                      <th className="py-2.5 px-3 border-r border-slate-700">Gudang</th>
+                      <th className="py-2.5 px-3 border-r border-slate-700">Rak / Sub Rak</th>
+                      <th className="py-2.5 px-3 text-center border-r border-slate-700">Qty</th>
+                      <th className="py-2.5 px-3 border-r border-slate-700">User</th>
+                      <th className="py-2.5 px-3 text-center w-28">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {recentTransfers.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="py-12 text-center text-slate-400">
+                          {isLoadingTransfers ? 'Memuat transaksi transfer...' : 'Tidak ada transaksi transfer terkini ditemukan.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      recentTransfers.map((t, idx) => (
+                        <tr key={t.id} className="hover:bg-purple-50/60 transition-colors">
+                          <td className="py-2 px-3 text-center border-r border-slate-200 text-slate-500 font-mono text-[11px]">
+                            {idx + 1}
+                          </td>
+                          <td className="py-2 px-3 font-mono border-r border-slate-200 whitespace-nowrap">
+                            {t.tgl} <span className="text-slate-400 text-[11px]">({t.waktu})</span>
+                          </td>
+                          <td className="py-2 px-3 font-mono font-bold text-purple-950 border-r border-slate-200">
+                            {t.sku}
+                          </td>
+                          <td className="py-2 px-3 text-center border-r border-slate-200">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-black border ${
+                                t.type === 'IN'
+                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                  : 'bg-rose-100 text-rose-800 border-rose-300'
+                              }`}
+                            >
+                              {t.type}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200 font-semibold text-slate-700">
+                            <span className="px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded font-bold text-[10px] border border-purple-300">
+                              {t.gudang}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200 font-bold text-slate-900">
+                            {t.rak || '-'} {t.sub_rak && t.sub_rak !== t.rak ? `(${t.sub_rak})` : ''}
+                          </td>
+                          <td className="py-2 px-3 text-center border-r border-slate-200 font-black text-slate-900">
+                            {t.jumlah}
+                          </td>
+                          <td className="py-2 px-3 border-r border-slate-200 text-slate-600 text-[11px] truncate max-w-[120px]" title={t.user}>
+                            {t.user || '-'}
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsSubsequentPickerOpen(false);
+                                handleOpenSubsequentLogs(t);
+                              }}
+                              className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-bold rounded-lg cursor-pointer transition-all shadow-xs flex items-center justify-center gap-1 mx-auto"
+                            >
+                              <History className="w-3 h-3" />
+                              <span>Pilih</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-2 border-t border-slate-200 text-xs text-slate-500">
+            <div>
+              Menampilkan <strong className="text-slate-800">{recentTransfers.length}</strong> transaksi transfer terkini
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => setIsSubsequentPickerOpen(false)}
+              className="text-xs font-bold cursor-pointer px-5"
+            >
+              Tutup
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       <Toast
         isOpen={toast.show}
