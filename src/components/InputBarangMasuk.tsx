@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
-import { Plus, Warehouse, RefreshCw, X, ChevronDown, Send, Trash, Settings, Layers, Trash2, Calendar, Clock, Edit3, Box, LayoutGrid, Package, ExternalLink, SlidersHorizontal } from 'lucide-react';
+import { Plus, Warehouse, RefreshCw, X, ChevronDown, Send, Trash, Settings, Layers, Trash2, Calendar, Clock, Edit3, Box, LayoutGrid, Package, ExternalLink, SlidersHorizontal, AlertTriangle, CheckCircle2, Barcode } from 'lucide-react';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { ValidationAlert } from './ui/ValidationAlert';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { supabase, fetchAllProducts, fetchAllStockItems } from '../lib/supabase';
+import { supabase, fetchAllProducts, fetchAllStockItems, fetchAllProductRackExclusions } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { cn } from '../lib/utils';
 
@@ -161,14 +161,211 @@ export function InputBarangMasuk() {
 
     const [rackLocations, setRackLocations] = useState<RackLocation[]>([]);
     const [stockItems, setStockItems] = useState<StockItem[]>([]);
+    const [productExclusions, setProductExclusions] = useState<Map<string, boolean>>(new Map());
+    const [conflictModalData, setConflictModalData] = useState<{
+        rowId: string;
+        sku: string;
+        selectedRack: string;
+        expectedRack: string;
+        message: string;
+    } | null>(null);
+
+    // Rak resmi yang diperbolehkan di menu Input Barang Masuk
+    const ALLOWED_INPUT_MASUK_RACKS = React.useMemo(() => [
+        'UTAMA',
+        'ECER-O',
+        'ECER-N',
+        'ECER-M',
+        'LANTAI 2',
+        'LANTAI 4',
+        'BLOK-I'
+    ], []);
+
+    // Helper untuk mengecek apakah suatu nama rak adalah rak masuk yang sah
+    // Menolak secara tegas sub-rak A1-Z9999, Lorong 1 s/d Lorong Utama, dan Temp
+    const isAllowedInputMasukRack = React.useCallback((rackName?: string | null): boolean => {
+        if (!rackName || !rackName.trim()) return false;
+        const clean = rackName.toUpperCase().trim();
+
+        // 1. Tolak sub-rak A1-A999 s/d Z1-Z9999 (e.g. A1, A15, B23, K17, dll)
+        if (/^[A-Z]\s*[-_.]?\s*\d+$/i.test(clean)) return false;
+        // 2. Tolak LORONG-1 s/d LORONG-9999, LORONG-UTAMA, dll
+        if (/^LORONG/i.test(clean)) return false;
+        // 3. Tolak rak TEMP-A, TEMP-B, dll
+        if (/^TEMP/i.test(clean)) return false;
+
+        // 4. Cocokkan dengan rak standar Input Barang Masuk
+        if (ALLOWED_INPUT_MASUK_RACKS.includes(clean)) return true;
+        if (clean === 'LT4' || clean === 'LANTAI4' || clean.replace(/[-_]/g, ' ') === 'LANTAI 4') return true;
+        if (clean === 'LT2' || clean === 'LANTAI2' || clean.replace(/[-_]/g, ' ') === 'LANTAI 2') return true;
+        if (clean === 'BLOK I' || clean === 'BLOK-I') return true;
+
+        return false;
+    }, [ALLOWED_INPUT_MASUK_RACKS]);
+
+    // Helper untuk menormalisasi nama rak ke format standar
+    const normalizeInputMasukRack = React.useCallback((rackName?: string | null): string => {
+        if (!rackName) return '';
+        const clean = rackName.toUpperCase().trim();
+        if (clean === 'LT4' || clean === 'LANTAI4' || clean.replace(/[-_]/g, ' ') === 'LANTAI 4') return 'LANTAI 4';
+        if (clean === 'LT2' || clean === 'LANTAI2' || clean.replace(/[-_]/g, ' ') === 'LANTAI 2') return 'LANTAI 2';
+        if (clean === 'BLOK I' || clean === 'BLOK-I') return 'BLOK-I';
+        return clean;
+    }, []);
+
+    // Helper to determine strictly ONE single expected/primary rack for a SKU in Input Barang Masuk
+    const getExpectedRackForSku = React.useCallback((sku: string): string => {
+        if (!sku || !sku.trim()) return 'UTAMA';
+        const normSku = sku.toLowerCase().trim();
+
+        // 1. Ambil entri stok yang HANYA merupakan rak Input Masuk resmi (abaikan A15, A1, TEMP-A, Lorong, dll)
+        const matchingStock = stockItems.filter(s => {
+            if (s.nama_produk?.toLowerCase().trim() !== normSku) return false;
+            return isAllowedInputMasukRack(s.rak);
+        });
+
+        // 2. Cek apakah ada pengaturan eksplisit di menu Prioritas Rak (product_rack_exclusions)
+        const exclusionsForSku: { rak: string; isExcluded: boolean }[] = [];
+        ALLOWED_INPUT_MASUK_RACKS.forEach(rak => {
+            const exclKey = `${normSku}|${rak}`;
+            if (productExclusions.has(exclKey)) {
+                exclusionsForSku.push({
+                    rak,
+                    isExcluded: productExclusions.get(exclKey) === true
+                });
+            }
+        });
+
+        const explicitNonExcluded = exclusionsForSku.filter(e => !e.isExcluded);
+        const explicitExcluded = exclusionsForSku.filter(e => e.isExcluded);
+
+        // Jika UTAMA dinonaktifkan di Prioritas Rak dan ada rak khusus (misal LANTAI 4 / LANTAI 2) yang aktif
+        if (explicitExcluded.some(e => e.rak === 'UTAMA') && explicitNonExcluded.length > 0) {
+            return explicitNonExcluded[0].rak;
+        }
+
+        // 3. Cek stok fisik yang tersedia di rak-rak masuk yang TIDAK dieksklusi
+        const validStockRacks = matchingStock
+            .map(s => ({
+                rak: normalizeInputMasukRack(s.rak),
+                tersedia: s.tersedia || 0
+            }))
+            .filter(item => {
+                const isExcluded = productExclusions.get(`${normSku}|${item.rak}`);
+                return isExcluded !== true;
+            });
+
+        // Prioritaskan rak yang memiliki stok fisik tersedia > 0
+        const racksWithPositiveStock = validStockRacks.filter(s => s.tersedia > 0);
+        if (racksWithPositiveStock.length > 0) {
+            // Jika ada rak khusus non-UTAMA yang ada stok > 0 (contoh CORRECTION-1BOX di LANTAI 4), utamakan rak tersebut
+            const specialRackWithStock = racksWithPositiveStock.find(s => s.rak !== 'UTAMA');
+            if (specialRackWithStock) {
+                return specialRackWithStock.rak;
+            }
+            // Urutkan berdasarkan stok terbanyak
+            racksWithPositiveStock.sort((a, b) => b.tersedia - a.tersedia);
+            return racksWithPositiveStock[0].rak;
+        }
+
+        // 4. Cek jika ada rak aktif non-UTAMA di Prioritas Rak (misal diatur aktif di LANTAI 2 / LANTAI 4)
+        const specialActiveExcl = explicitNonExcluded.find(e => e.rak !== 'UTAMA');
+        if (specialActiveExcl) {
+            return specialActiveExcl.rak;
+        }
+
+        // 5. Default rak masuk utama gudang
+        return 'UTAMA';
+    }, [stockItems, productExclusions, ALLOWED_INPUT_MASUK_RACKS, isAllowedInputMasukRack, normalizeInputMasukRack]);
+
+    const getRackValidationInfo = React.useCallback((row: TransactionRow) => {
+        if (!row.nama_produk || !row.nama_produk.trim() || !row.rak || !row.rak.trim()) {
+            return { hasConflict: false, expectedRack: '', message: '' };
+        }
+
+        const normSku = row.nama_produk.toLowerCase().trim();
+        const selectedRackRaw = row.rak.trim();
+        const selectedRackClean = normalizeInputMasukRack(selectedRackRaw);
+
+        // 1. Validasi apakah rak yang dipilih diizinkan di menu Input Barang Masuk
+        if (!isAllowedInputMasukRack(selectedRackRaw)) {
+            const expected = getExpectedRackForSku(row.nama_produk);
+            return {
+                hasConflict: true,
+                selectedRack: selectedRackRaw,
+                expectedRack: expected,
+                message: `Rak "${selectedRackRaw}" adalah sub-rak atau lorong dan tidak boleh digunakan di menu Input Barang Masuk. Gunakan lokasi rak resmi: ${expected} (atau rak masuk lainnya: UTAMA, ECER-O, ECER-N, ECER-M, LANTAI 2, LANTAI 4, BLOK-I).`
+            };
+        }
+
+        const expected = getExpectedRackForSku(row.nama_produk);
+
+        // 2. Cek apakah rak yang dipilih berstatus dieksklusi (nonaktif) di menu Prioritas Rak
+        const exclKey = `${normSku}|${selectedRackClean}`;
+        const isExcluded = productExclusions.get(exclKey);
+
+        if (isExcluded === true) {
+            return {
+                hasConflict: true,
+                selectedRack: selectedRackClean,
+                expectedRack: expected,
+                message: `SKU "${row.nama_produk}" telah dinonaktifkan di rak "${selectedRackClean}" pada menu Prioritas Rak. Lokasi rak aktif yang seharusnya adalah ${expected}.`
+            };
+        }
+
+        // 3. Jika SKU memiliki lokasi prioritas aktif (misal LANTAI 4), dan user memilih rak lain (misal UTAMA):
+        if (expected && selectedRackClean !== expected) {
+            const expectedStock = stockItems.find(s => 
+                s.nama_produk?.toLowerCase().trim() === normSku && 
+                normalizeInputMasukRack(s.rak) === expected
+            );
+            const selectedStock = stockItems.find(s => 
+                s.nama_produk?.toLowerCase().trim() === normSku && 
+                normalizeInputMasukRack(s.rak) === selectedRackClean
+            );
+
+            const expectedQty = expectedStock?.tersedia || 0;
+            const selectedQty = selectedStock?.tersedia || 0;
+
+            // Konflik jika rak yang seharusnya memiliki stok aktif > 0 atau merupakan rak khusus penempatan
+            if (expectedQty > selectedQty || (expected !== 'UTAMA' && selectedRackClean === 'UTAMA')) {
+                return {
+                    hasConflict: true,
+                    selectedRack: selectedRackClean,
+                    expectedRack: expected,
+                    message: `SKU "${row.nama_produk}" terdaftar aktif di rak ${expected}, bukan "${selectedRackClean}". Sistem mewajibkan penempatan barang sesuai lokasi prioritas yang aktif.`
+                };
+            }
+        }
+
+        return { hasConflict: false, expectedRack: expected, message: '' };
+    }, [stockItems, productExclusions, isAllowedInputMasukRack, normalizeInputMasukRack, getExpectedRackForSku]);
 
     const filteredRackOptions = React.useMemo(() => {
-        return rackLocations
+        const dbRacks = rackLocations
             .filter(rack =>
                 rack.tampil_di_menu === 'KEDUANYA' || rack.tampil_di_menu === 'INPUT_MASUK'
             )
-            .map((rack) => rack.nama);
-    }, [rackLocations]);
+            .map((rack) => rack.nama)
+            .filter(r => isAllowedInputMasukRack(r));
+
+        if (dbRacks.length === 0) {
+            return ALLOWED_INPUT_MASUK_RACKS;
+        }
+        // Pastikan rak standar Input Masuk selalu tersedia dan tidak duplikat
+        return Array.from(new Set([...dbRacks, ...ALLOWED_INPUT_MASUK_RACKS]));
+    }, [rackLocations, ALLOWED_INPUT_MASUK_RACKS, isAllowedInputMasukRack]);
+
+    // Rack options per row: prioritizes the expected rack for this SKU at the top of the dropdown
+    const getRackOptionsForRow = React.useCallback((row: TransactionRow) => {
+        if (!row.nama_produk || !row.nama_produk.trim()) return filteredRackOptions;
+        const expected = getExpectedRackForSku(row.nama_produk);
+        if (!expected) return filteredRackOptions;
+
+        // Ensure expected rack is at the top of the list
+        const others = filteredRackOptions.filter(r => r.toUpperCase().trim() !== expected.toUpperCase().trim());
+        return [expected, ...others];
+    }, [filteredRackOptions, getExpectedRackForSku]);
 
     // Load rack locations on component mount
     React.useEffect(() => {
@@ -339,7 +536,7 @@ export function InputBarangMasuk() {
         type: 'info'
     });
 
-    // Column visibility state (default semua kolom aktif kecuali tgl_scan dan user_name)
+    // Column visibility state (default semua kolom aktif kecuali jumlah_karton, tgl_scan dan user_name)
     const [visibleColumns, setVisibleColumns] = useState({
         no: true,
         tanggal: true,
@@ -351,7 +548,7 @@ export function InputBarangMasuk() {
         rak: true,
         stok_tersedia: true,
         total_stok: true,
-        jumlah_karton: true,
+        jumlah_karton: false,
         unique_code: true,
         tgl_scan: false,
         user_name: false,
@@ -474,10 +671,22 @@ export function InputBarangMasuk() {
             saveDropdownCache(WAREHOUSES_CACHE_KEY, warehouseNames);
             saveDropdownCache(RACKS_CACHE_KEY, rackNames);
 
-            console.log("🔄 Fetching fresh stock data from database...");
-            const stockResult = await fetchAllStockItems();
+            console.log("🔄 Fetching fresh stock & exclusion data from database...");
+            const [stockResult, exclusionsResult] = await Promise.all([
+                fetchAllStockItems(),
+                fetchAllProductRackExclusions()
+            ]);
             const newStockItems = stockResult.data || [];
             setStockItems(newStockItems);
+
+            const exclusionMap = new Map<string, boolean>();
+            if (exclusionsResult.data) {
+                exclusionsResult.data.forEach((item: any) => {
+                    const key = `${item.nama_produk?.toLowerCase().trim()}|${item.rak?.toUpperCase().trim()}`;
+                    exclusionMap.set(key, item.is_excluded);
+                });
+            }
+            setProductExclusions(exclusionMap);
 
             // Create a Map for O(1) lookup
             const stockMap = new Map<string, number>();
@@ -554,12 +763,24 @@ export function InputBarangMasuk() {
                 }
 
                 isUpdating = true;
-                console.log('⚡ Realtime: Syncing stock data...');
+                console.log('⚡ Realtime: Syncing stock & exclusion data...');
 
                 try {
-                    const stockResult = await fetchAllStockItems();
+                    const [stockResult, exclusionsResult] = await Promise.all([
+                        fetchAllStockItems(),
+                        fetchAllProductRackExclusions()
+                    ]);
                     const freshStock = stockResult.data || [];
                     setStockItems(freshStock);
+
+                    const freshExclMap = new Map<string, boolean>();
+                    if (exclusionsResult.data) {
+                        exclusionsResult.data.forEach((item: any) => {
+                            const key = `${item.nama_produk?.toLowerCase().trim()}|${item.rak?.toUpperCase().trim()}`;
+                            freshExclMap.set(key, item.is_excluded);
+                        });
+                    }
+                    setProductExclusions(freshExclMap);
 
                     // Create a Map for O(1) lookup
                     const stockMap = new Map<string, number>();
@@ -600,6 +821,11 @@ export function InputBarangMasuk() {
                     if (syncTimer) clearTimeout(syncTimer);
                     syncTimer = setTimeout(debouncedUpdate, 1500);
                 })
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'product_rack_exclusions' }, (payload) => {
+                    console.log('🔔 Real-time product_rack_exclusions change detected:', payload.eventType);
+                    if (syncTimer) clearTimeout(syncTimer);
+                    syncTimer = setTimeout(debouncedUpdate, 1500);
+                })
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'database_log' }, (payload) => {
                     console.log('🔔 Real-time database_log change detected:', payload.eventType);
                     if (syncTimer) clearTimeout(syncTimer);
@@ -623,7 +849,6 @@ export function InputBarangMasuk() {
 
 
     const addRow = () => {
-        // Get gudang value from first row to apply to new rows
         const firstRowGudang = rows.length > 0 ? rows[0].gudang : '';
         const firstRowTanggal = rows.length > 0 ? rows[0].tanggal : currentDate;
 
@@ -636,7 +861,7 @@ export function InputBarangMasuk() {
             jumlah_karton: 0,
             type: 'IN',
             gudang: firstRowGudang, // Use gudang from first row
-            rak: '',
+            rak: '', // Kolom rak awal selalu kosong
             stok_tersedia: 0,
             total_stok: 0,
             unique_code: generateUniqueCode(),
@@ -646,7 +871,6 @@ export function InputBarangMasuk() {
     };
 
     const add50Rows = () => {
-        // Get gudang value from first row to apply to all new rows
         const firstRowGudang = rows.length > 0 ? rows[0].gudang : '';
         const firstRowTanggal = rows.length > 0 ? rows[0].tanggal : currentDate;
 
@@ -661,7 +885,7 @@ export function InputBarangMasuk() {
                 jumlah_karton: 0,
                 type: 'IN',
                 gudang: firstRowGudang, // Use gudang from first row
-                rak: '',
+                rak: '', // Kolom rak awal selalu kosong
                 stok_tersedia: 0,
                 total_stok: 0,
                 unique_code: generateUniqueCode(),
@@ -729,7 +953,12 @@ export function InputBarangMasuk() {
             if (row.id === id) {
                 const updatedRow = { ...row, [field]: value };
 
-                if (field === 'nama_produk' || field === 'rak') {
+                if (field === 'nama_produk') {
+                    // Sesuai permintaan user: saat sudah input SKU, kolom rak dibuat KOSONG (jangan otomatis)
+                    updatedRow.rak = '';
+                    updatedRow.stok_tersedia = 0;
+                    updatedRow.total_stok = calculateTotalStock(0, updatedRow.jumlah);
+                } else if (field === 'rak') {
                     updatedRow.stok_tersedia = 0;
                 }
 
@@ -749,7 +978,7 @@ export function InputBarangMasuk() {
             if (!currentRow) return;
 
             const namaProduk = field === 'nama_produk' ? value : currentRow.nama_produk;
-            const rak = field === 'rak' ? value : currentRow.rak;
+            const rak = field === 'rak' ? value : ''; // saat ubah produk, rak menjadi kosong
 
             if (namaProduk && rak) {
                 const stokTersedia = await calculateAvailableStock(namaProduk, rak);
@@ -763,6 +992,17 @@ export function InputBarangMasuk() {
                     }
                     return row;
                 }));
+            }
+
+            // If user manually changed rak, check for immediate conflict warning
+            if (field === 'rak' && namaProduk && value) {
+                const validation = getRackValidationInfo({ ...currentRow, nama_produk: namaProduk, rak: value });
+                if (validation.hasConflict) {
+                    showToast(
+                        `⚠️ Peringatan: SKU "${namaProduk}" terdaftar di rak ${validation.expectedRack}, bukan "${value}"!`,
+                        'warning'
+                    );
+                }
             }
         }
     };
@@ -872,6 +1112,31 @@ export function InputBarangMasuk() {
         if (validRows.length === 0) {
             showToast('Tidak ada data yang valid untuk dikirim!', 'error');
             setIsSubmitting(false); // Re-enable button if no valid data
+            return;
+        }
+
+        // Check for rack conflict errors (SKU already exists in another rack)
+        const conflictRows = validRows.filter(row => {
+            return getRackValidationInfo(row).hasConflict;
+        });
+
+        if (conflictRows.length > 0) {
+            const firstConflict = conflictRows[0];
+            const valInfo = getRackValidationInfo(firstConflict);
+            showToast(
+                `Peringatan: Terdapat ${conflictRows.length} baris salah rak! Contoh: "${firstConflict.nama_produk}" harusnya di rak ${valInfo.expectedRack}. Data tidak dapat disimpan sebelum diperbaiki.`,
+                'error'
+            );
+            setConflictModalData({
+                rowId: firstConflict.id,
+                sku: firstConflict.nama_produk,
+                selectedRack: firstConflict.rak,
+                expectedRack: valInfo.expectedRack,
+                message: valInfo.message
+            });
+            const invalidElement = document.querySelector(`[data-row-id="${firstConflict.id}"]`);
+            invalidElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setIsSubmitting(false);
             return;
         }
 
@@ -1050,7 +1315,7 @@ export function InputBarangMasuk() {
             rak: true,
             stok_tersedia: true,
             total_stok: true,
-            jumlah_karton: true,
+            jumlah_karton: false,
             unique_code: true,
             tgl_scan: false,
             user_name: false,
@@ -1203,18 +1468,27 @@ export function InputBarangMasuk() {
         let failCount = 0;
 
         lines.forEach(line => {
-            const parts = line.trim().split(/\t| {2,}/); // Split by tab or multiple spaces
+            const trimmedLine = line.trim();
+            if (!trimmedLine) return;
+
+            const parts = trimmedLine.split(/\t| {2,}/); // Split by tab or multiple spaces
             if (parts.length >= 3) { // Check for 3 parts
                 const nama_produk = parts[0].trim();
                 const jumlah = parseInt(parts[1].trim());
                 const unique_code = parts[2].trim();
+
+                // Skip header line gracefully if pasted (e.g. sku | qty | kode unik)
+                const lowerFirst = nama_produk.toLowerCase();
+                if (lowerFirst === 'sku' || lowerFirst === 'nama produk' || lowerFirst === 'produk') {
+                    return;
+                }
 
                 if (nama_produk && !isNaN(jumlah) && jumlah > 0 && unique_code) {
                     newAnalyzedData.push({ 
                         nama_produk, 
                         jumlah, 
                         unique_code, 
-                        rak: '', // Rak starts empty for Massal 2
+                        rak: getExpectedRackForSku(nama_produk) || '', 
                         isValid: true 
                     });
                     successCount++;
@@ -1228,7 +1502,7 @@ export function InputBarangMasuk() {
                     });
                     failCount++;
                 }
-            } else if (line.trim() !== '') {
+            } else {
                 failCount++;
             }
         });
@@ -1247,16 +1521,18 @@ export function InputBarangMasuk() {
         const firstRowTanggal = rows.length > 0 ? rows[0].tanggal : currentDate;
 
         const newRowsFromBulk: TransactionRow[] = await Promise.all(analyzedData2.map(async (item) => {
-            const stokTersedia = await calculateAvailableStock(item.nama_produk, item.rak || '');
+            const assignedRak = item.rak || getExpectedRackForSku(item.nama_produk) || '';
+            const stokTersedia = await calculateAvailableStock(item.nama_produk, assignedRak);
             return {
                 id: 'id-' + Date.now().toString() + '_' + Math.random(),
                 tanggal: firstRowTanggal,
                 waktu: formatTimeWithSeconds(new Date()),
                 nama_produk: item.nama_produk,
                 jumlah: item.jumlah,
+                jumlah_karton: 0,
                 type: 'IN',
                 gudang: firstRowGudang,
-                rak: item.rak || '',
+                rak: assignedRak,
                 stok_tersedia: stokTersedia,
                 total_stok: calculateTotalStock(stokTersedia, item.jumlah),
                 unique_code: item.unique_code || generateUniqueCode(),
@@ -1598,6 +1874,50 @@ export function InputBarangMasuk() {
     };
     // --- END NEW FUNCTION: AUTO RACK ---
 
+    // --- FUNCTION: SET ALL RACKS TO UTAMA ---
+    const handleSetUtama = async () => {
+        try {
+            if (rows.length === 0) {
+                showToast('Tidak ada baris untuk diatur', 'warning');
+                return;
+            }
+
+            const updatedRows = await Promise.all(
+                rows.map(async (row) => {
+                    let stokTersedia = row.stok_tersedia;
+                    let totalStok = row.total_stok;
+
+                    if (row.nama_produk && row.nama_produk.trim() !== '') {
+                        try {
+                            stokTersedia = await calculateAvailableStock(row.nama_produk, 'UTAMA');
+                            totalStok = calculateTotalStock(stokTersedia, row.jumlah);
+                        } catch (e) {
+                            console.error('Error fetching stock for UTAMA:', e);
+                        }
+                    }
+
+                    const cleanErrors = row.validationErrors
+                        ? row.validationErrors.filter(err => err !== 'rak' && err !== 'rak_invalid')
+                        : undefined;
+
+                    return {
+                        ...row,
+                        rak: 'UTAMA',
+                        stok_tersedia: stokTersedia,
+                        total_stok: totalStok,
+                        validationErrors: cleanErrors && cleanErrors.length > 0 ? cleanErrors : undefined
+                    };
+                })
+            );
+
+            setRows(updatedRows);
+            showToast(`Berhasil mengatur rak ke UTAMA untuk ${rows.length} baris!`, 'success');
+        } catch (error) {
+            console.error('Error setting rak to UTAMA:', error);
+            showToast('Gagal mengatur rak ke UTAMA', 'error');
+        }
+    };
+
     return (
         <>
             {/* Toast Notification */}
@@ -1653,8 +1973,15 @@ export function InputBarangMasuk() {
                             </div>
                         </div>
 
-                        {/* Mobile Reset Button */}
-                        <div className="lg:hidden w-full flex justify-end">
+                        {/* Mobile Action Buttons */}
+                        <div className="lg:hidden w-full flex justify-end gap-2">
+                            <Button
+                                onClick={handleSetUtama}
+                                className="h-10 px-3 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl transition-all active:scale-95 flex items-center gap-1.5 shadow-md border border-amber-400"
+                            >
+                                <Layers className="h-4 w-4 text-slate-950" />
+                                <span className="text-[11px] uppercase font-bold">Set Utama</span>
+                            </Button>
                             <Button
                                 onClick={handleClearAllClick}
                                 className="h-10 px-4 bg-rose-500/80 hover:bg-rose-600 text-white font-black rounded-xl transition-all active:scale-95 flex items-center gap-2 border border-rose-400/20 backdrop-blur-md shadow-lg"
@@ -1667,6 +1994,14 @@ export function InputBarangMasuk() {
 
                         {/* Desktop Action Buttons */}
                         <div className="hidden lg:flex flex-wrap justify-end items-center gap-3">
+                            <Button
+                                onClick={handleSetUtama}
+                                className="h-11 px-5 bg-amber-500 hover:bg-amber-600 text-slate-950 border border-amber-400 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-black shadow-md"
+                            >
+                                <Layers className="h-4 w-4 text-slate-950" />
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">Set Utama</span>
+                            </Button>
+
                             <Button
                                 onClick={() => {
                                     const rowsToCopy = rows.filter(r => r.nama_produk && r.jumlah > 0);
@@ -1968,11 +2303,16 @@ export function InputBarangMasuk() {
                                         </tr>
                                     </thead>
                                     <tbody className="bg-white divide-y divide-gray-100">
-                                        {rows.map((row, index) => (
+                                        {rows.map((row, index) => {
+                                            const rackValidation = getRackValidationInfo(row);
+                                            const hasConflict = rackValidation.hasConflict;
+                                            return (
                                             <tr
                                                 key={row.id}
                                                 data-row-id={row.id}
-                                                className={`hover:bg-blue-50/50 transition-colors ${row.validationErrors && row.validationErrors.length > 0 ? 'bg-red-50' : index % 2 === 0 ? 'bg-white' : 'bg-gray-50/30'
+                                                className={`transition-colors ${hasConflict
+                                                    ? 'bg-red-50/90 hover:bg-red-100/80 border-l-4 border-l-red-600 ring-1 ring-red-300'
+                                                    : row.validationErrors && row.validationErrors.length > 0 ? 'bg-red-50' : index % 2 === 0 ? 'bg-white hover:bg-blue-50/50' : 'bg-gray-50/30 hover:bg-blue-50/50'
                                                     }`}
                                             >
                                                 {visibleColumns.no && <td className="px-4 py-3 text-center border-r border-gray-100 text-sm font-bold text-gray-400">{index + 1}</td>}
@@ -2022,6 +2362,21 @@ export function InputBarangMasuk() {
                                                         <p className="text-[10px] text-red-500 font-bold mt-1 uppercase tracking-tight pl-1">
                                                             {row.validationErrors?.includes('nama_produk') ? 'Wajib diisi' : 'Produk tidak valid'}
                                                         </p>
+                                                    )}
+                                                    {hasConflict && (
+                                                        <div 
+                                                            onClick={() => setConflictModalData({
+                                                                rowId: row.id,
+                                                                sku: row.nama_produk,
+                                                                selectedRack: row.rak,
+                                                                expectedRack: rackValidation.expectedRack,
+                                                                message: rackValidation.message
+                                                            })}
+                                                            className="inline-flex items-center gap-1 mt-1 text-[10px] text-red-700 font-black cursor-pointer hover:underline bg-red-100 px-2 py-0.5 rounded border border-red-300"
+                                                        >
+                                                            <AlertTriangle className="w-3 h-3 text-red-600 shrink-0" />
+                                                            <span>Salah Rak! (Harusnya: {rackValidation.expectedRack})</span>
+                                                        </div>
                                                     )}
                                                 </td>}
                                                 {visibleColumns.jumlah && <td className="px-4 py-3 border-r border-gray-100">
@@ -2081,16 +2436,34 @@ export function InputBarangMasuk() {
                                                         <CustomDropdown
                                                             value={row.rak}
                                                             onChange={(e) => updateRow(row.id, 'rak', e.target.value)}
-                                                            options={filteredRackOptions}
+                                                            options={getRackOptionsForRow(row)}
                                                             placeholder="Rak..."
-                                                            className={`text-sm font-bold ${row.validationErrors?.includes('rak') || row.validationErrors?.includes('rak_invalid')
-                                                                ? 'border-red-500 bg-red-50 focus:ring-red-500'
+                                                            className={`text-sm font-bold ${
+                                                                hasConflict || row.validationErrors?.includes('rak') || row.validationErrors?.includes('rak_invalid')
+                                                                ? 'border-red-500 bg-red-50 focus:ring-red-500 ring-2 ring-red-400'
                                                                 : 'border-gray-200 focus:ring-emerald-500/20 focus:border-emerald-500'
                                                                 }`}
                                                             isInTable={true}
                                                             loading={dropdownLoading}
                                                             showClearButton={true}
                                                         />
+                                                        {hasConflict && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setConflictModalData({
+                                                                    rowId: row.id,
+                                                                    sku: row.nama_produk,
+                                                                    selectedRack: row.rak,
+                                                                    expectedRack: rackValidation.expectedRack,
+                                                                    message: rackValidation.message
+                                                                })}
+                                                                className="mt-1.5 w-full px-2 py-1 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white rounded-lg text-[10px] font-black flex items-center justify-center gap-1 shadow-xs transition-all transform hover:scale-[1.02] active:scale-95 animate-pulse cursor-pointer border border-red-700"
+                                                                title="Klik untuk melihat penjelasan peringatan salah rak"
+                                                            >
+                                                                <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-yellow-300" />
+                                                                <span className="truncate">Harusnya: {rackValidation.expectedRack}</span>
+                                                            </button>
+                                                        )}
                                                     </div>
                                                 </td>}
                                                 {visibleColumns.stok_tersedia && <td className="px-4 py-3 text-center border-r border-gray-100">
@@ -2159,7 +2532,8 @@ export function InputBarangMasuk() {
                                                     </Button>
                                                 </td>}
                                             </tr>
-                                        ))}
+                                            );
+                                        })}
                                     </tbody>
                                 </table>
                             </div>
@@ -2178,10 +2552,13 @@ export function InputBarangMasuk() {
                                     <Button onClick={addRow} variant="ghost" className="text-blue-600 font-bold uppercase text-[10px] tracking-widest">Tambah Baris Baru</Button>
                                 </div>
                             ) : (
-                                rows.map((row, index) => (
-                                    <div key={row.id} className={`relative p-5 space-y-4 tracking-tight rounded-[20px] transition-all duration-300 group overflow-hidden ${row.validationErrors?.length ? 'bg-red-50/10 border border-red-200 ring-2 ring-red-100 shadow-sm' : index === 0 ? 'bg-white border-blue-200 ring-2 ring-blue-100 shadow-[0_8px_30px_-6px_rgba(59,130,246,0.15)] hover:shadow-[0_12px_35px_-6px_rgba(59,130,246,0.2)]' : 'bg-white border border-gray-200/70 hover:border-blue-200 shadow-[0_8px_30px_-6px_rgba(0,0,0,0.10)] hover:shadow-[0_12px_35px_-6px_rgba(0,0,0,0.15)]'}`}>
+                                rows.map((row, index) => {
+                                    const rackValidation = getRackValidationInfo(row);
+                                    const hasConflict = rackValidation.hasConflict;
+                                    return (
+                                    <div key={row.id} className={`relative p-5 space-y-4 tracking-tight rounded-[20px] transition-all duration-300 group overflow-hidden ${hasConflict ? 'bg-red-50/90 border-2 border-red-500 ring-2 ring-red-200 shadow-md' : row.validationErrors?.length ? 'bg-red-50/10 border border-red-200 ring-2 ring-red-100 shadow-sm' : index === 0 ? 'bg-white border-blue-200 ring-2 ring-blue-100 shadow-[0_8px_30px_-6px_rgba(59,130,246,0.15)] hover:shadow-[0_12px_35px_-6px_rgba(59,130,246,0.2)]' : 'bg-white border border-gray-200/70 hover:border-blue-200 shadow-[0_8px_30px_-6px_rgba(0,0,0,0.10)] hover:shadow-[0_12px_35px_-6px_rgba(0,0,0,0.15)]'}`}>
                                         {/* Decorative Line border on Left */}
-                                        <div className={`absolute left-0 top-0 bottom-0 w-[5px] rounded-l-[20px] opacity-90 transition-all ${row.validationErrors?.length ? 'bg-red-500' : index === 0 ? 'bg-gradient-to-b from-blue-500 to-indigo-500 w-[6px]' : 'bg-gradient-to-b from-gray-300 to-gray-200 group-hover:bg-emerald-400 group-hover:w-[6px]'}`}></div>
+                                        <div className={`absolute left-0 top-0 bottom-0 w-[5px] rounded-l-[20px] opacity-90 transition-all ${hasConflict ? 'bg-red-600 w-[6px]' : row.validationErrors?.length ? 'bg-red-500' : index === 0 ? 'bg-gradient-to-b from-blue-500 to-indigo-500 w-[6px]' : 'bg-gradient-to-b from-gray-300 to-gray-200 group-hover:bg-emerald-400 group-hover:w-[6px]'}`}></div>
 
                                         <div className={`flex justify-between items-center -mx-5 -mt-5 p-3.5 px-5 mb-3 border-b ${index === 0 ? 'bg-gradient-to-r from-blue-50/80 to-transparent border-blue-100/60' : 'bg-gray-50/50 border-gray-100'}`}>
                                             <div className={`flex items-center gap-2 border px-2.5 py-1.5 rounded-[12px] ${index === 0 ? 'border-blue-200 bg-white shadow-sm' : 'border-gray-200/80 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.02)]'}`}>
@@ -2224,6 +2601,21 @@ export function InputBarangMasuk() {
                                                         loading={dropdownLoading}
                                                     />
                                                 </div>
+                                                {hasConflict && (
+                                                    <div 
+                                                        onClick={() => setConflictModalData({
+                                                            rowId: row.id,
+                                                            sku: row.nama_produk,
+                                                            selectedRack: row.rak,
+                                                            expectedRack: rackValidation.expectedRack,
+                                                            message: rackValidation.message
+                                                        })}
+                                                        className="inline-flex items-center gap-1 mt-1 text-[10px] text-red-700 font-black cursor-pointer hover:underline bg-red-100 px-2 py-0.5 rounded border border-red-300"
+                                                    >
+                                                        <AlertTriangle className="w-3 h-3 text-red-600 shrink-0" />
+                                                        <span>Salah Rak! (Harusnya: {rackValidation.expectedRack})</span>
+                                                    </div>
+                                                )}
                                             </div>
 
                                             <div className="grid grid-cols-2 gap-3">
@@ -2290,10 +2682,30 @@ export function InputBarangMasuk() {
                                                     <CustomDropdown
                                                         value={row.rak}
                                                         onChange={(e) => updateRow(row.id, 'rak', e.target.value)}
-                                                        options={filteredRackOptions}
-                                                        className="h-12 rounded-xl text-sm font-bold bg-white border-gray-200 shadow-sm"
+                                                        options={getRackOptionsForRow(row)}
+                                                        className={`h-12 rounded-xl text-sm font-bold bg-white shadow-sm ${
+                                                            hasConflict
+                                                                ? 'border-red-500 bg-red-50 ring-2 ring-red-400'
+                                                                : 'border-gray-200'
+                                                        }`}
                                                         showClearButton={true}
                                                     />
+                                                    {hasConflict && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setConflictModalData({
+                                                                rowId: row.id,
+                                                                sku: row.nama_produk,
+                                                                selectedRack: row.rak,
+                                                                expectedRack: rackValidation.expectedRack,
+                                                                message: rackValidation.message
+                                                            })}
+                                                            className="mt-1.5 w-full px-2 py-1.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white rounded-lg text-xs font-black flex items-center justify-center gap-1 shadow-xs transition-all transform active:scale-95 animate-pulse cursor-pointer border border-red-700"
+                                                        >
+                                                            <AlertTriangle className="w-4 h-4 shrink-0 text-yellow-300" />
+                                                            <span className="truncate">Harusnya: {rackValidation.expectedRack}</span>
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </div>
 
@@ -2331,7 +2743,8 @@ export function InputBarangMasuk() {
                                             )}
                                         </div>
                                     </div>
-                                ))
+                                    );
+                                })
                             )}
                         </div>
                     </CardContent>
@@ -2367,6 +2780,100 @@ export function InputBarangMasuk() {
                     invalidCount={validationAlert.invalidCount}
                     errors={validationAlert.errors}
                 />
+
+                {/* Conflict / Wrong Rack Modal */}
+                <Modal
+                    isOpen={Boolean(conflictModalData)}
+                    onClose={() => setConflictModalData(null)}
+                    title="Peringatan Ketidaksesuaian Rak"
+                    size="lg"
+                >
+                    {conflictModalData && (
+                        <div className="p-6 space-y-5">
+                            {/* Warning Banner */}
+                            <div className="p-4 bg-gradient-to-r from-red-50 to-rose-50 border border-red-200 rounded-2xl flex items-start gap-3 shadow-xs">
+                                <div className="p-2.5 bg-red-100 rounded-xl text-red-600 shrink-0">
+                                    <AlertTriangle className="h-6 w-6" />
+                                </div>
+                                <div className="space-y-1">
+                                    <h4 className="text-sm font-black text-red-900 uppercase tracking-tight">
+                                        Lokasi Rak Tidak Sesuai
+                                    </h4>
+                                    <p className="text-xs text-red-700 leading-relaxed font-medium">
+                                        {conflictModalData.message || 'SKU ini sudah dialokasikan ke lokasi rak tertentu. Menempatkan di rak lain tidak diperbolehkan agar data gudang tetap teratur.'}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* SKU & Rack Comparison Card */}
+                            <div className="bg-gray-50/80 border border-gray-200/80 rounded-2xl p-4 space-y-3">
+                                <div>
+                                    <span className="text-[10px] font-black uppercase tracking-wider text-gray-400">
+                                        Nama SKU / Produk
+                                    </span>
+                                    <div className="font-bold text-gray-900 text-sm break-all mt-0.5">
+                                        {conflictModalData.sku}
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-200/60">
+                                    <div className="bg-red-50/80 border border-red-200 rounded-xl p-3">
+                                        <span className="text-[9px] font-black uppercase tracking-wider text-red-500 block">
+                                            Rak yang Anda Pilih (Salah)
+                                        </span>
+                                        <div className="flex items-center gap-1.5 mt-1">
+                                            <span className="px-2.5 py-1 bg-red-600 text-white rounded-lg text-xs font-black uppercase shadow-xs">
+                                                {conflictModalData.selectedRack || '(Kosong)'}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-emerald-50/80 border border-emerald-200 rounded-xl p-3">
+                                        <span className="text-[9px] font-black uppercase tracking-wider text-emerald-600 block">
+                                            Rak yang Seharusnya
+                                        </span>
+                                        <div className="flex items-center gap-1.5 mt-1">
+                                            <span className="px-2.5 py-1 bg-emerald-600 text-white rounded-lg text-xs font-black uppercase shadow-xs">
+                                                {conflictModalData.expectedRack}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Info text */}
+                            <div className="text-xs text-gray-500 bg-amber-50/80 border border-amber-200/80 p-3 rounded-xl flex items-center gap-2">
+                                <span className="font-bold text-amber-800 shrink-0">Catatan:</span>
+                                <span>Transaksi tidak dapat disimpan sampai lokasi rak diperbaiki sesuai lokasi yang terdaftar.</span>
+                            </div>
+
+                            {/* Actions */}
+                            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 pt-3 border-t border-gray-100">
+                                <Button
+                                    variant="ghost"
+                                    onClick={() => setConflictModalData(null)}
+                                    className="font-bold text-gray-600 hover:bg-gray-100 rounded-xl"
+                                >
+                                    Tutup & Ubah Manual
+                                </Button>
+                                {conflictModalData.expectedRack && (
+                                    <Button
+                                        onClick={() => {
+                                            const targetRack = conflictModalData.expectedRack;
+                                            updateRow(conflictModalData.rowId, 'rak', targetRack);
+                                            showToast(`Lokasi rak berhasil diubah ke ${targetRack}`, 'success');
+                                            setConflictModalData(null);
+                                        }}
+                                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl shadow-md shadow-emerald-600/20 px-5 flex items-center justify-center gap-2"
+                                    >
+                                        <CheckCircle2 className="h-4 w-4" />
+                                        <span>Gunakan Rak yang Seharusnya ({conflictModalData.expectedRack})</span>
+                                    </Button>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </Modal>
 
                 {/* Bulk Input Modal 1 (Premium Redesign) */}
                 <Modal
@@ -2512,13 +3019,13 @@ export function InputBarangMasuk() {
                                 </div>
                                 <div>
                                     <h3 className="font-black text-lg uppercase leading-tight tracking-tight">Input Mode 3 Kolom</h3>
-                                    <p className="text-blue-100 text-[10px] md:text-sm font-medium opacity-90">Produk, Jumlah, dan Lokasi Rak akan langsung terisi.</p>
+                                    <p className="text-blue-100 text-[10px] md:text-sm font-medium opacity-90">SKU, Qty, dan Kode Unik akan langsung terisi.</p>
                                 </div>
                             </div>
                             <div className="flex gap-2">
-                                <div className="px-5 py-2.5 bg-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/20 backdrop-blur-sm">Produk</div>
-                                <div className="px-5 py-2.5 bg-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/20 backdrop-blur-sm">Jumlah</div>
-                                <div className="px-5 py-2.5 bg-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/20 backdrop-blur-sm">Lokasi</div>
+                                <div className="px-5 py-2.5 bg-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/20 backdrop-blur-sm">SKU</div>
+                                <div className="px-5 py-2.5 bg-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/20 backdrop-blur-sm">Qty</div>
+                                <div className="px-5 py-2.5 bg-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/20 backdrop-blur-sm">Kode Unik</div>
                             </div>
                         </div>
 
@@ -2531,7 +3038,7 @@ export function InputBarangMasuk() {
                                         onChange={(e) => setBulkInputText2(e.target.value)}
                                         onPaste={analyzePaste2}
                                         className="w-full h-full p-8 bg-gray-50 border-2 border-gray-100 rounded-[2.5rem] focus:outline-none focus:border-blue-400 focus:bg-white transition-all font-mono text-sm leading-relaxed shadow-inner resize-none group-hover:border-gray-200"
-                                        placeholder="Paste di sini...&#10;&#10;BARANG-A	10	RAK-1&#10;BARANG-B	50	RAK-X"
+                                        placeholder="Paste di sini...&#10;&#10;sku&#9;qty&#9;kode unik&#10;BOOK-DRBK-1B5&#9;10&#9;SN-ABCD1234-EFGH&#10;CORRECTION-1BOX/CT-522&#9;50&#9;SN-87654321-WXYZ"
                                     />
                                     <div className="absolute top-6 right-6 pointer-events-none">
                                         <div className="bg-blue-600 text-white text-[10px] font-black px-4 py-1.5 rounded-full shadow-lg uppercase tracking-widest animate-pulse">Ready to Paste</div>
@@ -2588,9 +3095,17 @@ export function InputBarangMasuk() {
                                                         </div>
                                                         <div>
                                                             <p className="text-sm font-black text-gray-700 leading-tight group-hover:text-emerald-900 transition-colors uppercase tracking-tight">{item.nama_produk}</p>
-                                                            <div className="flex items-center gap-2 mt-1">
-                                                                <LayoutGrid className="h-3 w-3 text-blue-500" />
-                                                                <p className="text-[10px] font-bold text-blue-600 uppercase tracking-tighter">{item.rak}</p>
+                                                            <div className="flex flex-wrap items-center gap-2 mt-1">
+                                                                <span className="text-[10px] font-mono font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 uppercase tracking-tight flex items-center gap-1">
+                                                                    <Barcode className="h-3 w-3 text-indigo-500" />
+                                                                    <span>{item.unique_code}</span>
+                                                                </span>
+                                                                {item.rak && (
+                                                                    <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 uppercase tracking-tight flex items-center gap-1">
+                                                                        <Warehouse className="h-3 w-3 text-blue-500" />
+                                                                        <span>Rak: {item.rak}</span>
+                                                                    </span>
+                                                                )}
                                                             </div>
                                                         </div>
                                                     </div>

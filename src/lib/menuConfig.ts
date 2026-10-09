@@ -51,7 +51,6 @@ export const devNavigationItems = [
   { name: 'DevMode Settings', href: '/dev-settings', icon: Settings },
   { name: 'Kelola Notifikasi Update', href: '/notification-manager', icon: Bell },
   { name: 'Kelola Notifikasi Wajib (Blocking)', href: '/manage-role-notifications', icon: ShieldAlert },
-  { name: 'Pengaturan Prioritas Rak', href: '/rack-priority-settings', icon: Settings },
   { name: 'User Management', href: '/user-management', icon: Users },
   { name: 'Pengaturan Quest Harian', href: '/daily-quest-manager', icon: ShieldAlert },
   { name: 'Pengaturan Database', href: '/database-settings', icon: DatabaseIcon },
@@ -73,6 +72,7 @@ export const monitoringItems = [
 export const additionalMenuItems = [
   { name: 'Konversi PCS', href: '/konversi-pcs', icon: Boxes },
   { name: 'Cek Rak', href: '/cek-rak', icon: QrCode },
+  { name: 'Prioritas Rak', href: '/rack-priority-settings', icon: Settings },
   { name: 'Stock Opname', href: '/stock-opname', icon: QrCode },
 ];
 

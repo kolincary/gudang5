@@ -43,67 +43,11 @@ import {
   Activity
 } from 'lucide-react';
 
+import { useDevMode } from '../lib/useDevMode';
+
 interface LayoutProps {
   children: React.ReactNode;
 }
-
-// Hook untuk mendeteksi devmode
-const useDevMode = (userName?: string | null, userEmail?: string | null) => {
-  const [isDevMode, setIsDevMode] = React.useState(() => {
-    return localStorage.getItem('devmode') === 'true';
-  });
-  const [keySequence, setKeySequence] = React.useState('');
-  const navigate = useNavigate();
-
-  React.useEffect(() => {
-    // Auto-enable for Dev Mode Admin
-    if (userName?.toLowerCase().includes('dev mode') || userEmail?.toLowerCase().includes('devmode')) {
-      if (localStorage.getItem('devmode') !== 'true') {
-        localStorage.setItem('devmode', 'true');
-        setIsDevMode(true);
-      }
-    }
-  }, [userName, userEmail]);
-
-  React.useEffect(() => {
-    const handleKeyPress = (event: KeyboardEvent) => {
-      if (event.key.length > 1) return;
-      
-      setKeySequence((prev) => {
-        const newSequence = (prev + event.key.toLowerCase()).slice(-25);
-        
-        if (newSequence.endsWith('devmode')) {
-          const newDevMode = !isDevMode;
-          setIsDevMode(newDevMode);
-          localStorage.setItem('devmode', newDevMode.toString());
-          console.log(`Dev mode ${newDevMode ? 'enabled' : 'disabled'}`);
-          return '';
-        }
-
-        if (newSequence.endsWith('opendatabaselogmenu@')) {
-          navigate('/database-log', { state: { showHackerTerminal: true } });
-          return '';
-        }
-        
-        return newSequence;
-      });
-    };
-
-    // Reset sequence after timeout
-    const timeoutId = setTimeout(() => {
-      setKeySequence('');
-    }, 2000);
-
-    window.addEventListener('keydown', handleKeyPress);
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyPress);
-      clearTimeout(timeoutId);
-    };
-  }, [keySequence, isDevMode]);
-
-  return isDevMode;
-};
 
 export function Layout({ children }: LayoutProps) {
   const location = useLocation();
@@ -127,6 +71,11 @@ export function Layout({ children }: LayoutProps) {
   }, []);
 
   const hasAccess = (href: string) => {
+    // Khusus Prioritas Rak: Hanya muncul saat ketik devmode (default terhide)
+    if (href === '/rack-priority-settings') {
+      return Boolean(isDevMode);
+    }
+
     if (userRole === 'developer' || isDevMode || userEmail === 'devmode') return true;
     if (userPermissions.includes('*')) return true;
     // Fallback during initial load to prevent side menu from disappearing

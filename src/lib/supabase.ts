@@ -447,3 +447,50 @@ export const calculateAccurateStockForAllItems = async (
     }));
   }
 };
+
+// Utility function to fetch all product rack exclusions from Supabase (bypassing 1000 limit)
+export const fetchAllProductRackExclusions = async () => {
+  try {
+    let allData: { nama_produk: string; rak: string; is_excluded: boolean }[] = [];
+    let from = 0;
+    const batchSize = 1000;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data, error } = await supabase
+        .from('product_rack_exclusions')
+        .select('nama_produk, rak, is_excluded')
+        .range(from, from + batchSize - 1);
+
+      if (error) {
+        console.error(`Error loading exclusions batch ${from}:`, error);
+        throw error;
+      }
+
+      if (data && data.length > 0) {
+        allData = [...allData, ...data];
+        if (data.length < batchSize) {
+          hasMore = false;
+        } else {
+          from += batchSize;
+        }
+      } else {
+        hasMore = false;
+      }
+    }
+
+    return {
+      data: allData,
+      totalCount: allData.length,
+      success: true
+    };
+  } catch (error) {
+    console.error('Error fetching all product rack exclusions:', error);
+    return {
+      data: [],
+      totalCount: 0,
+      success: false,
+      error
+    };
+  }
+};

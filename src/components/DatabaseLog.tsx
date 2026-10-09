@@ -313,7 +313,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     tanggal: '',
     tglScan: '',
     isAdjustment: '',
-    onlySelected: false
+    onlySelected: false,
+    excludeTransfer: false
   });
 
   const clearAllFilters = () => {
@@ -329,7 +330,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       tanggal: '',
       tglScan: '',
       isAdjustment: '',
-      onlySelected: false
+      onlySelected: false,
+      excludeTransfer: false
     });
     setCurrentPage(1);
   };
@@ -340,19 +342,27 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
   }, [initialGudangFilter]);
 
-  // DevMode typing trigger: if user types "devmode" in any filter field, activate devMode
+  // DevMode typing trigger: if user types "devmode" in any filter field, toggle devMode
   useEffect(() => {
     const term = (filters.sku || filters.gudang || filters.rak || '').toLowerCase().trim();
     if (term === 'devmode') {
-      localStorage.setItem('devmode', 'true');
-      setShowFixDates(true);
+      setShowFixDates(prev => {
+        const next = !prev;
+        if (next) {
+          localStorage.setItem('devmode', 'true');
+          showToast('DevMode Aktif! Tombol Riwayat Mutasi Setelahnya & Fitur Audit ditampilkan.', 'success');
+        } else {
+          localStorage.removeItem('devmode');
+          showToast('DevMode Nonaktif. Tombol Riwayat Mutasi Setelahnya disembunyikan.', 'warning');
+        }
+        return next;
+      });
       setFilters(prev => ({
         ...prev,
-        sku: prev.sku === 'devmode' ? '' : prev.sku,
-        gudang: prev.gudang === 'devmode' ? '' : prev.gudang,
-        rak: prev.rak === 'devmode' ? '' : prev.rak
+        sku: prev.sku.toLowerCase() === 'devmode' ? '' : prev.sku,
+        gudang: prev.gudang.toLowerCase() === 'devmode' ? '' : prev.gudang,
+        rak: prev.rak.toLowerCase() === 'devmode' ? '' : prev.rak
       }));
-      showToast('DevMode Aktif! Filter Waktu, Sub Rak, dan Log Update User telah dibuka.', 'success');
     }
   }, [filters.sku, filters.gudang, filters.rak]);
 
@@ -1156,10 +1166,10 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
             const next = !prev;
             if (next) {
               localStorage.setItem('devmode', 'true');
-              showToast('DevMode Aktif! Tombol Cek Saldo & Audit Transfer ditampilkan.', 'success');
+              showToast('DevMode Aktif! Tombol Riwayat Mutasi Setelahnya & Fitur Audit ditampilkan.', 'success');
             } else {
               localStorage.removeItem('devmode');
-              showToast('DevMode Nonaktif.', 'warning');
+              showToast('DevMode Nonaktif. Tombol Riwayat Mutasi Setelahnya disembunyikan.', 'warning');
             }
             return next;
           });
@@ -2384,7 +2394,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         currentFilters.user || 
         currentFilters.logUpdateUser || 
         currentFilters.tanggal || 
-        currentFilters.tglScan
+        currentFilters.tglScan ||
+        currentFilters.excludeTransfer
       );
       const countMode = hasSpecificFilter ? 'exact' : 'estimated';
 
@@ -2418,6 +2429,9 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       }
       if (currentFilters.gudang) {
         query = query.ilike('gudang', `%${currentFilters.gudang}%`);
+      }
+      if (currentFilters.excludeTransfer) {
+        query = query.neq('gudang', 'TRANSFER');
       }
       if (currentFilters.rak) {
         query = query.ilike('rak', `%${currentFilters.rak}%`);
@@ -3516,6 +3530,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         if (filters.sku) countQuery = countQuery.eq('sku', filters.sku);
         if (filters.type) countQuery = countQuery.eq('type', filters.type);
         if (filters.gudang) countQuery = countQuery.ilike('gudang', `%${filters.gudang}%`);
+        if (filters.excludeTransfer) countQuery = countQuery.neq('gudang', 'TRANSFER');
         if (filters.rak) countQuery = countQuery.ilike('rak', `%${filters.rak}%`);
         if (filters.subRak) countQuery = countQuery.ilike('sub_rak', `%${filters.subRak}%`);
         if (filters.waktu) {
@@ -3552,6 +3567,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           if (filters.sku) batchQuery = batchQuery.eq('sku', filters.sku);
           if (filters.type) batchQuery = batchQuery.eq('type', filters.type);
           if (filters.gudang) batchQuery = batchQuery.ilike('gudang', `%${filters.gudang}%`);
+          if (filters.excludeTransfer) batchQuery = batchQuery.neq('gudang', 'TRANSFER');
           if (filters.rak) batchQuery = batchQuery.ilike('rak', `%${filters.rak}%`);
           if (filters.subRak) batchQuery = batchQuery.ilike('sub_rak', `%${filters.subRak}%`);
           if (filters.waktu) {
@@ -4415,17 +4431,19 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     <span className="uppercase text-[10px] sm:text-[11px] font-black">Riwayat Export</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => handleOpenSubsequentLogsFromTop()}
-                    className="h-11 sm:h-12 px-4 sm:px-5 bg-gradient-to-r from-purple-700 via-indigo-700 to-purple-800 hover:from-purple-600 hover:to-indigo-600 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(147,51,234,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2 border border-purple-400/50 cursor-pointer"
-                    title="Buka Riwayat Mutasi Setelahnya & Perbaiki Salah Rak Transfer"
-                  >
-                    <History className="h-4 w-4 text-purple-200" />
-                    <span className="uppercase text-[10px] sm:text-[11px] font-black tracking-wide">
-                      Riwayat Mutasi Setelahnya
-                    </span>
-                  </button>
+                  {showFixDates && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenSubsequentLogsFromTop()}
+                      className="h-11 sm:h-12 px-4 sm:px-5 bg-gradient-to-r from-purple-700 via-indigo-700 to-purple-800 hover:from-purple-600 hover:to-indigo-600 text-white font-black rounded-2xl shadow-[0_8px_25px_rgba(147,51,234,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2 border border-purple-400/50 cursor-pointer"
+                      title="Buka Riwayat Mutasi Setelahnya & Perbaiki Salah Rak Transfer"
+                    >
+                      <History className="h-4 w-4 text-purple-200" />
+                      <span className="uppercase text-[10px] sm:text-[11px] font-black tracking-wide">
+                        Riwayat Mutasi Setelahnya
+                      </span>
+                    </button>
+                  )}
 
                   <button
                     onClick={handleExport}
@@ -4512,20 +4530,22 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                 </button>
 
                 {/* TOMBOL RIWAYAT MUTASI SETELAHNYA */}
-                <button
-                  type="button"
-                  onClick={() => handleOpenSubsequentLogsFromTop()}
-                  className="px-3.5 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border bg-gradient-to-r from-purple-50 to-indigo-50 hover:from-purple-100 hover:to-indigo-100 text-purple-900 border-purple-300 shadow-xs"
-                  title="Buka Riwayat Mutasi Setelahnya untuk melihat dan memperbaiki rantai mutasi transfer"
-                >
-                  <History className="w-3.5 h-3.5 text-purple-600" />
-                  <span>Riwayat Mutasi Setelahnya</span>
-                  {filters.sku && (
-                    <span className="ml-1 bg-purple-200 text-purple-800 px-1.5 py-0.2 rounded text-[10px] font-mono font-bold truncate max-w-[120px]">
-                      {filters.sku}
-                    </span>
-                  )}
-                </button>
+                {showFixDates && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenSubsequentLogsFromTop()}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border bg-gradient-to-r from-purple-50 to-indigo-50 hover:from-purple-100 hover:to-indigo-100 text-purple-900 border-purple-300 shadow-xs"
+                    title="Buka Riwayat Mutasi Setelahnya untuk melihat dan memperbaiki rantai mutasi transfer"
+                  >
+                    <History className="w-3.5 h-3.5 text-purple-600" />
+                    <span>Riwayat Mutasi Setelahnya</span>
+                    {filters.sku && (
+                      <span className="ml-1 bg-purple-200 text-purple-800 px-1.5 py-0.2 rounded text-[10px] font-mono font-bold truncate max-w-[120px]">
+                        {filters.sku}
+                      </span>
+                    )}
+                  </button>
+                )}
 
                 {isGroupedMode && (
                   <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-xl border border-slate-200">
@@ -4590,7 +4610,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   placeholder="Cari SKU..."
                   loading={dropdownsLoading}
                 />
-                {filters.sku && (
+                {showFixDates && filters.sku && (
                   <button
                     type="button"
                     onClick={() => handleOpenSubsequentLogsFromTop(filters.sku)}
@@ -4923,15 +4943,39 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                 </select>
               </div>
 
-              <div className="flex items-end">
+              <div className="flex items-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFilters(prev => ({
+                      ...prev,
+                      excludeTransfer: !prev.excludeTransfer,
+                      gudang: !prev.excludeTransfer && prev.gudang.toUpperCase() === 'TRANSFER' ? '' : prev.gudang
+                    }));
+                    setCurrentPage(1);
+                  }}
+                  disabled={!dataLoaded}
+                  className={`w-1/2 h-[42px] font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1.5 border text-xs tracking-wider disabled:opacity-50 cursor-pointer ${
+                    filters.excludeTransfer
+                      ? 'bg-amber-600 text-white border-amber-700 shadow-amber-600/30 ring-2 ring-amber-400'
+                      : 'bg-amber-50 hover:bg-amber-100 active:bg-amber-200 text-amber-800 border-amber-300'
+                  }`}
+                  title={filters.excludeTransfer ? "Filter 'Tanpa Transfer' Aktif (gudang != 'TRANSFER'). Klik untuk menonaktifkan" : "Filter data agar tidak menampilkan gudang TRANSFER (gudang != 'TRANSFER')"}
+                >
+                  <ArrowRightLeft className={`w-3.5 h-3.5 shrink-0 ${filters.excludeTransfer ? 'text-white' : 'text-amber-600'}`} />
+                  <span className="truncate uppercase font-black text-[11px]">
+                    {filters.excludeTransfer ? 'Non-Transfer ✓' : 'Tanpa Transfer'}
+                  </span>
+                </button>
+
                 <button
                   onClick={clearAllFilters}
                   disabled={!dataLoaded}
-                  className="w-full h-[42px] bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2 border border-rose-300 disabled:opacity-50"
+                  className="w-1/2 h-[42px] bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1.5 border border-rose-300 disabled:opacity-50 cursor-pointer"
                   title="Bersihkan Semua Filter"
                 >
-                  <RotateCcw className="w-4 h-4 text-rose-600" />
-                  <span className="tracking-wider uppercase text-xs font-black">Clear Filters</span>
+                  <RotateCcw className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                  <span className="tracking-wider uppercase text-[11px] font-black truncate">Clear</span>
                 </button>
               </div>
             </div>
