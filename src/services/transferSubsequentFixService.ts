@@ -70,6 +70,14 @@ const normalizeTime = (timeStr?: string): string => {
   return `${h}:${m}:${s}`;
 };
 
+const timeDiffInSeconds = (t1?: string, t2?: string): number => {
+  const norm1 = normalizeTime(t1).split(':').map(Number);
+  const norm2 = normalizeTime(t2).split(':').map(Number);
+  const s1 = (norm1[0] || 0) * 3600 + (norm1[1] || 0) * 60 + (norm1[2] || 0);
+  const s2 = (norm2[0] || 0) * 3600 + (norm2[1] || 0) * 60 + (norm2[2] || 0);
+  return Math.abs(s1 - s2);
+};
+
 /**
  * Diagnoses whether there is a transfer allocation mismatch in the subsequent transactions.
  * For example, an item was transferred from Rack A29 to Rack A30, but a later OUT transaction
@@ -193,53 +201,43 @@ export async function auditSubsequentTransferMismatch(
       transferQty = Number(referenceEntry.jumlah || 0);
 
       // Find matching paired OUT transfer
-      const pairedOut =
-        pool.find(
-          (l) =>
-            l.id !== referenceEntry.id &&
-            l.type === 'OUT' &&
-            ((l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE') &&
-            normalizeDate(l.tgl) === refDateNorm &&
-            normalizeTime(l.waktu) === refTimeNorm
-        ) ||
-        pool.find(
-          (l) =>
-            l.id !== referenceEntry.id &&
-            l.type === 'OUT' &&
-            ((l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE') &&
-            normalizeDate(l.tgl) === refDateNorm &&
-            Number(l.jumlah || 0) === transferQty
+      const candidateOuts = pool.filter(
+        (l) =>
+          l.id !== referenceEntry.id &&
+          l.type === 'OUT' &&
+          ((l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE') &&
+          normalizeDate(l.tgl) === refDateNorm &&
+          Number(l.jumlah || 0) === transferQty
+      );
+      if (candidateOuts.length > 0) {
+        candidateOuts.sort(
+          (a, b) =>
+            timeDiffInSeconds(referenceEntry.waktu, a.waktu) -
+            timeDiffInSeconds(referenceEntry.waktu, b.waktu)
         );
-
-      if (pairedOut) {
-        originRak = (pairedOut.rak || '').trim().toUpperCase();
+        originRak = (candidateOuts[0].rak || '').trim().toUpperCase();
       }
     } else if (referenceEntry.type === 'OUT') {
       originRak = (referenceEntry.rak || '').trim().toUpperCase();
       transferQty = Number(referenceEntry.jumlah || 0);
 
       // Find matching paired IN transfer
-      const pairedIn =
-        pool.find(
-          (l) =>
-            l.id !== referenceEntry.id &&
-            l.type === 'IN' &&
-            ((l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE') &&
-            normalizeDate(l.tgl) === refDateNorm &&
-            normalizeTime(l.waktu) === refTimeNorm
-        ) ||
-        pool.find(
-          (l) =>
-            l.id !== referenceEntry.id &&
-            l.type === 'IN' &&
-            ((l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE') &&
-            normalizeDate(l.tgl) === refDateNorm &&
-            Number(l.jumlah || 0) === transferQty
+      const candidateIns = pool.filter(
+        (l) =>
+          l.id !== referenceEntry.id &&
+          l.type === 'IN' &&
+          ((l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE') &&
+          normalizeDate(l.tgl) === refDateNorm &&
+          Number(l.jumlah || 0) === transferQty
+      );
+      if (candidateIns.length > 0) {
+        candidateIns.sort(
+          (a, b) =>
+            timeDiffInSeconds(referenceEntry.waktu, a.waktu) -
+            timeDiffInSeconds(referenceEntry.waktu, b.waktu)
         );
-
-      if (pairedIn) {
-        destinationRak = (pairedIn.rak || '').trim().toUpperCase();
-        destinationSubRak = (pairedIn.sub_rak || pairedIn.rak || '').trim().toUpperCase();
+        destinationRak = (candidateIns[0].rak || '').trim().toUpperCase();
+        destinationSubRak = (candidateIns[0].sub_rak || candidateIns[0].rak || '').trim().toUpperCase();
       }
     }
   }
@@ -337,8 +335,8 @@ export async function auditSubsequentTransferMismatch(
 
   const mismatches: TransferMismatchItem[] = [];
 
-  const origBal = originRak ? (rackBalances[originRak] ?? 0) : 0;
-  const destBal = destinationRak ? (rackBalances[destinationRak] ?? 0) : 0;
+  let origBal = originRak ? (rackBalances[originRak] ?? 0) : 0;
+  let destBal = destinationRak ? (rackBalances[destinationRak] ?? 0) : 0;
   const isImbalanced = (origBal < 0 && destBal > 0) || (origBal < 0);
 
   subsequentList.forEach((log) => {
@@ -384,6 +382,125 @@ export async function auditSubsequentTransferMismatch(
     }
   });
 
+  // 4. Scan intermediate ("nyelip") transactions across the SKU transfer chain
+  // If there are deficit racks (e.g. A5 running at -48) that were origin of any transfer in the pool,
+  // ensure any OUT transaction on that rack after its transfer is captured even if referenceEntry
+  // was set to a different/later transfer in the chain!
+  const deficitRaks = Object.keys(rackBalances).filter((r) => rackBalances[r] < 0);
+  const surplusRaks = Object.keys(rackBalances).filter((r) => rackBalances[r] > 0);
+
+  if (deficitRaks.length > 0 && surplusRaks.length > 0) {
+    const transferLogs = pool.filter(
+      (l) => (l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE'
+    );
+    const inTransfers = transferLogs.filter((l) => l.type === 'IN');
+    const outTransfers = transferLogs.filter((l) => l.type === 'OUT');
+    const usedOutIds = new Set<string>();
+    const allTransferPairs: Array<{
+      date: string;
+      time: string;
+      originRak: string;
+      destRak: string;
+      qty: number;
+    }> = [];
+
+    inTransfers.forEach((inT) => {
+      const dIn = normalizeDate(inT.tgl);
+      const tIn = normalizeTime(inT.waktu);
+      const qIn = Number(inT.jumlah || 0);
+
+      const candidateOuts = outTransfers.filter(
+        (o) =>
+          !usedOutIds.has(o.id) &&
+          normalizeDate(o.tgl) === dIn &&
+          Number(o.jumlah || 0) === qIn
+      );
+
+      if (candidateOuts.length > 0) {
+        candidateOuts.sort(
+          (a, b) =>
+            timeDiffInSeconds(inT.waktu, a.waktu) -
+            timeDiffInSeconds(inT.waktu, b.waktu)
+        );
+        const outT = candidateOuts[0];
+        usedOutIds.add(outT.id);
+        allTransferPairs.push({
+          date: inT.tgl,
+          time: inT.waktu,
+          originRak: (outT.rak || '').trim().toUpperCase(),
+          destRak: (inT.rak || '').trim().toUpperCase(),
+          qty: qIn
+        });
+      }
+    });
+
+    deficitRaks.forEach((defRak) => {
+      // Find all transfers where defRak was the origin
+      const transList = allTransferPairs.filter((p) => p.originRak === defRak);
+      transList.forEach((t) => {
+        const tDate = normalizeDate(t.date);
+        const tTime = normalizeTime(t.time);
+
+        // Find OUT transactions on defRak that occurred AT or AFTER this transfer
+        const outsOnDef = pool.filter((l) => {
+          if (l.type !== 'OUT') return false;
+          if ((l.gudang || '').toUpperCase().includes('TRANSFER')) return false;
+          if ((l.rak || '').trim().toUpperCase() !== defRak) return false;
+          const d = normalizeDate(l.tgl);
+          const tm = normalizeTime(l.waktu);
+          if (d > tDate) return true;
+          if (d === tDate) return tm >= tTime;
+          return false;
+        });
+
+        outsOnDef.forEach((c) => {
+          // Avoid duplicate if already captured
+          if (mismatches.some((m) => m.id === c.id)) return;
+
+          // Find optimal destination with surplus
+          let target = t.destRak;
+          if ((rackBalances[target] || 0) <= 0 && surplusRaks.length > 0) {
+            target = surplusRaks[0];
+          }
+
+          mismatches.push({
+            id: c.id,
+            sku: c.sku || targetSku,
+            tgl: c.tgl,
+            waktu: c.waktu,
+            tgl_scan: c.tgl_scan,
+            user: (c as any).user_name || c.user || '',
+            gudang: c.gudang,
+            type: c.type,
+            jumlah: Number(c.jumlah || 0),
+            currentRak: c.rak,
+            currentSubRak: c.sub_rak,
+            suggestedRak: target,
+            suggestedSubRak: target,
+            reason: `Transaksi "nyelip" dipotong di rak asal ${c.rak} setelah transfer ke ${target} (Saldo ${c.rak}: ${rackBalances[defRak]} unit, Saldo ${target}: +${rackBalances[target] || 0} unit).`,
+            originRakBalance: rackBalances[defRak],
+            destinationRakBalance: rackBalances[target] || 0
+          });
+        });
+      });
+    });
+  }
+
+  // If mismatches are detected and current originRak has no deficit, focus on the rack with deficit
+  if (mismatches.length > 0) {
+    const mismatchOrig = (mismatches[0].currentRak || '').trim().toUpperCase();
+    if (mismatchOrig && (rackBalances[mismatchOrig] || 0) < 0) {
+      originRak = mismatchOrig;
+      origBal = rackBalances[mismatchOrig] || 0;
+    }
+    const mismatchDest = (mismatches[0].suggestedRak || '').trim().toUpperCase();
+    if (mismatchDest && (rackBalances[mismatchDest] || 0) > 0) {
+      destinationRak = mismatchDest;
+      destinationSubRak = mismatchDest;
+      destBal = rackBalances[mismatchDest] || 0;
+    }
+  }
+
   return {
     hasTransfer,
     transferDate,
@@ -396,7 +513,7 @@ export async function auditSubsequentTransferMismatch(
     destinationRakBalance: destBal,
     rackBalances,
     mismatches,
-    isImbalanced
+    isImbalanced: isImbalanced || mismatches.length > 0
   };
 }
 

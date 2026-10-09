@@ -161,14 +161,37 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
         throw error;
       }
 
-      const rawList = (data as DatabaseLogEntry[]) || [];
+      const rawList = (data || []) as DatabaseLogEntry[];
 
-      // If reference entry is transfer, identify its paired baseline transfer logs
+      // If reference entry is transfer, identify if there's an earlier connected transfer on the same day
       const isRefTransfer =
         (referenceEntry.gudang || '').toUpperCase().includes('TRANSFER') ||
         referenceEntry.type === 'MOVE';
 
-      // In-memory precision filter: keep records that happened AT or AFTER referenceEntry timestamp
+      let baselineDateNorm = refDateNorm;
+      let baselineTimeNorm = refTimeNorm;
+
+      if (isRefTransfer) {
+        const sameDayTransfers = rawList.filter(
+          (l) =>
+            ((l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE') &&
+            normalizeDateForCompare(l.tgl) === refDateNorm
+        );
+
+        if (sameDayTransfers.length > 0) {
+          sameDayTransfers.sort((a, b) => {
+            const ta = normalizeTimeForCompare(a.waktu);
+            const tb = normalizeTimeForCompare(b.waktu);
+            return ta.localeCompare(tb);
+          });
+          const earliestTime = normalizeTimeForCompare(sameDayTransfers[0].waktu);
+          if (earliestTime < baselineTimeNorm) {
+            baselineTimeNorm = earliestTime;
+          }
+        }
+      }
+
+      // In-memory precision filter: keep records that happened AT or AFTER baseline timestamp
       const filtered = rawList.filter((item) => {
         // Always include exact reference item
         if (item.id === referenceEntry.id) return true;
@@ -186,11 +209,11 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
         }
 
         // Subsequent dates
-        if (itemDateNorm > refDateNorm) return true;
+        if (itemDateNorm > baselineDateNorm) return true;
 
-        // Same date: time must be >= reference time
-        if (itemDateNorm === refDateNorm) {
-          return itemTimeNorm >= refTimeNorm;
+        // Same date: time must be >= baseline time
+        if (itemDateNorm === baselineDateNorm) {
+          return itemTimeNorm >= baselineTimeNorm;
         }
 
         return false;
@@ -814,10 +837,23 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
                               </span>
                             ) : mismatch ? (
                               <div className="flex items-center justify-center gap-1">
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-black border border-rose-300">
-                                  <AlertTriangle className="w-2.5 h-2.5 text-rose-600" />
-                                  SALAH RAK
-                                </span>
+                                {mismatch.reason.includes('nyelip') ? (
+                                  <span
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-black border border-amber-300"
+                                    title={mismatch.reason}
+                                  >
+                                    <AlertTriangle className="w-2.5 h-2.5 text-amber-600" />
+                                    SALAH RAK (NYELIP)
+                                  </span>
+                                ) : (
+                                  <span
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-black border border-rose-300"
+                                    title={mismatch.reason}
+                                  >
+                                    <AlertTriangle className="w-2.5 h-2.5 text-rose-600" />
+                                    SALAH RAK
+                                  </span>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => handleExecuteFix([mismatch])}
@@ -1021,10 +1057,19 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
                             {item.tgl} <span className="text-slate-400">({item.waktu})</span>
                           </td>
                           <td className="py-2.5 px-3">
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300 mr-1.5">
-                              {item.type}
-                            </span>
-                            <span className="text-slate-600 font-semibold">{item.gudang}</span>
+                            <div className="flex flex-col">
+                              <div className="flex items-center">
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300 mr-1.5">
+                                  {item.type}
+                                </span>
+                                <span className="text-slate-600 font-semibold">{item.gudang}</span>
+                              </div>
+                              {item.reason.includes('nyelip') && (
+                                <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-black text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                                  ⚠️ Nyelip di {item.currentRak} setelah transfer
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-2.5 px-3 text-center">
                             <span className="line-through text-rose-600 font-bold bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
