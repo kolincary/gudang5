@@ -406,7 +406,6 @@ export async function auditSubsequentTransferMismatch(
 
     inTransfers.forEach((inT) => {
       const dIn = normalizeDate(inT.tgl);
-      const tIn = normalizeTime(inT.waktu);
       const qIn = Number(inT.jumlah || 0);
 
       const candidateOuts = outTransfers.filter(

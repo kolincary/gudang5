@@ -1121,26 +1121,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       }
     }
 
-    // If no SKU provided or not found, open the picker modal
-    setPickerSkuInput(targetSku || '');
-    setIsSubsequentPickerOpen(true);
-    try {
-      setIsLoadingTransfers(true);
-      const { data } = await supabase
-        .from('database_log')
-        .select('*')
-        .ilike('gudang', '%TRANSFER%')
-        .order('tgl', { ascending: false })
-        .order('waktu', { ascending: false })
-        .limit(20);
-      if (data) {
-        setRecentTransfers(data);
-      }
-    } catch (err) {
-      console.error('Error fetching recent transfers:', err);
-    } finally {
-      setIsLoadingTransfers(false);
-    }
+    // If no SKU provided or not found, open SubsequentLogsModal directly so user can search or pick inside the modal
+    setSubsequentModal({
+      isOpen: true,
+      referenceEntry: null
+    });
   }, [filters.sku, filteredEntries, handleOpenSubsequentLogs, showToast]);
 
   // Global Keyboard Listener: ketik sembarang "devmode" pada keyboard untuk toggle DevMode

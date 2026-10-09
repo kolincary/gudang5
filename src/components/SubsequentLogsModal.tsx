@@ -72,6 +72,17 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
   referenceEntry,
   onLogUpdated
 }) => {
+  // Active Entry state (allows seamless in-modal SKU & transfer switching)
+  const [activeEntry, setActiveEntry] = useState<DatabaseLogEntry | null>(referenceEntry);
+  const [skuSearchInput, setSkuSearchInput] = useState('');
+  const [isSearchingSku, setIsSearchingSku] = useState(false);
+  const [skuSearchError, setSkuSearchError] = useState<string | null>(null);
+  const [availableTransfers, setAvailableTransfers] = useState<DatabaseLogEntry[]>([]);
+  const [recentTransferSkus, setRecentTransferSkus] = useState<string[]>([]);
+  const [recentTransferEntries, setRecentTransferEntries] = useState<DatabaseLogEntry[]>([]);
+  const [isLoadingRecentTransfers, setIsLoadingRecentTransfers] = useState(false);
+  const [recentTransferFilter, setRecentTransferFilter] = useState('');
+
   const [logs, setLogs] = useState<DatabaseLogEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -87,24 +98,70 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
   const [selectedFixIds, setSelectedFixIds] = useState<Set<string>>(new Set());
   const [fixNotification, setFixNotification] = useState<{ message: string; type: 'success' | 'warning' } | null>(null);
 
+  // Sync activeEntry when modal opens or referenceEntry changes
+  useEffect(() => {
+    if (isOpen) {
+      if (referenceEntry) {
+        setActiveEntry(referenceEntry);
+        setSkuSearchInput(referenceEntry.sku || '');
+        setSkuSearchError(null);
+      } else {
+        // If opened without reference, keep current activeEntry or allow picker
+        if (!activeEntry) {
+          setSkuSearchInput('');
+          setSkuSearchError(null);
+        }
+      }
+    }
+  }, [isOpen, referenceEntry]);
+
+  // Load recent transfer data (entries & SKUs) for autocomplete and visual picker
+  useEffect(() => {
+    if (!isOpen) return;
+    const fetchRecentTransferData = async () => {
+      try {
+        setIsLoadingRecentTransfers(true);
+        const { data } = await supabase
+          .from('database_log')
+          .select('*')
+          .or('gudang.ilike.%TRANSFER%,type.eq.MOVE')
+          .order('tgl', { ascending: false })
+          .order('waktu', { ascending: false })
+          .limit(100);
+
+        if (data && data.length > 0) {
+          const list = data as DatabaseLogEntry[];
+          setRecentTransferEntries(list);
+          const unique = Array.from(new Set(list.map((d) => d.sku?.trim()).filter(Boolean))) as string[];
+          setRecentTransferSkus(unique.slice(0, 30));
+        }
+      } catch (e) {
+        console.warn('Failed to load recent transfer data:', e);
+      } finally {
+        setIsLoadingRecentTransfers(false);
+      }
+    };
+    fetchRecentTransferData();
+  }, [isOpen]);
+
   const refDateNorm = useMemo(() => {
-    return referenceEntry ? normalizeDateForCompare(referenceEntry.tgl) : '';
-  }, [referenceEntry]);
+    return activeEntry ? normalizeDateForCompare(activeEntry.tgl) : '';
+  }, [activeEntry]);
 
   const refTimeNorm = useMemo(() => {
-    return referenceEntry ? normalizeTimeForCompare(referenceEntry.waktu) : '';
-  }, [referenceEntry]);
+    return activeEntry ? normalizeTimeForCompare(activeEntry.waktu) : '';
+  }, [activeEntry]);
 
   // Check if an entry is part of the reference baseline
   const isBaselineEntry = useCallback(
     (entry: DatabaseLogEntry) => {
-      if (!referenceEntry) return false;
-      if (entry.id === referenceEntry.id) return true;
+      if (!activeEntry) return false;
+      if (entry.id === activeEntry.id) return true;
       const entryDateNorm = normalizeDateForCompare(entry.tgl);
       const entryTimeNorm = normalizeTimeForCompare(entry.waktu);
       const isRefTransfer =
-        (referenceEntry.gudang || '').toUpperCase().includes('TRANSFER') ||
-        referenceEntry.type === 'MOVE';
+        (activeEntry.gudang || '').toUpperCase().includes('TRANSFER') ||
+        activeEntry.type === 'MOVE';
 
       if (
         isRefTransfer &&
@@ -116,15 +173,15 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
       }
       return false;
     },
-    [referenceEntry, refDateNorm, refTimeNorm]
+    [activeEntry, refDateNorm, refTimeNorm]
   );
 
   const runAudit = useCallback(
     async (candidateLogs?: DatabaseLogEntry[]) => {
-      if (!referenceEntry) return;
+      if (!activeEntry) return;
       try {
         setIsAuditing(true);
-        const res = await auditSubsequentTransferMismatch(referenceEntry, candidateLogs);
+        const res = await auditSubsequentTransferMismatch(activeEntry, candidateLogs);
         setDiagnosis(res);
         if (res.mismatches.length > 0) {
           setSelectedFixIds(new Set(res.mismatches.map((m) => m.id)));
@@ -137,18 +194,18 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
         setIsAuditing(false);
       }
     },
-    [referenceEntry]
+    [activeEntry]
   );
 
   const loadSubsequentLogs = useCallback(async () => {
-    if (!referenceEntry || !referenceEntry.sku) return;
+    if (!activeEntry || !activeEntry.sku) return;
 
     try {
       setLoading(true);
       setErrorMsg(null);
 
-      const targetSku = referenceEntry.sku.trim();
-      const targetDate = refDateNorm || referenceEntry.tgl;
+      const targetSku = activeEntry.sku.trim();
+      const targetDate = refDateNorm || activeEntry.tgl;
 
       // Query database_log using indexed SKU without brittle SQL date-string comparisons
       const { data, error } = await supabase
@@ -163,10 +220,16 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
 
       const rawList = (data || []) as DatabaseLogEntry[];
 
+      // Populate available transfers for this SKU so user can switch between them
+      const transfers = rawList.filter(
+        (l) => (l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE'
+      );
+      setAvailableTransfers(transfers);
+
       // If reference entry is transfer, identify if there's an earlier connected transfer on the same day
       const isRefTransfer =
-        (referenceEntry.gudang || '').toUpperCase().includes('TRANSFER') ||
-        referenceEntry.type === 'MOVE';
+        (activeEntry.gudang || '').toUpperCase().includes('TRANSFER') ||
+        activeEntry.type === 'MOVE';
 
       let baselineDateNorm = refDateNorm;
       let baselineTimeNorm = refTimeNorm;
@@ -194,7 +257,7 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
       // In-memory precision filter: keep records that happened AT or AFTER baseline timestamp
       const filtered = rawList.filter((item) => {
         // Always include exact reference item
-        if (item.id === referenceEntry.id) return true;
+        if (item.id === activeEntry.id) return true;
 
         const itemDateNorm = normalizeDateForCompare(item.tgl);
         const itemTimeNorm = normalizeTimeForCompare(item.waktu);
@@ -244,22 +307,126 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [referenceEntry, refDateNorm, refTimeNorm, runAudit]);
+  }, [activeEntry, refDateNorm, refTimeNorm, runAudit]);
+
+  // Seamless SKU search inside the modal
+  const handleSearchSku = async (querySku?: string) => {
+    const clean = (querySku || skuSearchInput).trim();
+    if (!clean) return;
+
+    try {
+      setIsSearchingSku(true);
+      setSkuSearchError(null);
+
+      // 1. Check exact or ilike transfer logs for this SKU
+      const { data: transferLogs, error: tErr } = await supabase
+        .from('database_log')
+        .select('*')
+        .ilike('sku', clean)
+        .or('gudang.ilike.%TRANSFER%,type.eq.MOVE')
+        .order('tgl', { ascending: false })
+        .order('waktu', { ascending: false });
+
+      if (tErr) throw tErr;
+
+      if (transferLogs && transferLogs.length > 0) {
+        const targetEntry = transferLogs[0] as DatabaseLogEntry;
+        setAvailableTransfers(transferLogs as DatabaseLogEntry[]);
+        setSkuSearchInput(targetEntry.sku);
+        if (activeEntry?.id === targetEntry.id) {
+          loadSubsequentLogs();
+        } else {
+          setActiveEntry(targetEntry);
+        }
+        return;
+      }
+
+      // 2. If no transfer log with exact match, try any log for this exact SKU
+      const { data: anyLogs, error: aErr } = await supabase
+        .from('database_log')
+        .select('*')
+        .ilike('sku', clean)
+        .order('tgl', { ascending: false })
+        .order('waktu', { ascending: false })
+        .limit(1);
+
+      if (aErr) throw aErr;
+
+      if (anyLogs && anyLogs.length > 0) {
+        const targetEntry = anyLogs[0] as DatabaseLogEntry;
+        setAvailableTransfers([]);
+        setSkuSearchInput(targetEntry.sku);
+        if (activeEntry?.id === targetEntry.id) {
+          loadSubsequentLogs();
+        } else {
+          setActiveEntry(targetEntry);
+        }
+        return;
+      }
+
+      // 3. Partial match search (e.g. user typed "690/BROWN" instead of full "BOOK-NB-690/BROWN")
+      const { data: partialLogs } = await supabase
+        .from('database_log')
+        .select('*')
+        .ilike('sku', `%${clean}%`)
+        .order('tgl', { ascending: false })
+        .order('waktu', { ascending: false })
+        .limit(30);
+
+      if (partialLogs && partialLogs.length > 0) {
+        const matchingTransfers = partialLogs.filter(
+          (l) => (l.gudang || '').toUpperCase().includes('TRANSFER') || l.type === 'MOVE'
+        );
+        const bestMatch = (matchingTransfers.length > 0 ? matchingTransfers[0] : partialLogs[0]) as DatabaseLogEntry;
+        setAvailableTransfers(matchingTransfers as DatabaseLogEntry[]);
+        setSkuSearchInput(bestMatch.sku);
+        if (activeEntry?.id === bestMatch.id) {
+          loadSubsequentLogs();
+        } else {
+          setActiveEntry(bestMatch);
+        }
+        return;
+      }
+
+      setSkuSearchError(`Tidak ditemukan transaksi untuk SKU "${clean}"`);
+    } catch (err: any) {
+      console.error('Error switching SKU:', err);
+      setSkuSearchError(err.message || 'Gagal mencari SKU');
+    } finally {
+      setIsSearchingSku(false);
+    }
+  };
+
+  // Filtered recent transfers for the in-modal picker view
+  const filteredRecentTransfers = useMemo(() => {
+    if (!recentTransferFilter.trim()) return recentTransferEntries;
+    const term = recentTransferFilter.toLowerCase();
+    return recentTransferEntries.filter(
+      (e) =>
+        (e.sku || '').toLowerCase().includes(term) ||
+        (e.rak || '').toLowerCase().includes(term) ||
+        (e.sub_rak || '').toLowerCase().includes(term) ||
+        (e.gudang || '').toLowerCase().includes(term) ||
+        (e.user || '').toLowerCase().includes(term) ||
+        (e.tgl || '').toLowerCase().includes(term) ||
+        (e.waktu || '').toLowerCase().includes(term)
+    );
+  }, [recentTransferEntries, recentTransferFilter]);
 
   useEffect(() => {
-    if (isOpen && referenceEntry) {
+    if (isOpen && activeEntry) {
       setSearchTerm('');
       setTypeFilter('ALL');
       setDiagnosis(null);
       setFixNotification(null);
       loadSubsequentLogs();
-    } else {
+    } else if (!isOpen) {
       setLogs([]);
       setErrorMsg(null);
       setDiagnosis(null);
       setFixNotification(null);
     }
-  }, [isOpen, referenceEntry, loadSubsequentLogs]);
+  }, [isOpen, activeEntry, loadSubsequentLogs]);
 
   // Mismatch map for quick row lookup
   const mismatchMap = useMemo(() => {
@@ -361,7 +528,7 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `riwayat-setelahnya-${referenceEntry?.sku}-${referenceEntry?.tgl}.csv`;
+    link.download = `riwayat-setelahnya-${activeEntry?.sku || 'sku'}-${activeEntry?.tgl || 'tgl'}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -425,7 +592,7 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
     }
   };
 
-  if (!isOpen || !referenceEntry) return null;
+  if (!isOpen) return null;
 
   return (
     <>
@@ -507,380 +674,638 @@ export const SubsequentLogsModal: React.FC<SubsequentLogsModalProps> = ({
               </div>
             </div>
 
+            {/* In-Modal SKU Search & Switcher Bar */}
+            <div className="mt-4 pt-3 border-t border-purple-500/30 space-y-2.5">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="flex items-center gap-2 flex-1 max-w-xl">
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 text-purple-300 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      list="subsequent-recent-skus"
+                      value={skuSearchInput}
+                      onChange={(e) => {
+                        setSkuSearchInput(e.target.value);
+                        if (skuSearchError) setSkuSearchError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleSearchSku(skuSearchInput);
+                      }}
+                      placeholder="Ketik SKU lain untuk dicek tanpa tutup modal (Enter)..."
+                      className="w-full pl-9 pr-8 py-2 text-xs bg-black/40 border border-purple-400/40 focus:border-purple-300 rounded-xl text-white placeholder-purple-300/60 font-mono font-bold focus:outline-none focus:ring-2 focus:ring-purple-400/50 shadow-inner"
+                    />
+                    {skuSearchInput && (
+                      <button
+                        type="button"
+                        onClick={() => setSkuSearchInput('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-purple-300 hover:text-white"
+                        title="Hapus ketikan"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <datalist id="subsequent-recent-skus">
+                      {recentTransferSkus.map((sku) => (
+                        <option key={sku} value={sku} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleSearchSku(skuSearchInput)}
+                    disabled={isSearchingSku || !skuSearchInput.trim()}
+                    className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs transition-all shadow-md cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                  >
+                    {isSearchingSku ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Mencari...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Search className="w-3.5 h-3.5" />
+                        <span>Cari & Ganti SKU</span>
+                      </>
+                    )}
+                  </button>
+
+                  {activeEntry && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveEntry(null)}
+                      className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-purple-200 hover:text-white font-bold text-xs transition-all shadow-md cursor-pointer border border-white/20 flex items-center gap-1.5 shrink-0"
+                      title="Lihat daftar semua transfer terkini untuk memilih SKU lain"
+                    >
+                      <ArrowRightLeft className="w-3.5 h-3.5" />
+                      <span>Daftar Transfer</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Status message or shortcut helper */}
+                {skuSearchError ? (
+                  <span className="text-xs text-rose-300 font-bold bg-rose-500/20 px-3 py-1 rounded-lg border border-rose-400/30 flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                    {skuSearchError}
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-purple-200/70 hidden lg:inline-block">
+                    💡 Tekan <strong>Enter</strong> atau klik rekomendasi SKU di bawah untuk cek langsung.
+                  </span>
+                )}
+              </div>
+
+              {/* Quick SKU Recommendation Badges */}
+              {recentTransferSkus.length > 0 && (
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full text-[11px] scrollbar-thin">
+                  <span className="text-purple-300 font-bold shrink-0 text-[10px] uppercase">Rekomendasi SKU Transfer:</span>
+                  {recentTransferSkus.slice(0, 10).map((sku) => (
+                    <button
+                      key={sku}
+                      type="button"
+                      onClick={() => {
+                        setSkuSearchInput(sku);
+                        handleSearchSku(sku);
+                      }}
+                      className={`px-2.5 py-0.5 rounded-full font-mono text-[11px] font-bold border transition-all cursor-pointer shrink-0 ${
+                        activeEntry?.sku === sku
+                          ? 'bg-yellow-400 text-slate-950 border-yellow-300 font-black ring-1 ring-yellow-300'
+                          : 'bg-white/10 hover:bg-white/20 text-purple-200 border-white/20 hover:text-white'
+                      }`}
+                      title={`Klik untuk langsung audit & mutasi SKU ${sku}`}
+                    >
+                      {sku}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Reference Baseline Info Card */}
-            <div className="mt-4 pt-3 border-t border-purple-500/30 grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
-              <div className="bg-black/30 p-2.5 rounded-xl border border-purple-400/20">
-                <span className="text-[10px] uppercase font-bold text-purple-300 block">SKU Acuan</span>
-                <span className="font-mono font-black text-sm text-yellow-300 truncate block" title={referenceEntry.sku}>
-                  {referenceEntry.sku}
-                </span>
-              </div>
-              <div className="bg-black/30 p-2.5 rounded-xl border border-purple-400/20">
-                <span className="text-[10px] uppercase font-bold text-purple-300 block">Waktu Acuan</span>
-                <span className="font-bold text-white block">
-                  {referenceEntry.tgl} <span className="font-mono text-purple-200">({referenceEntry.waktu})</span>
-                </span>
-              </div>
-              <div className="bg-black/30 p-2.5 rounded-xl border border-purple-400/20">
-                <span className="text-[10px] uppercase font-bold text-purple-300 block">Lokasi & Tipe Acuan</span>
-                <span className="font-bold text-white block">
-                  {referenceEntry.rak} ({referenceEntry.type} - {referenceEntry.gudang})
-                </span>
-              </div>
-              <div className="bg-black/30 p-2.5 rounded-xl border border-purple-400/20">
-                <span className="text-[10px] uppercase font-bold text-purple-300 block">Jumlah Qty Acuan</span>
-                <span className="font-black text-white block">
-                  {referenceEntry.jumlah.toLocaleString()} Unit
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Alert Notification Banner for Detected Mismatch */}
-          {diagnosis && diagnosis.mismatches.length > 0 && (
-            <div className="bg-gradient-to-r from-amber-500/15 via-rose-500/15 to-amber-500/15 border-2 border-amber-400/70 rounded-2xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-md animate-in fade-in duration-200">
-              <div className="flex items-start gap-3">
-                <div className="p-2.5 bg-amber-500/20 text-amber-700 rounded-xl shrink-0 mt-0.5 border border-amber-400/50">
-                  <AlertTriangle className="w-5 h-5" />
+            {activeEntry && (
+              <div className="mt-3 pt-3 border-t border-purple-500/20 grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
+                <div className="bg-black/30 p-2.5 rounded-xl border border-purple-400/20">
+                  <span className="text-[10px] uppercase font-bold text-purple-300 block">SKU Aktif</span>
+                  <span className="font-mono font-black text-sm text-yellow-300 truncate block" title={activeEntry.sku}>
+                    {activeEntry.sku}
+                  </span>
                 </div>
-                <div>
-                  <h4 className="text-xs font-black text-amber-950 uppercase tracking-wide flex items-center gap-2">
-                    Terdeteksi Transaksi Salah Rak Setelah Transfer
-                    <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-black">
-                      {diagnosis.mismatches.length} Transaksi Terpengaruh
-                    </span>
-                  </h4>
-                  <p className="text-xs text-slate-700 mt-1 leading-relaxed">
-                    Stok telah ditransfer ke rak{' '}
-                    <strong className="text-emerald-700 font-black">{diagnosis.transferDestinationRak}</strong>, namun staf
-                    gudang memotong stok keluar (OUT) dari rak asal{' '}
-                    <strong className="text-rose-700 font-black">{diagnosis.transferOriginRak}</strong>.
-                    Hal ini menyebabkan rak {diagnosis.transferOriginRak} mengalami defisit (
-                    <span className="text-rose-600 font-bold">{diagnosis.originRakBalance} unit</span>) dan rak{' '}
-                    {diagnosis.transferDestinationRak} surplus (
-                    <span className="text-emerald-600 font-bold">+{diagnosis.destinationRakBalance} unit</span>).
-                  </p>
+
+                <div className="bg-black/30 p-2.5 rounded-xl border border-purple-400/20">
+                  <span className="text-[10px] uppercase font-bold text-purple-300 block">Waktu Acuan</span>
+                  <span className="font-bold text-white block">
+                    {activeEntry.tgl} <span className="font-mono text-purple-200">({activeEntry.waktu})</span>
+                  </span>
                 </div>
-              </div>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setIsDiagnosisModalOpen(true)}
-                className="bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-xs rounded-xl shadow-md border border-amber-300 gap-1.5 shrink-0 whitespace-nowrap cursor-pointer"
-              >
-                <Wrench className="w-3.5 h-3.5" />
-                <span>Perbaiki ke Rak {diagnosis.transferDestinationRak}</span>
-              </Button>
-            </div>
-          )}
 
-          {/* Success Notification */}
-          {fixNotification && (
-            <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-900 text-xs flex items-center justify-between gap-2 font-medium">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>{fixNotification.message}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setFixNotification(null)}
-                className="p-1 text-emerald-700 hover:text-emerald-900 rounded cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-
-          {/* Stats KPI Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Mutasi Setelahnya</span>
-              <div className="flex items-baseline gap-1 mt-1">
-                <span className="text-xl font-black text-slate-800">{stats.subsequentCount}</span>
-                <span className="text-xs text-slate-400 font-semibold">transaksi</span>
-              </div>
-            </div>
-
-            <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-200 shadow-xs">
-              <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider block">Total IN Setelahnya</span>
-              <div className="flex items-baseline gap-1 mt-1">
-                <span className="text-xl font-black text-emerald-800">+{stats.totalIn.toLocaleString()}</span>
-                <span className="text-xs text-emerald-600 font-semibold">unit</span>
-              </div>
-            </div>
-
-            <div className="bg-rose-50 p-3 rounded-xl border border-rose-200 shadow-xs">
-              <span className="text-[10px] font-bold text-rose-700 uppercase tracking-wider block">Total OUT Setelahnya</span>
-              <div className="flex items-baseline gap-1 mt-1">
-                <span className="text-xl font-black text-rose-800">-{stats.totalOut.toLocaleString()}</span>
-                <span className="text-xs text-rose-600 font-semibold">unit</span>
-              </div>
-            </div>
-
-            <div
-              className={`p-3 rounded-xl border shadow-xs ${
-                stats.netDelta >= 0 ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'
-              }`}
-            >
-              <span
-                className={`text-[10px] font-bold uppercase tracking-wider block ${
-                  stats.netDelta >= 0 ? 'text-blue-700' : 'text-amber-800'
-                }`}
-              >
-                Saldo Netto Mutasi
-              </span>
-              <div className="flex items-baseline gap-1 mt-1">
-                <span className={`text-xl font-black ${stats.netDelta >= 0 ? 'text-blue-900' : 'text-amber-900'}`}>
-                  {stats.netDelta >= 0 ? `+${stats.netDelta.toLocaleString()}` : stats.netDelta.toLocaleString()}
-                </span>
-                <span className="text-xs font-semibold opacity-70">unit</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Toolbar & Filter Bar */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <div className="relative flex-1 sm:w-64">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Cari rak, user, gudang, tgl..."
-                  className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 font-medium text-slate-800"
-                />
-              </div>
-
-              <div className="flex items-center bg-white border border-slate-300 rounded-lg p-0.5 text-xs font-bold">
-                <button
-                  type="button"
-                  onClick={() => setTypeFilter('ALL')}
-                  className={`px-2.5 py-1 rounded-md transition-colors ${
-                    typeFilter === 'ALL' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  Semua
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTypeFilter('IN')}
-                  className={`px-2.5 py-1 rounded-md transition-colors ${
-                    typeFilter === 'IN' ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  IN
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTypeFilter('OUT')}
-                  className={`px-2.5 py-1 rounded-md transition-colors ${
-                    typeFilter === 'OUT' ? 'bg-rose-600 text-white' : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  OUT
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 self-end sm:self-center">
-              <button
-                type="button"
-                onClick={handleCopyFormattedText}
-                disabled={displayedEntries.length === 0}
-                className="h-8 px-3 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 transition-all cursor-pointer disabled:opacity-50"
-                title="Salin list dalam format: Tgl | Waktu | SKU | Type | Gudang | Rak"
-              >
-                {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{isCopied ? 'Tersalin!' : 'Salin Format'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleExportCsv}
-                disabled={displayedEntries.length === 0}
-                className="h-8 px-3 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white transition-all cursor-pointer disabled:opacity-50"
-                title="Unduh data dalam format CSV"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Export CSV</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Error Notification */}
-          {errorMsg && (
-            <div className="p-3 bg-rose-50 border border-rose-300 rounded-xl text-rose-800 text-xs flex items-center gap-2 font-medium">
-              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-              <span>{errorMsg}</span>
-            </div>
-          )}
-
-          {/* Table Container */}
-          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-            <div className="max-h-[460px] overflow-y-auto">
-              <table className="w-full border-collapse text-left text-xs">
-                <thead className="bg-slate-800 text-white sticky top-0 z-10 text-[11px] font-bold uppercase tracking-wider">
-                  <tr>
-                    <th className="py-2.5 px-3 text-center border-r border-slate-700 w-10">No</th>
-                    <th className="py-2.5 px-3 text-center border-r border-slate-700">Tanggal</th>
-                    <th className="py-2.5 px-3 text-center border-r border-slate-700">Waktu</th>
-                    <th className="py-2.5 px-3 border-r border-slate-700">SKU</th>
-                    <th className="py-2.5 px-3 text-center border-r border-slate-700 w-16">Tipe</th>
-                    <th className="py-2.5 px-3 text-center border-r border-slate-700">Gudang</th>
-                    <th className="py-2.5 px-3 border-r border-slate-700">Rak</th>
-                    <th className="py-2.5 px-3 border-r border-slate-700">Sub Rak</th>
-                    <th className="py-2.5 px-3 text-center border-r border-slate-700">Qty</th>
-                    <th className="py-2.5 px-3 text-center border-r border-slate-700">Tgl Scan</th>
-                    <th className="py-2.5 px-3 border-r border-slate-700">User</th>
-                    <th className="py-2.5 px-3 text-center">Status Transaksi</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 font-medium">
-                  {loading ? (
-                    <tr>
-                      <td colSpan={12} className="py-12 text-center text-slate-500">
-                        <div className="flex flex-col items-center justify-center gap-2">
-                          <RefreshCw className="w-6 h-6 animate-spin text-purple-600" />
-                          <span className="text-xs font-semibold">Memuat riwayat transaksi setelahnya...</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : displayedEntries.length === 0 ? (
-                    <tr>
-                      <td colSpan={12} className="py-10 text-center text-slate-400 text-xs">
-                        Tidak ada transaksi yang ditemukan setelah waktu acuan ini.
-                      </td>
-                    </tr>
+                <div className="bg-black/30 p-2.5 rounded-xl border border-purple-400/20">
+                  <span className="text-[10px] uppercase font-bold text-purple-300 block">
+                    {availableTransfers.length > 1 ? 'Pilih Titik Acuan Transfer' : 'Lokasi & Tipe Acuan'}
+                  </span>
+                  {availableTransfers.length > 1 ? (
+                    <select
+                      value={activeEntry.id}
+                      onChange={(e) => {
+                        const chosen = availableTransfers.find((t) => t.id === e.target.value);
+                        if (chosen) setActiveEntry(chosen);
+                      }}
+                      className="w-full bg-purple-950/80 border border-purple-400/40 text-yellow-200 text-xs rounded-lg px-2 py-1 font-bold focus:outline-none focus:ring-1 focus:ring-purple-400 mt-0.5 cursor-pointer"
+                    >
+                      {availableTransfers.map((t) => (
+                        <option key={t.id} value={t.id} className="bg-slate-900 text-white">
+                          {t.tgl} {t.waktu} • {t.rak} ({t.type} {t.gudang}) - {t.jumlah} Unit
+                        </option>
+                      ))}
+                    </select>
                   ) : (
-                    displayedEntries.map((item, idx) => {
-                      const isBase = isBaselineEntry(item);
-                      const isTransfer =
-                        (item.gudang || '').toUpperCase().includes('TRANSFER') || item.type === 'MOVE';
-                      const mismatch = mismatchMap.get(item.id);
+                    <span className="font-bold text-white block truncate">
+                      {activeEntry.rak} ({activeEntry.type} - {activeEntry.gudang})
+                    </span>
+                  )}
+                </div>
 
-                      return (
-                        <tr
-                          key={item.id}
-                          className={`transition-colors ${
-                            isBase
-                              ? 'bg-purple-100/80 hover:bg-purple-200/80 border-l-4 border-l-purple-600 font-bold'
-                              : mismatch
-                              ? 'bg-amber-50 hover:bg-amber-100 border-l-4 border-l-amber-500'
-                              : idx % 2 === 0
-                              ? 'bg-white hover:bg-slate-50'
-                              : 'bg-slate-50/70 hover:bg-slate-100/70'
-                          }`}
-                        >
-                          <td className="py-2 px-3 text-center border-r border-slate-200 text-slate-500 font-mono text-[11px]">
-                            {idx + 1}
-                          </td>
-                          <td className="py-2 px-3 text-center border-r border-slate-200 font-mono">{item.tgl}</td>
-                          <td className="py-2 px-3 text-center border-r border-slate-200 font-mono text-[11px]">
-                            {item.waktu}
-                          </td>
-                          <td className="py-2 px-3 border-r border-slate-200 font-mono font-bold text-slate-900">
-                            {item.sku}
-                          </td>
-                          <td className="py-2 px-3 text-center border-r border-slate-200">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-black ${
-                                item.type === 'IN'
-                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                  : item.type === 'OUT'
-                                  ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                                  : 'bg-blue-100 text-blue-800 border border-blue-300'
-                              }`}
-                            >
-                              {item.type}
-                            </span>
-                          </td>
-                          <td className="py-2 px-3 text-center border-r border-slate-200">
-                            {isTransfer ? (
-                              <span className="inline-flex px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 font-bold text-[10px] border border-purple-300">
-                                {item.gudang}
-                              </span>
-                            ) : (
-                              <span className="text-slate-700">{item.gudang || '-'}</span>
-                            )}
-                          </td>
-                          <td className="py-2 px-3 border-r border-slate-200 font-bold text-slate-900">
-                            {mismatch ? (
-                              <div className="flex flex-col">
-                                <span className="line-through text-rose-600 font-bold">{item.rak || '-'}</span>
-                                <span className="text-emerald-700 font-black text-[10px] flex items-center gap-0.5">
-                                  ➔ {mismatch.suggestedRak}
-                                </span>
-                              </div>
-                            ) : (
-                              item.rak || '-'
-                            )}
-                          </td>
-                          <td className="py-2 px-3 border-r border-slate-200 text-slate-600">{item.sub_rak || '-'}</td>
-                          <td className="py-2 px-3 text-center border-r border-slate-200 font-black text-slate-900">
-                            {item.jumlah}
-                          </td>
-                          <td className="py-2 px-3 text-center border-r border-slate-200 text-slate-600 font-mono text-[11px]">
-                            {item.tgl_scan || '-'}
-                          </td>
-                          <td
-                            className="py-2 px-3 border-r border-slate-200 text-slate-600 text-[11px] truncate max-w-[120px]"
-                            title={item.user}
-                          >
-                            {item.user || '-'}
-                          </td>
-                          <td className="py-2 px-3 text-center">
-                            {isBase ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-600 text-white font-black text-[10px] shadow-xs">
-                                <ArrowRightLeft className="w-3 h-3" />
-                                TITIK ACUAN
-                              </span>
-                            ) : mismatch ? (
-                              <div className="flex items-center justify-center gap-1">
-                                {mismatch.reason.includes('nyelip') ? (
-                                  <span
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-black border border-amber-300"
-                                    title={mismatch.reason}
-                                  >
-                                    <AlertTriangle className="w-2.5 h-2.5 text-amber-600" />
-                                    SALAH RAK (NYELIP)
-                                  </span>
-                                ) : (
-                                  <span
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-black border border-rose-300"
-                                    title={mismatch.reason}
-                                  >
-                                    <AlertTriangle className="w-2.5 h-2.5 text-rose-600" />
-                                    SALAH RAK
-                                  </span>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => handleExecuteFix([mismatch])}
-                                  disabled={isFixing}
-                                  className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black transition-all cursor-pointer shadow-xs"
-                                  title={`Pindahkan pemotongan ini ke rak ${mismatch.suggestedRak}`}
-                                >
-                                  Perbaiki
-                                </button>
-                              </div>
-                            ) : (
-                              <span className="text-[10px] font-bold text-slate-500 uppercase">Mutasi Setelahnya</span>
-                            )}
+                <div className="bg-black/30 p-2.5 rounded-xl border border-purple-400/20">
+                  <span className="text-[10px] uppercase font-bold text-purple-300 block">Jumlah Qty Acuan</span>
+                  <span className="font-black text-white block">
+                    {activeEntry.jumlah.toLocaleString()} Unit
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {activeEntry ? (
+            <>
+              {/* Alert Notification Banner for Detected Mismatch */}
+              {diagnosis && diagnosis.mismatches.length > 0 && (
+                <div className="bg-gradient-to-r from-amber-500/15 via-rose-500/15 to-amber-500/15 border-2 border-amber-400/70 rounded-2xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-md animate-in fade-in duration-200">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2.5 bg-amber-500/20 text-amber-700 rounded-xl shrink-0 mt-0.5 border border-amber-400/50">
+                      <AlertTriangle className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-black text-amber-950 uppercase tracking-wide flex items-center gap-2">
+                        Terdeteksi Transaksi Salah Rak Setelah Transfer
+                        <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-black">
+                          {diagnosis.mismatches.length} Transaksi Terpengaruh
+                        </span>
+                      </h4>
+                      <p className="text-xs text-slate-700 mt-1 leading-relaxed">
+                        Stok telah ditransfer ke rak{' '}
+                        <strong className="text-emerald-700 font-black">{diagnosis.transferDestinationRak}</strong>, namun staf
+                        gudang memotong stok keluar (OUT) dari rak asal{' '}
+                        <strong className="text-rose-700 font-black">{diagnosis.transferOriginRak}</strong>.
+                        Hal ini menyebabkan rak {diagnosis.transferOriginRak} mengalami defisit (
+                        <span className="text-rose-600 font-bold">{diagnosis.originRakBalance} unit</span>) dan rak{' '}
+                        {diagnosis.transferDestinationRak} surplus (
+                        <span className="text-emerald-600 font-bold">+{diagnosis.destinationRakBalance} unit</span>).
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => setIsDiagnosisModalOpen(true)}
+                    className="bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-xs rounded-xl shadow-md border border-amber-300 gap-1.5 shrink-0 whitespace-nowrap cursor-pointer"
+                  >
+                    <Wrench className="w-3.5 h-3.5" />
+                    <span>Perbaiki ke Rak {diagnosis.transferDestinationRak}</span>
+                  </Button>
+                </div>
+              )}
+
+              {/* Success Notification */}
+              {fixNotification && (
+                <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-900 text-xs flex items-center justify-between gap-2 font-medium">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{fixNotification.message}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFixNotification(null)}
+                    className="p-1 text-emerald-700 hover:text-emerald-900 rounded cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* Stats KPI Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Mutasi Setelahnya</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-xl font-black text-slate-800">{stats.subsequentCount}</span>
+                    <span className="text-xs text-slate-400 font-semibold">transaksi</span>
+                  </div>
+                </div>
+
+                <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-200 shadow-xs">
+                  <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider block">Total IN Setelahnya</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-xl font-black text-emerald-800">+{stats.totalIn.toLocaleString()}</span>
+                    <span className="text-xs text-emerald-600 font-semibold">unit</span>
+                  </div>
+                </div>
+
+                <div className="bg-rose-50 p-3 rounded-xl border border-rose-200 shadow-xs">
+                  <span className="text-[10px] font-bold text-rose-700 uppercase tracking-wider block">Total OUT Setelahnya</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-xl font-black text-rose-800">-{stats.totalOut.toLocaleString()}</span>
+                    <span className="text-xs text-rose-600 font-semibold">unit</span>
+                  </div>
+                </div>
+
+                <div
+                  className={`p-3 rounded-xl border shadow-xs ${
+                    stats.netDelta >= 0 ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'
+                  }`}
+                >
+                  <span
+                    className={`text-[10px] font-bold uppercase tracking-wider block ${
+                      stats.netDelta >= 0 ? 'text-blue-700' : 'text-amber-800'
+                    }`}
+                  >
+                    Saldo Netto Mutasi
+                  </span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className={`text-xl font-black ${stats.netDelta >= 0 ? 'text-blue-900' : 'text-amber-900'}`}>
+                      {stats.netDelta >= 0 ? `+${stats.netDelta.toLocaleString()}` : stats.netDelta.toLocaleString()}
+                    </span>
+                    <span className="text-xs font-semibold opacity-70">unit</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Toolbar & Filter Bar */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <div className="relative flex-1 sm:w-64">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      placeholder="Cari rak, user, gudang, tgl..."
+                      className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 font-medium text-slate-800"
+                    />
+                  </div>
+
+                  <div className="flex items-center bg-white border border-slate-300 rounded-lg p-0.5 text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setTypeFilter('ALL')}
+                      className={`px-2.5 py-1 rounded-md transition-colors ${
+                        typeFilter === 'ALL' ? 'bg-purple-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      Semua
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTypeFilter('IN')}
+                      className={`px-2.5 py-1 rounded-md transition-colors ${
+                        typeFilter === 'IN' ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      IN
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTypeFilter('OUT')}
+                      className={`px-2.5 py-1 rounded-md transition-colors ${
+                        typeFilter === 'OUT' ? 'bg-rose-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      OUT
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-end sm:self-center">
+                  <button
+                    type="button"
+                    onClick={handleCopyFormattedText}
+                    disabled={displayedEntries.length === 0}
+                    className="h-8 px-3 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 transition-all cursor-pointer disabled:opacity-50"
+                    title="Salin list dalam format: Tgl | Waktu | SKU | Type | Gudang | Rak"
+                  >
+                    {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{isCopied ? 'Tersalin!' : 'Salin Format'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleExportCsv}
+                    disabled={displayedEntries.length === 0}
+                    className="h-8 px-3 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white transition-all cursor-pointer disabled:opacity-50"
+                    title="Unduh data dalam format CSV"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Export CSV</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Error Notification */}
+              {errorMsg && (
+                <div className="p-3 bg-rose-50 border border-rose-300 rounded-xl text-rose-800 text-xs flex items-center gap-2 font-medium">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{errorMsg}</span>
+                </div>
+              )}
+
+              {/* Table Container */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+                <div className="max-h-[460px] overflow-y-auto">
+                  <table className="w-full border-collapse text-left text-xs">
+                    <thead className="bg-slate-800 text-white sticky top-0 z-10 text-[11px] font-bold uppercase tracking-wider">
+                      <tr>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700 w-10">No</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700">Tanggal</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700">Waktu</th>
+                        <th className="py-2.5 px-3 border-r border-slate-700">SKU</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700 w-16">Tipe</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700">Gudang</th>
+                        <th className="py-2.5 px-3 border-r border-slate-700">Rak</th>
+                        <th className="py-2.5 px-3 border-r border-slate-700">Sub Rak</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700">Qty</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700">Tgl Scan</th>
+                        <th className="py-2.5 px-3 border-r border-slate-700">User</th>
+                        <th className="py-2.5 px-3 text-center">Status Transaksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 font-medium">
+                      {loading ? (
+                        <tr>
+                          <td colSpan={12} className="py-12 text-center text-slate-500">
+                            <div className="flex flex-col items-center justify-center gap-2">
+                              <RefreshCw className="w-6 h-6 animate-spin text-purple-600" />
+                              <span className="text-xs font-semibold">Memuat riwayat transaksi setelahnya...</span>
+                            </div>
                           </td>
                         </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
+                      ) : displayedEntries.length === 0 ? (
+                        <tr>
+                          <td colSpan={12} className="py-10 text-center text-slate-400 text-xs">
+                            Tidak ada transaksi yang ditemukan setelah waktu acuan ini.
+                          </td>
+                        </tr>
+                      ) : (
+                        displayedEntries.map((item, idx) => {
+                          const isBase = isBaselineEntry(item);
+                          const isTransfer =
+                            (item.gudang || '').toUpperCase().includes('TRANSFER') || item.type === 'MOVE';
+                          const mismatch = mismatchMap.get(item.id);
+
+                          return (
+                            <tr
+                              key={item.id}
+                              className={`transition-colors ${
+                                isBase
+                                  ? 'bg-purple-100/80 hover:bg-purple-200/80 border-l-4 border-l-purple-600 font-bold'
+                                  : mismatch
+                                  ? 'bg-amber-50 hover:bg-amber-100 border-l-4 border-l-amber-500'
+                                  : idx % 2 === 0
+                                  ? 'bg-white hover:bg-slate-50'
+                                  : 'bg-slate-50/70 hover:bg-slate-100/70'
+                              }`}
+                            >
+                              <td className="py-2 px-3 text-center border-r border-slate-200 text-slate-500 font-mono text-[11px]">
+                                {idx + 1}
+                              </td>
+                              <td className="py-2 px-3 text-center border-r border-slate-200 font-mono">{item.tgl}</td>
+                              <td className="py-2 px-3 text-center border-r border-slate-200 font-mono text-[11px]">
+                                {item.waktu}
+                              </td>
+                              <td className="py-2 px-3 border-r border-slate-200 font-mono font-bold text-slate-900">
+                                {item.sku}
+                              </td>
+                              <td className="py-2 px-3 text-center border-r border-slate-200">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                                    item.type === 'IN'
+                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                      : item.type === 'OUT'
+                                      ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                      : 'bg-blue-100 text-blue-800 border border-blue-300'
+                                  }`}
+                                >
+                                  {item.type}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-center border-r border-slate-200">
+                                {isTransfer ? (
+                                  <span className="inline-flex px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 font-bold text-[10px] border border-purple-300">
+                                    {item.gudang}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-700">{item.gudang || '-'}</span>
+                                )}
+                              </td>
+                              <td className="py-2 px-3 border-r border-slate-200 font-bold text-slate-900">
+                                {mismatch ? (
+                                  <div className="flex flex-col">
+                                    <span className="line-through text-rose-600 font-bold">{item.rak || '-'}</span>
+                                    <span className="text-emerald-700 font-black text-[10px] flex items-center gap-0.5">
+                                      ➔ {mismatch.suggestedRak}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  item.rak || '-'
+                                )}
+                              </td>
+                              <td className="py-2 px-3 border-r border-slate-200 text-slate-600">{item.sub_rak || '-'}</td>
+                              <td className="py-2 px-3 text-center border-r border-slate-200 font-black text-slate-900">
+                                {item.jumlah}
+                              </td>
+                              <td className="py-2 px-3 text-center border-r border-slate-200 text-slate-600 font-mono text-[11px]">
+                                {item.tgl_scan || '-'}
+                              </td>
+                              <td
+                                className="py-2 px-3 border-r border-slate-200 text-slate-600 text-[11px] truncate max-w-[120px]"
+                                title={item.user}
+                              >
+                                {item.user || '-'}
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                {isBase ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-600 text-white font-black text-[10px] shadow-xs">
+                                    <ArrowRightLeft className="w-3 h-3" />
+                                    TITIK ACUAN
+                                  </span>
+                                ) : mismatch ? (
+                                  <div className="flex items-center justify-center gap-1">
+                                    {mismatch.reason.includes('nyelip') ? (
+                                      <span
+                                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-black border border-amber-300"
+                                        title={mismatch.reason}
+                                      >
+                                        <AlertTriangle className="w-2.5 h-2.5 text-amber-600" />
+                                        SALAH RAK (NYELIP)
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-black border border-rose-300"
+                                        title={mismatch.reason}
+                                      >
+                                        <AlertTriangle className="w-2.5 h-2.5 text-rose-600" />
+                                        SALAH RAK
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleExecuteFix([mismatch])}
+                                      disabled={isFixing}
+                                      className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black transition-all cursor-pointer shadow-xs"
+                                      title={`Pindahkan pemotongan ini ke rak ${mismatch.suggestedRak}`}
+                                    >
+                                      Perbaiki
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase">Mutasi Setelahnya</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          ) : (
+            /* In-Modal Recent Transfer Picker View */
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-black text-slate-800 uppercase tracking-wide flex items-center gap-2">
+                    Pilih Transaksi Acuan Transfer Terkini
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 border border-purple-200">
+                      {filteredRecentTransfers.length} Data Tersedia
+                    </span>
+                  </h4>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    Silakan pilih salah satu transaksi transfer di bawah ini atau ketik SKU pada kolom pencarian di atas untuk memulai analisis.
+                  </p>
+                </div>
+
+                <div className="relative w-full sm:w-72">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={recentTransferFilter}
+                    onChange={(e) => setRecentTransferFilter(e.target.value)}
+                    placeholder="Filter SKU, rak, user..."
+                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 font-medium text-slate-800"
+                  />
+                </div>
+              </div>
+
+              {/* Table of Recent Transfers */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs bg-white">
+                <div className="max-h-[460px] overflow-y-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-800 text-white sticky top-0 z-10 text-[11px] font-bold uppercase tracking-wider">
+                      <tr>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700 w-10">No</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700">Tanggal & Waktu</th>
+                        <th className="py-2.5 px-3 border-r border-slate-700">SKU</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700 w-16">Tipe</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700">Gudang</th>
+                        <th className="py-2.5 px-3 border-r border-slate-700">Rak / Sub Rak</th>
+                        <th className="py-2.5 px-3 text-center border-r border-slate-700">Qty</th>
+                        <th className="py-2.5 px-3 border-r border-slate-700">User</th>
+                        <th className="py-2.5 px-3 text-center w-28">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 font-medium">
+                      {isLoadingRecentTransfers ? (
+                        <tr>
+                          <td colSpan={9} className="py-12 text-center text-slate-500">
+                            <div className="flex flex-col items-center justify-center gap-2">
+                              <RefreshCw className="w-6 h-6 animate-spin text-purple-600" />
+                              <span className="text-xs font-semibold">Memuat transaksi transfer terkini...</span>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : filteredRecentTransfers.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="py-10 text-center text-slate-400 text-xs">
+                            Tidak ada transaksi transfer yang cocok. Silakan gunakan kolom pencarian SKU di atas.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredRecentTransfers.map((item, idx) => (
+                          <tr key={item.id} className="hover:bg-purple-50/60 transition-colors">
+                            <td className="py-2 px-3 text-center border-r border-slate-200 text-slate-500 font-mono text-[11px]">
+                              {idx + 1}
+                            </td>
+                            <td className="py-2 px-3 text-center border-r border-slate-200 font-mono whitespace-nowrap">
+                              {item.tgl} <span className="text-slate-400 text-[11px]">({item.waktu})</span>
+                            </td>
+                            <td className="py-2 px-3 font-mono font-bold text-purple-950 border-r border-slate-200">
+                              {item.sku}
+                            </td>
+                            <td className="py-2 px-3 text-center border-r border-slate-200">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-black border ${
+                                  item.type === 'IN'
+                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                    : 'bg-rose-100 text-rose-800 border-rose-300'
+                                }`}
+                              >
+                                {item.type}
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-center border-r border-slate-200">
+                              <span className="px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded font-bold text-[10px] border border-purple-300">
+                                {item.gudang}
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 border-r border-slate-200 font-bold text-slate-900">
+                              {item.rak || '-'} {item.sub_rak && item.sub_rak !== item.rak ? `(${item.sub_rak})` : ''}
+                            </td>
+                            <td className="py-2 px-3 text-center border-r border-slate-200 font-black text-slate-900">
+                              {item.jumlah}
+                            </td>
+                            <td className="py-2 px-3 border-r border-slate-200 text-slate-600 text-[11px] truncate max-w-[120px]" title={item.user}>
+                              {item.user || '-'}
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveEntry(item);
+                                  setSkuSearchInput(item.sku);
+                                }}
+                                className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-bold rounded-lg cursor-pointer transition-all shadow-xs flex items-center justify-center gap-1 mx-auto"
+                              >
+                                <History className="w-3 h-3" />
+                                <span>Pilih & Proses</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Modal Footer */}
           <div className="flex items-center justify-between pt-2 border-t border-slate-200 text-xs text-slate-500">
             <div>
-              Total data ditampilkan: <strong className="text-slate-800">{displayedEntries.length}</strong> baris
+              Total data ditampilkan:{' '}
+              <strong className="text-slate-800">
+                {activeEntry ? displayedEntries.length : filteredRecentTransfers.length}
+              </strong>{' '}
+              baris
             </div>
             <Button variant="secondary" onClick={onClose} className="px-5 font-bold cursor-pointer">
               Tutup
