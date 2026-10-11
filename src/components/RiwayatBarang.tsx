@@ -14,6 +14,8 @@ import { ExportHistoryModal } from './ExportHistoryModal';
 import { subscribeAppSettingsChange } from '../lib/settingsSync';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
+import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance } from '../services/scanDateMatchService';
+import { isForbiddenTransferRack } from './DatabaseLog';
 
 // --- Konstanta Cache ---
 const CACHE_KEY_PRODUCTS = 'riwayat_barang_products_cache';
@@ -593,10 +595,10 @@ export function RiwayatBarang() {
       setIsAnalyzing(true);
       showToast('Menghitung rekomendasi pemindahan data...', 'info');
 
-      // 1. Fetch ALL relevant logs for this specific SKU to get the full picture
+      // 1. Fetch ALL relevant logs for this specific SKU with full date and time fields
       const { data: allLogs, error } = await supabase
         .from('database_log')
-        .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah')
+        .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu')
         .ilike('sku', analysisSku.trim())
         .or('type.ilike.%IN%,type.ilike.%OUT%')
         .order('id', { ascending: true });
@@ -607,122 +609,201 @@ export function RiwayatBarang() {
         return;
       }
 
-      // 2. Group into balances and collect OUT rows by group
-      const groups = new Map<string, {
-        balance: number,
-        tglScanRaw: string,
-        normalizedTglScan: string,
-        rak: string,
-        outRows: any[]
-      }>();
-
       const excludedList = excludedScanDates.split(',').map(d => d.trim().toUpperCase()).filter(Boolean);
-
-      allLogs.forEach(log => {
-        const normRak = (log.rak || '').trim().toUpperCase();
-        const normTglScan = formatDateDisplay(log.tgl_scan) || 'No Date';
-        const normType = (log.type || '').trim().toUpperCase();
-        const finalType = normType.includes('IN') ? 'IN' : 'OUT';
-        const key = `${normRak}|${normTglScan}`;
-
-        if (!groups.has(key)) {
-          groups.set(key, {
-            balance: 0,
-            tglScanRaw: (log.tgl_scan || '').trim(),
-            normalizedTglScan: normTglScan,
-            rak: (log.rak || '').trim(),
-            outRows: []
-          });
-        }
-
-        const g = groups.get(key)!;
-        const qty = Number(log.jumlah || 0);
-        if (finalType === 'IN') {
-          g.balance += qty;
-        } else {
-          g.balance -= qty;
-          g.outRows.push({
-            id: log.id,
-            jumlah: qty,
-            tglScan: log.tgl_scan || ''
-          });
-        }
-      });
-
-      // 3. Logic Redistribution
-      const moves: any[] = [];
-      const rakKeys = Array.from(new Set(Array.from(groups.values()).map(g => g.rak.toUpperCase())));
-
-      // Helper function to check if a group is excluded
-      const checkIfExcluded = (g: any) => {
-        const normTgl = g.normalizedTglScan.toUpperCase();
-        // Strict normalization check: compare formatted versions
+      const checkIfExcluded = (targetTgl: string) => {
+        const normTgl = (formatDateDisplay(targetTgl) || targetTgl || '').toUpperCase();
         if (excludedList.some(excluded => {
           const normExcluded = formatDateDisplay(excluded).toUpperCase();
           return normTgl === normExcluded || normTgl === excluded.toUpperCase();
         })) return true;
 
         if (limitBeforeDate || limitAfterDate) {
-          const targetDate = new Date(g.normalizedTglScan);
+          const targetDate = new Date(targetTgl);
           if (isNaN(targetDate.getTime())) return true;
-
-          if (limitBeforeDate) {
-            const limitBefore = new Date(limitBeforeDate);
-            if (targetDate > limitBefore) return true;
-          }
-          if (limitAfterDate) {
-            const limitAfter = new Date(limitAfterDate);
-            if (targetDate < limitAfter) return true;
-          }
+          if (limitBeforeDate && targetDate > new Date(limitBeforeDate)) return true;
+          if (limitAfterDate && targetDate < new Date(limitAfterDate)) return true;
         }
-
         return false;
       };
 
-      rakKeys.forEach(rakName => {
-        const rakGroups = Array.from(groups.entries())
-          .filter(([, g]) => g.rak.toUpperCase() === rakName);
+      const normRak = (r?: string) => (r || '').trim().toUpperCase().replace(/\./g, '');
 
-        // Surplus groups that are NOT excluded
-        const surpluses = rakGroups.filter(([, g]) => {
-          if (g.balance <= 0) return false;
-          return !checkIfExcluded(g);
-        }).sort((a, b) => b[1].balance - a[1].balance);
+      // 2. Separate Inflow Buckets (Supply IN) and Outflow Candidates (Demand OUT)
+      interface InflowBucket {
+        id: string;
+        tgl: string;
+        waktu: string;
+        targetTglScan: string;
+        rak: string;
+        sub_rak: string;
+        totalCapacity: number;
+        remainingCapacity: number;
+        timestamp: number;
+      }
 
-        // Deficit groups that are NOT excluded
-        const deficits = rakGroups.filter(([, g]) => {
-          if (g.balance >= 0) return false;
-          return !checkIfExcluded(g);
-        });
+      interface OutCandidate {
+        id: string;
+        tgl: string;
+        waktu: string;
+        jumlah: number;
+        rak: string;
+        sub_rak: string;
+        oldTglScan: string;
+        timestamp: number;
+        isAssigned: boolean;
+        newRak: string;
+        newSubRak: string;
+        newTglScan: string;
+      }
 
-        deficits.forEach(([, negG]) => {
-          // Try to move OUT rows from this deficit group to surplus groups
-          const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
+      const inBuckets: InflowBucket[] = [];
+      const outCandidates: OutCandidate[] = [];
 
-          for (const row of rows) {
-            if (negG.balance >= 0) break;
+      allLogs.forEach(log => {
+        const qty = Number(log.jumlah || 0);
+        const normType = (log.type || '').trim().toUpperCase();
+        if (normType.includes('IN')) {
+          const targetTglScan = normalizeDate(log.tgl_scan) || normalizeDate(log.tgl);
+          inBuckets.push({
+            id: log.id,
+            tgl: normalizeDate(log.tgl),
+            waktu: normalizeTime(log.waktu),
+            targetTglScan,
+            rak: (log.rak || '').trim(),
+            sub_rak: (log.sub_rak || log.rak || '').trim(),
+            totalCapacity: qty,
+            remainingCapacity: qty,
+            timestamp: toTimestamp(log.tgl, log.waktu)
+          });
+        } else if (normType.includes('OUT')) {
+          outCandidates.push({
+            id: log.id,
+            tgl: normalizeDate(log.tgl),
+            waktu: normalizeTime(log.waktu),
+            jumlah: qty,
+            rak: (log.rak || '').trim(),
+            sub_rak: (log.sub_rak || log.rak || '').trim(),
+            oldTglScan: normalizeDate(log.tgl_scan),
+            timestamp: toTimestamp(log.tgl, log.waktu),
+            isAssigned: false,
+            newRak: (log.rak || '').trim(),
+            newSubRak: (log.sub_rak || log.rak || '').trim(),
+            newTglScan: normalizeDate(log.tgl_scan)
+          });
+        }
+      });
 
-            const targetEntry = surpluses.find(([, tg]) => tg.balance > 0);
+      inBuckets.sort((a, b) => a.timestamp - b.timestamp);
+      outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-            if (targetEntry) {
-              const [, targetG] = targetEntry;
+      // --- TAHAP 0: PRIORITAS NOMOR 1 MUTLAK — MATCHING IDENTIK SKU & QTY (1-ke-1) ---
+      for (const bucket of inBuckets) {
+        if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
 
-              moves.push({
-                id: row.id,
-                sku: analysisSku,
-                rak: negG.rak,
-                fromTgl: negG.tglScanRaw,
-                toTgl: targetG.tglScanRaw,
-                jumlah: row.jumlah
-              });
+        const exactQtyMatches = outCandidates.filter(
+          c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
+        );
 
-              negG.balance += row.jumlah;
-              targetG.balance -= row.jumlah;
+        if (exactQtyMatches.length > 0) {
+          exactQtyMatches.sort((a, b) => {
+            const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
+            const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
+            const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
+            const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
 
-              surpluses.sort((a, b) => b[1].balance - a[1].balance);
+            if (aSameRak !== bSameRak) {
+              const aDays = distA / (24 * 3600 * 1000);
+              const bDays = distB / (24 * 3600 * 1000);
+              if (aDays < 30 && bDays > 30) return -1;
+              if (bDays < 30 && aDays > 30) return 1;
             }
-          }
-        });
+
+            return distA - distB;
+          });
+
+          const bestMatch = exactQtyMatches[0];
+          bestMatch.isAssigned = true;
+          bestMatch.newRak = bucket.rak;
+          bestMatch.newSubRak = bucket.sub_rak || bucket.rak;
+          bestMatch.newTglScan = bucket.targetTglScan;
+          bucket.remainingCapacity -= bestMatch.jumlah;
+        }
+      }
+
+      // --- TAHAP 1: MATCHING DALAM RAK YANG SAMA (SAME RAK FIFO / CHRONOLOGICAL) ---
+      for (const bucket of inBuckets) {
+        if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
+
+        while (bucket.remainingCapacity > 0) {
+          const sameRakMatches = outCandidates.filter(
+            c => !c.isAssigned &&
+                 c.jumlah <= bucket.remainingCapacity &&
+                 normRak(c.rak) === normRak(bucket.rak)
+          );
+
+          if (sameRakMatches.length === 0) break;
+
+          sameRakMatches.sort((a, b) =>
+            getChronologicalDistance(a.timestamp, bucket.timestamp) -
+            getChronologicalDistance(b.timestamp, bucket.timestamp)
+          );
+
+          const best = sameRakMatches[0];
+          best.isAssigned = true;
+          best.newRak = bucket.rak;
+          best.newSubRak = bucket.sub_rak || bucket.rak;
+          best.newTglScan = bucket.targetTglScan;
+          bucket.remainingCapacity -= best.jumlah;
+        }
+      }
+
+      // --- TAHAP 2: CROSS RAK NEAREST DATE (BEDA RAK, TANGGAL TERDEKAT) ---
+      for (const bucket of inBuckets) {
+        if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
+        if (isForbiddenTransferRack(bucket.rak)) continue;
+
+        while (bucket.remainingCapacity > 0) {
+          const crossMatches = outCandidates.filter(
+            c => !c.isAssigned &&
+                 c.jumlah <= bucket.remainingCapacity &&
+                 !isForbiddenTransferRack(c.rak)
+          );
+
+          if (crossMatches.length === 0) break;
+
+          crossMatches.sort((a, b) =>
+            getChronologicalDistance(a.timestamp, bucket.timestamp) -
+            getChronologicalDistance(b.timestamp, bucket.timestamp)
+          );
+
+          const best = crossMatches[0];
+          best.isAssigned = true;
+          best.newRak = bucket.rak;
+          best.newSubRak = bucket.sub_rak || bucket.rak;
+          best.newTglScan = bucket.targetTglScan;
+          bucket.remainingCapacity -= best.jumlah;
+        }
+      }
+
+      // 3. Kumpulkan rekomendasi pemindahan (HANYA untuk transaksi OUT yang berubah rak atau tgl_scan)
+      const moves: any[] = [];
+      outCandidates.forEach(c => {
+        if (!c.isAssigned) return;
+        const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
+        const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
+
+        if (isRakChanged || isTglChanged) {
+          moves.push({
+            id: c.id,
+            sku: analysisSku,
+            rak: c.rak,
+            toRak: c.newRak,
+            fromTgl: c.oldTglScan,
+            toTgl: c.newTglScan,
+            jumlah: c.jumlah,
+            type: isRakChanged ? 'CROSS_RAK' : 'SAME_RAK'
+          });
+        }
       });
 
       if (moves.length === 0) {
@@ -754,16 +835,24 @@ export function RiwayatBarang() {
       for (let i = 0; i < redistributeMoves.length; i += batchSize) {
         const batch = redistributeMoves.slice(i, i + batchSize);
 
-        // Update each record individually (or use a stored procedure if available)
-        // Since we are changing different IDs to different values, bulk .update([])
-        // only works for multiple IDs to SAME value.
-        // We'll use Promise.all for the batch.
-        const promises = batch.map(move =>
-          supabase
+        const promises = batch.map(move => {
+          const updatePayload: any = {
+            tgl_scan: move.toTgl,
+            log_update_user: move.toRak && move.toRak !== move.rak
+              ? `DEVMODE: Redistribute Move ${move.rak}->${move.toRak}`
+              : `DEVMODE: Redistribute Tgl Scan`
+          };
+
+          if (move.toRak && move.toRak !== move.rak) {
+            updatePayload.rak = move.toRak;
+            updatePayload.sub_rak = move.toRak;
+          }
+
+          return supabase
             .from('database_log')
-            .update({ tgl_scan: move.toTgl })
-            .eq('id', move.id)
-        );
+            .update(updatePayload)
+            .eq('id', move.id);
+        });
 
         const results = await Promise.all(promises);
         results.forEach(res => {

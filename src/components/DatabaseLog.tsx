@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Download, Upload, FileText, CheckCircle, Check, X, Trash2, Edit2, Lock, ChevronDown, Calendar, Building2, User, UserCheck, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link, Layers, AlertTriangle, Wrench, Settings, Sparkles } from 'lucide-react';
+import { Download, Upload, FileText, CheckCircle, Check, CheckCheck, X, Trash2, Edit2, Lock, ChevronDown, Calendar, CalendarX, Building2, User, UserCheck, Package, Trash, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Search, AlertCircle, RefreshCw, Tag, Database, RotateCcw, ArrowRightLeft, History, Copy, CheckSquare, Square, Filter, Link, Layers, AlertTriangle, Wrench, Settings, Sparkles, Clipboard, ListFilter } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/AuthContext';
 import { saveExportHistory } from '../lib/exportHistoryService';
@@ -18,6 +18,11 @@ import { MismatchedOutRakItem, SyncOutRakScanResult, scanMismatchedOutLogs, rest
 import { SyncLt4Lt2Modal } from './SyncLt4Lt2Modal';
 import { AdjustmentStockOutModal } from './AdjustmentStockOutModal';
 import { SubsequentLogsModal } from './SubsequentLogsModal';
+import { ScanDateAutoMatchModal } from './ScanDateAutoMatchModal';
+import { SyncTransferOutScanDateModal } from './SyncTransferOutScanDateModal';
+import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance } from '../services/scanDateMatchService';
+
+const normRak = (r?: string) => (r || '').trim().toUpperCase().replace(/\./g, '');
 
 export interface DatabaseLogEntry {
   id: string;
@@ -269,6 +274,25 @@ export const formatDeficitReportSentence = (
   return `${sku} di rak ${rak}${tglText} lebih potong ${Math.abs(deficitQty).toLocaleString()} pcs${inOutText}`;
 };
 
+export interface BatchGroupItem {
+  id: string;
+  sku: string;
+  rak?: string;
+  tglScan: string;
+  rawTglScan: string;
+  inEntries: DatabaseLogEntry[];
+  outEntries: DatabaseLogEntry[];
+  sortedEntries: (DatabaseLogEntry & { isRakMismatch?: boolean; mismatchInitialRaks?: string[] })[];
+  initialInRaks: Set<string>;
+  initialInRaksList: string[];
+  totalIn: number;
+  totalOut: number;
+  balance: number;
+  hasRakMismatch: boolean;
+  mismatchCount: number;
+  rakBreakdown?: { rak: string; inQty: number; outQty: number; balance: number }[];
+}
+
 export interface DatabaseLogProps {
   initialGudangFilter?: string;
   bypassPin?: boolean;
@@ -354,6 +378,32 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const [isFixingTransferDates, setIsFixingTransferDates] = useState(false);
   const [transferFixProgress, setTransferFixProgress] = useState({ current: 0, total: 0, percent: 0 });
 
+  // --- TOAST NOTIFICATION STATE & HANDLERS ---
+  const [toast, setToast] = useState<{
+    show: boolean;
+    message: string;
+    type: 'success' | 'error' | 'warning' | 'info';
+  }>({
+    show: false,
+    message: '',
+    type: 'info'
+  });
+
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'warning' | 'info') => {
+    setToast({
+      show: true,
+      message,
+      type
+    });
+    setTimeout(() => {
+      setToast(prev => ({ ...prev, show: false }));
+    }, 5000);
+  }, []);
+
+  const hideToast = useCallback(() => {
+    setToast(prev => ({ ...prev, show: false }));
+  }, []);
+
   const { userPermissions, userName } = useAuth();
   
   const [isPinModalOpen, setIsPinModalOpen] = useState(() => {
@@ -413,6 +463,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       onlySelected: false,
       excludeTransfer: false
     });
+    setActiveBulkSkuSearch([]);
+    setBulkSkuSearchInput('');
     setCurrentPage(1);
   };
 
@@ -490,28 +542,50 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
   // --- GROUPING (SKU + TGL SCAN + IN/OUT) & OUT RAK MISMATCH AUDIT STATE ---
   const [isGroupedMode, setIsGroupedMode] = useState(false);
+  const [groupIncludeRak, setGroupIncludeRak] = useState(true);
   const [groupedSubFilter, setGroupedSubFilter] = useState<'ALL' | 'MISMATCH' | 'DEFICIT'>('ALL');
 
-  interface BatchGroupItem {
-    id: string;
-    sku: string;
-    tglScan: string;
-    rawTglScan: string;
-    inEntries: DatabaseLogEntry[];
-    outEntries: DatabaseLogEntry[];
-    sortedEntries: (DatabaseLogEntry & { isRakMismatch?: boolean; mismatchInitialRaks?: string[] })[];
-    initialInRaks: Set<string>;
-    initialInRaksList: string[];
-    totalIn: number;
-    totalOut: number;
-    balance: number;
-    hasRakMismatch: boolean;
-    mismatchCount: number;
-  }
+  // --- HAPUS TGL SCAN BATCH MINUS (DEFISIT) STATE ---
+  const [isClearDeficitModalOpen, setIsClearDeficitModalOpen] = useState(false);
+  const [isClearingDeficitScanDates, setIsClearingDeficitScanDates] = useState(false);
+
+  // --- BULK SKU SEARCH STATE ---
+  const [isBulkSkuModalOpen, setIsBulkSkuModalOpen] = useState(false);
+  const [bulkSkuSearchInput, setBulkSkuSearchInput] = useState('');
+  const [activeBulkSkuSearch, setActiveBulkSkuSearch] = useState<string[]>([]);
+  const [bulkSkuSearchMode, setBulkSkuSearchMode] = useState<'exact' | 'partial'>('exact');
+
+  const handleApplyBulkSkuSearch = useCallback((customInput?: string) => {
+    const raw = customInput !== undefined ? customInput : bulkSkuSearchInput;
+    const list = Array.from(
+      new Set(
+        raw
+          .split(/[\r\n,]+/)
+          .map(s => s.trim())
+          .filter(Boolean)
+      )
+    );
+    if (list.length === 0) {
+      showToast('Silakan masukkan atau tempel setidaknya 1 SKU.', 'warning');
+      return;
+    }
+    setActiveBulkSkuSearch(list);
+    setIsBulkSkuModalOpen(false);
+    setCurrentPage(1);
+    showToast(`Pencarian massal aktif untuk ${list.length} SKU.`, 'success');
+  }, [bulkSkuSearchInput, showToast]);
+
+  const handleClearBulkSkuSearch = useCallback(() => {
+    setActiveBulkSkuSearch([]);
+    setBulkSkuSearchInput('');
+    setCurrentPage(1);
+    showToast('Filter pencarian massal SKU dinonaktifkan.', 'info');
+  }, [showToast]);
 
   const batchGroupData = useMemo(() => {
     const groupsMap = new Map<string, {
       sku: string;
+      rak?: string;
       tglScan: string;
       rawTglScan: string;
       entries: DatabaseLogEntry[];
@@ -521,11 +595,13 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       const normSku = (entry.sku || '').trim().toUpperCase();
       const rawScan = (entry.tgl_scan || '').trim();
       const normScan = formatDateDisplay(rawScan) || rawScan || 'Tanpa Tgl Scan';
-      const key = `${normSku}|${normScan}`;
+      const entryNormRak = (entry.rak || 'Tanpa Rak').trim().toUpperCase();
+      const key = groupIncludeRak ? `${normSku}|${entryNormRak}|${normScan}` : `${normSku}|${normScan}`;
 
       if (!groupsMap.has(key)) {
         groupsMap.set(key, {
           sku: entry.sku,
+          rak: groupIncludeRak ? (entry.rak || 'Tanpa Rak').trim() : undefined,
           tglScan: normScan,
           rawTglScan: rawScan,
           entries: []
@@ -595,9 +671,27 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       const balance = totalIn - totalOut;
       const hasRakMismatch = mismatchCount > 0;
 
+      // Calculate breakdown per rak
+      const rakBreakdownMap = new Map<string, { inQty: number; outQty: number }>();
+      group.entries.forEach(e => {
+        const r = (e.rak || 'Tanpa Rak').trim();
+        if (!rakBreakdownMap.has(r)) rakBreakdownMap.set(r, { inQty: 0, outQty: 0 });
+        const b = rakBreakdownMap.get(r)!;
+        const q = Number(e.jumlah) || 0;
+        if ((e.type || '').toUpperCase() === 'IN') b.inQty += q;
+        else b.outQty += q;
+      });
+      const rakBreakdown = Array.from(rakBreakdownMap.entries()).map(([rakName, data]) => ({
+        rak: rakName,
+        inQty: data.inQty,
+        outQty: data.outQty,
+        balance: data.inQty - data.outQty
+      }));
+
       result.push({
         id: key,
         sku: group.sku,
+        rak: group.rak,
         tglScan: group.tglScan,
         rawTglScan: group.rawTglScan,
         inEntries,
@@ -609,12 +703,13 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         totalOut,
         balance,
         hasRakMismatch,
-        mismatchCount
+        mismatchCount,
+        rakBreakdown
       });
     });
 
     return result;
-  }, [filteredEntries]);
+  }, [filteredEntries, groupIncludeRak]);
 
   const filteredBatchGroups = useMemo(() => {
     if (groupedSubFilter === 'MISMATCH') {
@@ -640,6 +735,9 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisSearchTerm, setAnalysisSearchTerm] = useState('');
   const [analysisSku, setAnalysisSku] = useState('');
+  const [analysisSkuInputMode, setAnalysisSkuInputMode] = useState<'single' | 'bulk'>('single');
+  const [bulkAnalysisSkuInput, setBulkAnalysisSkuInput] = useState('');
+  const [analyzedSkusList, setAnalyzedSkusList] = useState<string[]>([]);
   const [analysisFilterTab, setAnalysisFilterTab] = useState<'ALL' | 'DEFICIT' | 'SURPLUS'>('ALL');
   const [expandedDeficitKeys, setExpandedDeficitKeys] = useState<Set<string>>(new Set());
   const [singleTargetSelections, setSingleTargetSelections] = useState<Record<string, { targetRak: string; targetRawTglScan: string }>>({});
@@ -694,9 +792,28 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   // --- DEVMODE: PENYESUAIAN STOK OUT STATE ---
   const [isAdjustmentStockOutModalOpen, setIsAdjustmentStockOutModalOpen] = useState(false);
 
-  const handleAnalyzeStockBalance = async (skuToAnalyze: string) => {
-    if (!skuToAnalyze) {
-      showToast('Silakan pilih atau cari SKU terlebih dahulu untuk melakukan analisis.', 'warning');
+  // --- SCAN DATE AUTO-MATCH MODAL STATE ---
+  const [isScanDateAutoMatchModalOpen, setIsScanDateAutoMatchModalOpen] = useState(false);
+  const [scanDateAutoMatchSku, setScanDateAutoMatchSku] = useState('');
+
+  // --- SINKRONISASI TGL SCAN TRANSFER OUT (HISTORICAL FIX) STATE ---
+  const [isSyncTransferOutModalOpen, setIsSyncTransferOutModalOpen] = useState(false);
+  const [syncTransferOutSku, setSyncTransferOutSku] = useState('');
+
+  const handleAnalyzeStockBalance = async (customSkus?: string | string[]) => {
+    let targetSkus: string[] = [];
+    if (Array.isArray(customSkus)) {
+      targetSkus = customSkus.map(s => s.trim().toUpperCase()).filter(Boolean);
+    } else if (typeof customSkus === 'string' && customSkus.trim()) {
+      targetSkus = [customSkus.trim().toUpperCase()];
+    } else if (analysisSkuInputMode === 'bulk') {
+      targetSkus = Array.from(new Set(bulkAnalysisSkuInput.split(/[\r\n,]+/).map(s => s.trim().toUpperCase()).filter(Boolean)));
+    } else if (analysisSku && analysisSku.trim()) {
+      targetSkus = [analysisSku.trim().toUpperCase()];
+    }
+
+    if (targetSkus.length === 0) {
+      showToast('Silakan pilih atau tempel setidaknya 1 SKU untuk melakukan analisis.', 'warning');
       return;
     }
 
@@ -705,174 +822,410 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       setAnalysisResults([]);
       setExpandedDeficitKeys(new Set());
       setSingleTargetSelections({});
+      setAnalyzedSkusList(targetSkus);
 
-      showToast('Memulai analisis saldo stok... Ini mungkin memakan waktu untuk data yang besar.', 'info');
+      showToast(`Memulai analisis saldo stok untuk ${targetSkus.length} SKU... Ini mungkin memakan waktu untuk data yang besar.`, 'info');
 
-      // 1. Fetch relevant logs based on SKU
-      let query = supabase
-        .from('database_log')
-        .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, waktu, user_name')
-        .or('type.ilike.%IN%,type.ilike.%OUT%')
-        .order('id', { ascending: true });
-
-      query = query.ilike('sku', skuToAnalyze.trim());
-      if (filters.rak) query = query.ilike('rak', `%${filters.rak.trim()}%`);
-
-      const batchSize = 1000;
-      let from = 0;
-      let hasMore = true;
+      // 1. Fetch relevant logs based on targetSkus
       let allLogs: any[] = [];
 
-      while (hasMore) {
-        const { data, error } = await query.range(from, from + batchSize - 1);
-        if (error) throw error;
+      if (targetSkus.length === 1) {
+        let query = supabase
+          .from('database_log')
+          .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu, user_name')
+          .or('type.ilike.%IN%,type.ilike.%OUT%')
+          .order('id', { ascending: true });
 
-        if (data && data.length > 0) {
-          allLogs = [...allLogs, ...data];
-          from += batchSize;
-          if (data.length < batchSize) hasMore = false;
-        } else {
-          hasMore = false;
+        query = query.ilike('sku', targetSkus[0].trim());
+        if (filters.rak) query = query.ilike('rak', `%${filters.rak.trim()}%`);
+
+        const batchSize = 1000;
+        let from = 0;
+        let hasMore = true;
+
+        while (hasMore) {
+          const { data, error } = await query.range(from, from + batchSize - 1);
+          if (error) throw error;
+
+          if (data && data.length > 0) {
+            allLogs = [...allLogs, ...data];
+            from += batchSize;
+            if (data.length < batchSize) hasMore = false;
+          } else {
+            hasMore = false;
+          }
+
+          if (allLogs.length > 50000) {
+            showToast('Data terlalu besar (>50.000). Hasil dibatasi untuk performa.', 'warning');
+            hasMore = false;
+          }
         }
+      } else {
+        // Multi-SKU: Fetch in chunks of 30 SKUs with case variations
+        const skuBatchSize = 30;
+        for (let i = 0; i < targetSkus.length; i += skuBatchSize) {
+          const rawChunk = targetSkus.slice(i, i + skuBatchSize);
+          const chunkSet = new Set<string>();
+          rawChunk.forEach(s => {
+            const trimmed = s.trim();
+            if (trimmed) {
+              chunkSet.add(trimmed);
+              chunkSet.add(trimmed.toUpperCase());
+              chunkSet.add(trimmed.toLowerCase());
+            }
+          });
+          const chunk = Array.from(chunkSet);
+          let from = 0;
+          let hasMore = true;
 
-        if (allLogs.length > 50000) {
-          showToast('Data terlalu besar (>50.000). Hasil dibatasi untuk performa.', 'warning');
-          hasMore = false;
+          while (hasMore) {
+            let query = supabase
+              .from('database_log')
+              .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu, user_name')
+              .in('sku', chunk)
+              .or('type.ilike.%IN%,type.ilike.%OUT%')
+              .order('id', { ascending: true });
+
+            if (filters.rak) query = query.ilike('rak', `%${filters.rak.trim()}%`);
+
+            const { data, error } = await query.range(from, from + 999);
+            if (error) throw error;
+
+            if (data && data.length > 0) {
+              allLogs = [...allLogs, ...data];
+              from += 1000;
+              if (data.length < 1000) hasMore = false;
+            } else {
+              hasMore = false;
+            }
+
+            if (allLogs.length > 100000) {
+              showToast('Data log terlalu banyak (>100.000). Analisis dibatasi.', 'warning');
+              hasMore = false;
+              break;
+            }
+          }
         }
       }
 
-      // 2. Aggregate logs: key = `${normSku}|${normRak}|${normTglScan}`
-      const balanceMap = new Map<string, BalanceAnalysisResult>();
-
+      // Group logs by SKU
+      const logsBySku = new Map<string, any[]>();
       allLogs.forEach(log => {
         const normSku = (log.sku || '').trim().toUpperCase();
-        const normRak = (log.rak || '').trim().toUpperCase();
-        const normSubRak = (log.sub_rak || '').trim().toUpperCase();
-        const rawTglScan = (log.tgl_scan || '').trim();
-        const normTglScan = formatDateDisplay(rawTglScan) || 'No Date';
-        const normType = (log.type || '').trim().toUpperCase();
-
-        if (!normType.includes('IN') && !normType.includes('OUT')) return;
-        const finalType = normType.includes('IN') ? 'IN' : 'OUT';
-
-        const key = `${normSku}|${normRak}|${normTglScan}`;
-
-        if (!balanceMap.has(key)) {
-          balanceMap.set(key, {
-            sku: normSku,
-            rak: (log.rak || '').trim(),
-            subRaks: new Set<string>(),
-            tglScan: normTglScan,
-            rawTglScan: rawTglScan,
-            totalIn: 0,
-            totalOut: 0,
-            balance: 0,
-            outTransactions: [],
-            diagnosticType: 'BALANCED',
-            recommendedAction: '',
-            availableSurplusesSameRak: [],
-            availableSurplusesOtherRak: []
-          });
-        }
-
-        const result = balanceMap.get(key)!;
-        if (normSubRak) result.subRaks.add(normSubRak);
-
-        const jumlah = Number(log.jumlah || 0);
-
-        if (finalType === 'IN') {
-          result.totalIn += jumlah;
-        } else {
-          result.totalOut += jumlah;
-          result.outTransactions.push({
-            id: log.id,
-            waktu: log.waktu || '',
-            jumlah: jumlah,
-            user: log.user_name || (log as any).user || '',
-            tgl_scan: rawTglScan,
-            rak: (log.rak || '').trim(),
-            sub_rak: (log.sub_rak || '').trim()
-          });
-        }
-        result.balance = result.totalIn - result.totalOut;
+        if (!logsBySku.has(normSku)) logsBySku.set(normSku, []);
+        logsBySku.get(normSku)!.push(log);
       });
 
-      // 3. Smart Diagnostics: identify surplus pools and match deficits
-      const allGroups = Array.from(balanceMap.values());
-      const surplusGroups = allGroups.filter(g => g.balance > 0);
+      const allCombinedGroups: BalanceAnalysisResult[] = [];
       const initialSelections: Record<string, { targetRak: string; targetRawTglScan: string }> = {};
 
-      allGroups.forEach(g => {
-        const rowKey = `${g.rak}|${g.tglScan}`;
-        if (g.balance > 0) {
-          g.diagnosticType = 'SURPLUS';
-          g.recommendedAction = `Tersedia sisa stok (+${g.balance.toLocaleString()} pcs)`;
-        } else if (g.balance === 0) {
-          g.diagnosticType = 'BALANCED';
-          g.recommendedAction = 'Stok seimbang (Habis potong pas)';
-        } else {
-          // Deficit / Minus
-          const sameRakSurpluses = surplusGroups
-            .filter(s => s.rak.toUpperCase() === g.rak.toUpperCase())
-            .map(s => ({
-              rak: s.rak,
-              tglScan: s.tglScan,
-              rawTglScan: s.rawTglScan,
-              surplusQty: s.balance
-            }));
+      logsBySku.forEach((skuLogs, currentSku) => {
+        // 2. Aggregate logs for this SKU: key = `${normSku}|${normRak}|${normTglScan}`
+        const balanceMap = new Map<string, BalanceAnalysisResult>();
 
-          const otherRakSurpluses = !isForbiddenTransferRack(g.rak)
-            ? surplusGroups
-                .filter(s => s.rak.toUpperCase() !== g.rak.toUpperCase() && !isForbiddenTransferRack(s.rak))
-                .map(s => ({
-                  rak: s.rak,
-                  tglScan: s.tglScan,
-                  rawTglScan: s.rawTglScan,
-                  surplusQty: s.balance
-                }))
-            : [];
+        skuLogs.forEach(log => {
+          const normSku = currentSku;
+          const logNormRak = (log.rak || '').trim().toUpperCase();
+          const normSubRak = (log.sub_rak || '').trim().toUpperCase();
+          const rawTglScan = (log.tgl_scan || '').trim();
+          const normTglScan = formatDateDisplay(rawTglScan) || 'No Date';
+          const normType = (log.type || '').trim().toUpperCase();
 
-          g.availableSurplusesSameRak = sameRakSurpluses;
-          g.availableSurplusesOtherRak = otherRakSurpluses;
+          if (!normType.includes('IN') && !normType.includes('OUT')) return;
+          const finalType = normType.includes('IN') ? 'IN' : 'OUT';
 
-          if (sameRakSurpluses.length > 0) {
-            g.diagnosticType = 'DEFICIT_FIXABLE_SAME_RAK';
-            const best = sameRakSurpluses[0];
-            g.recommendedAction = `Pindahkan Tgl Scan OUT ke ${best.tglScan} (Tersedia +${best.surplusQty.toLocaleString()} pcs di Rak ${g.rak})`;
-            initialSelections[rowKey] = { targetRak: best.rak, targetRawTglScan: best.rawTglScan };
-          } else if (otherRakSurpluses.length > 0) {
-            g.diagnosticType = 'DEFICIT_FIXABLE_OTHER_RAK';
-            const best = otherRakSurpluses[0];
-            g.recommendedAction = `Pindahkan Rak OUT ke ${best.rak} (Tgl ${best.tglScan}, Tersedia +${best.surplusQty.toLocaleString()} pcs)`;
-            initialSelections[rowKey] = { targetRak: best.rak, targetRawTglScan: best.rawTglScan };
+          const key = `${normSku}|${logNormRak}|${normTglScan}`;
+
+          if (!balanceMap.has(key)) {
+            balanceMap.set(key, {
+              sku: normSku,
+              rak: (log.rak || '').trim(),
+              subRaks: new Set<string>(),
+              tglScan: normTglScan,
+              rawTglScan: rawTglScan,
+              totalIn: 0,
+              totalOut: 0,
+              balance: 0,
+              outTransactions: [],
+              diagnosticType: 'BALANCED',
+              recommendedAction: '',
+              availableSurplusesSameRak: [],
+              availableSurplusesOtherRak: []
+            });
+          }
+
+          const result = balanceMap.get(key)!;
+          if (normSubRak) result.subRaks.add(normSubRak);
+
+          const jumlah = Number(log.jumlah || 0);
+
+          if (finalType === 'IN') {
+            result.totalIn += jumlah;
           } else {
-            g.diagnosticType = 'DEFICIT_PURE_OVERCUT';
-            g.recommendedAction = `Lebih Potong Murni — Total stok gudang defisit (${g.balance.toLocaleString()} pcs). Tidak ada surplus di tgl/rak lain.`;
+            result.totalOut += jumlah;
+            result.outTransactions.push({
+              id: log.id,
+              waktu: log.waktu,
+              jumlah: jumlah,
+              user: log.user_name || (log as any).user || '',
+              tgl_scan: rawTglScan,
+              rak: (log.rak || '').trim(),
+              sub_rak: (log.sub_rak || '').trim()
+            });
+          }
+          result.balance = result.totalIn - result.totalOut;
+        });
+
+        // 3. Smart Diagnostics for this SKU: identify surplus pools, run Tahap 0 (Exact Qty Matching), and match deficits
+        const inBuckets: Array<{
+          id: string;
+          tgl: string;
+          waktu: string;
+          targetTglScan: string;
+          rak: string;
+          sub_rak: string;
+          totalCapacity: number;
+          remainingCapacity: number;
+          timestamp: number;
+        }> = [];
+
+        const outCandidates: Array<{
+          id: string;
+          tgl: string;
+          waktu: string;
+          jumlah: number;
+          rak: string;
+          sub_rak: string;
+          oldTglScan: string;
+          timestamp: number;
+          user: string;
+          isAssigned: boolean;
+          matchedIn: any | null;
+        }> = [];
+
+        skuLogs.forEach(log => {
+          const qty = Number(log.jumlah || 0);
+          const normType = (log.type || '').trim().toUpperCase();
+          if (normType.includes('IN')) {
+            const targetTglScan = normalizeDate(log.tgl_scan) || normalizeDate(log.tgl);
+            inBuckets.push({
+              id: log.id,
+              tgl: normalizeDate(log.tgl),
+              waktu: normalizeTime(log.waktu),
+              targetTglScan,
+              rak: (log.rak || '').trim(),
+              sub_rak: (log.sub_rak || log.rak || '').trim(),
+              totalCapacity: qty,
+              remainingCapacity: qty,
+              timestamp: toTimestamp(log.tgl, log.waktu)
+            });
+          } else if (normType.includes('OUT')) {
+            outCandidates.push({
+              id: log.id,
+              tgl: normalizeDate(log.tgl),
+              waktu: normalizeTime(log.waktu),
+              jumlah: qty,
+              rak: (log.rak || '').trim(),
+              sub_rak: (log.sub_rak || log.rak || '').trim(),
+              oldTglScan: normalizeDate(log.tgl_scan),
+              timestamp: toTimestamp(log.tgl, log.waktu),
+              user: log.user_name || (log as any).user || '',
+              isAssigned: false,
+              matchedIn: null
+            });
+          }
+        });
+
+        inBuckets.sort((a, b) => a.timestamp - b.timestamp);
+        outCandidates.sort((a, b) => a.timestamp - b.timestamp);
+
+        // --- TAHAP 0: PRIORITAS NOMOR 1 MUTLAK — MATCHING IDENTIK SKU & QTY (1-ke-1) ---
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0) continue;
+          const exactQtyMatches = outCandidates.filter(
+            c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
+          );
+
+          if (exactQtyMatches.length > 0) {
+            exactQtyMatches.sort((a, b) => {
+              const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
+              const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
+              const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
+              const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
+
+              if (aSameRak !== bSameRak) {
+                const aDays = distA / (24 * 3600 * 1000);
+                const bDays = distB / (24 * 3600 * 1000);
+                if (aDays < 30 && bDays > 30) return -1;
+                if (bDays < 30 && aDays > 30) return 1;
+              }
+
+              return distA - distB;
+            });
+
+            const bestMatch = exactQtyMatches[0];
+            bestMatch.isAssigned = true;
+            bestMatch.matchedIn = bucket;
+            bucket.remainingCapacity -= bestMatch.jumlah;
           }
         }
+
+        const skuGroups = Array.from(balanceMap.values());
+        const surplusGroups = skuGroups.filter(g => g.balance > 0);
+
+        skuGroups.forEach(g => {
+          const rowKey = g.outTransactions && g.outTransactions.length === 1 && g.outTransactions[0].id
+            ? `${g.sku}|${g.rak}|${g.tglScan}|${g.outTransactions[0].id}`
+            : `${g.sku}|${g.rak}|${g.tglScan}`;
+
+          if (g.balance > 0) {
+            g.diagnosticType = 'SURPLUS';
+            g.recommendedAction = `Tersedia sisa stok (+${g.balance.toLocaleString()} pcs)`;
+          } else if (g.balance === 0) {
+            g.diagnosticType = 'BALANCED';
+            g.recommendedAction = 'Stok seimbang (Habis potong pas)';
+          } else {
+            // Deficit / Minus
+            const matchedCand = outCandidates.find(c => g.outTransactions.some(tx => tx.id === c.id) && c.matchedIn);
+
+            const sameRakSurpluses = surplusGroups
+              .filter(s => s.rak.toUpperCase() === g.rak.toUpperCase())
+              .map(s => ({
+                rak: s.rak,
+                tglScan: s.tglScan,
+                rawTglScan: s.rawTglScan,
+                surplusQty: s.balance
+              }));
+
+            const otherRakSurpluses = !isForbiddenTransferRack(g.rak)
+              ? surplusGroups
+                  .filter(s => s.rak.toUpperCase() !== g.rak.toUpperCase() && !isForbiddenTransferRack(s.rak))
+                  .map(s => ({
+                    rak: s.rak,
+                    tglScan: s.tglScan,
+                    rawTglScan: s.rawTglScan,
+                    surplusQty: s.balance
+                  }))
+              : [];
+
+            if (matchedCand && matchedCand.matchedIn) {
+              const isSameRak = normRak(g.rak) === normRak(matchedCand.matchedIn.rak);
+              const matchOpt = {
+                rak: matchedCand.matchedIn.rak,
+                tglScan: formatDateDisplay(matchedCand.matchedIn.targetTglScan),
+                rawTglScan: matchedCand.matchedIn.targetTglScan,
+                surplusQty: matchedCand.jumlah
+              };
+
+              if (isSameRak) {
+                sameRakSurpluses.unshift(matchOpt);
+                g.diagnosticType = 'DEFICIT_FIXABLE_SAME_RAK';
+              } else {
+                otherRakSurpluses.unshift(matchOpt);
+                g.diagnosticType = 'DEFICIT_FIXABLE_OTHER_RAK';
+              }
+
+              g.recommendedAction = `Cocok dengan Nota Masuk: Pindahkan OUT ${matchedCand.jumlah} pcs ke Rak ${matchedCand.matchedIn.rak} & Tgl Scan ${formatDateDisplay(matchedCand.matchedIn.targetTglScan)} (Sesuai nota IN ${matchedCand.matchedIn.tgl} ${matchedCand.matchedIn.waktu})`;
+              initialSelections[rowKey] = {
+                targetRak: matchedCand.matchedIn.rak,
+                targetRawTglScan: matchedCand.matchedIn.targetTglScan
+              };
+            } else if (sameRakSurpluses.length > 0) {
+              g.diagnosticType = 'DEFICIT_FIXABLE_SAME_RAK';
+              const best = sameRakSurpluses[0];
+              g.recommendedAction = `Pindahkan Tgl Scan OUT ke ${best.tglScan} (Tersedia +${best.surplusQty.toLocaleString()} pcs di Rak ${g.rak})`;
+              initialSelections[rowKey] = { targetRak: best.rak, targetRawTglScan: best.rawTglScan };
+            } else if (otherRakSurpluses.length > 0) {
+              g.diagnosticType = 'DEFICIT_FIXABLE_OTHER_RAK';
+              const best = otherRakSurpluses[0];
+              g.recommendedAction = `Pindahkan Rak OUT ke ${best.rak} (Tgl ${best.tglScan}, Tersedia +${best.surplusQty.toLocaleString()} pcs)`;
+              initialSelections[rowKey] = { targetRak: best.rak, targetRawTglScan: best.rawTglScan };
+            } else {
+              g.diagnosticType = 'DEFICIT_PURE_OVERCUT';
+              g.recommendedAction = `Lebih Potong Murni — Total stok gudang defisit (${g.balance.toLocaleString()} pcs). Tidak ada surplus di tgl/rak lain.`;
+            }
+
+            g.availableSurplusesSameRak = sameRakSurpluses;
+            g.availableSurplusesOtherRak = otherRakSurpluses;
+          }
+        });
+
+        // Deteksi transaksi OUT yang tidak sesuai rak/tgl_scan meskipun grupnya surplus (misal OUT 1 nyasar ke TEMP-C)
+        outCandidates.forEach(c => {
+          if (!c.matchedIn) return;
+          const isRakDiff = normRak(c.rak) !== normRak(c.matchedIn.rak);
+          const isTglDiff = normalizeDate(c.oldTglScan) !== normalizeDate(c.matchedIn.targetTglScan);
+          if (!isRakDiff && !isTglDiff) return;
+
+          const parentKey = `${currentSku}|${c.rak.trim().toUpperCase()}|${formatDateDisplay(c.oldTglScan) || 'No Date'}`;
+          const parentGroup = balanceMap.get(parentKey);
+          if (parentGroup && parentGroup.balance >= 0) {
+            const rowKey = `${currentSku}|${c.rak}|${formatDateDisplay(c.oldTglScan) || 'No Date'}|${c.id}`;
+            const isSameRak = !isRakDiff;
+            const surplusOpt = {
+              rak: c.matchedIn.rak,
+              tglScan: formatDateDisplay(c.matchedIn.targetTglScan),
+              rawTglScan: c.matchedIn.targetTglScan,
+              surplusQty: c.jumlah
+            };
+
+            skuGroups.push({
+              sku: currentSku,
+              rak: c.rak,
+              subRaks: new Set([c.sub_rak]),
+              tglScan: formatDateDisplay(c.oldTglScan) || 'No Date',
+              rawTglScan: c.oldTglScan,
+              totalIn: 0,
+              totalOut: c.jumlah,
+              balance: -c.jumlah,
+              outTransactions: [{
+                id: c.id,
+                waktu: c.waktu,
+                jumlah: c.jumlah,
+                user: c.user,
+                tgl_scan: c.oldTglScan,
+                rak: c.rak,
+                sub_rak: c.sub_rak
+              }],
+              diagnosticType: isSameRak ? 'DEFICIT_FIXABLE_SAME_RAK' : 'DEFICIT_FIXABLE_OTHER_RAK',
+              recommendedAction: `Pasangan Tidak Sesuai: Pindahkan OUT ${c.jumlah} pcs ke Rak ${c.matchedIn.rak} & Tgl Scan ${formatDateDisplay(c.matchedIn.targetTglScan)} (Sesuai nota IN ${c.matchedIn.tgl} ${c.matchedIn.waktu})`,
+              availableSurplusesSameRak: isSameRak ? [surplusOpt] : [],
+              availableSurplusesOtherRak: !isSameRak ? [surplusOpt] : []
+            });
+
+            initialSelections[rowKey] = {
+              targetRak: c.matchedIn.rak,
+              targetRawTglScan: c.matchedIn.targetTglScan
+            };
+          }
+        });
+
+        allCombinedGroups.push(...skuGroups);
       });
 
       setSingleTargetSelections(initialSelections);
 
       // 4. Sort: Deficits first (worst negative first), then Surpluses, then Balanced
-      allGroups.sort((a, b) => {
+      allCombinedGroups.sort((a, b) => {
         if (a.balance < 0 && b.balance >= 0) return -1;
         if (b.balance < 0 && a.balance >= 0) return 1;
         if (a.balance < 0 && b.balance < 0) return a.balance - b.balance;
         if (a.balance > 0 && b.balance === 0) return -1;
         if (b.balance > 0 && a.balance === 0) return 1;
+        const skuCmp = (a.sku || '').localeCompare(b.sku || '');
+        if (skuCmp !== 0) return skuCmp;
         return a.rak.localeCompare(b.rak);
       });
 
-      setAnalysisResults(allGroups);
+      setAnalysisResults(allCombinedGroups);
 
-      const deficitCount = allGroups.filter(r => r.balance < 0).length;
+      const deficitCount = allCombinedGroups.filter(r => r.balance < 0).length;
       if (deficitCount > 0) {
         setAnalysisFilterTab('DEFICIT'); // Automatically focus on deficits
-        showToast(`Analisis selesai! Ditemukan ${deficitCount} kombinasi yang MINUS (Lebih Potong).`, 'warning');
+        showToast(`Analisis selesai! Ditemukan ${deficitCount} kombinasi yang MINUS (Lebih Potong) pada ${targetSkus.length} SKU.`, 'warning');
       } else {
         setAnalysisFilterTab('ALL');
-        showToast(`Analisis selesai! Seluruh stok SKU ${skuToAnalyze} aman & tidak ada defisit.`, 'success');
+        showToast(`Analisis selesai! Seluruh stok dari ${targetSkus.length} SKU aman & tidak ada defisit.`, 'success');
       }
 
     } catch (error) {
@@ -902,7 +1255,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         log_update_user: `DEVMODE: Fix Deficit ${item.rak !== targetRak ? `Move ${item.rak}->${targetRak}` : `Change Date->${targetRawTglScan}`}`
       };
 
-      if (item.rak !== targetRak) {
+      if (targetRak) {
         updatePayload.rak = targetRak;
         updatePayload.sub_rak = targetRak;
       }
@@ -917,7 +1270,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       showToast(`Sukses memindahkan ${outIds.length} transaksi OUT ke ${item.rak !== targetRak ? `Rak ${targetRak} & ` : ''}Tgl Scan ${formatDateDisplay(targetRawTglScan)}!`, 'success');
 
       // Refresh analysis & main table
-      await handleAnalyzeStockBalance(analysisSku);
+      await handleAnalyzeStockBalance();
       loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
     } catch (err: any) {
       console.error('Error applying single remediation:', err);
@@ -928,146 +1281,250 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   };
 
   const handlePrepareRedistribute = async () => {
-    if (!analysisSku) return;
+    const skusToProcess = analyzedSkusList.length > 0
+      ? analyzedSkusList
+      : (analysisSku ? [analysisSku.trim().toUpperCase()] : []);
+
+    if (skusToProcess.length === 0) {
+      showToast('Tidak ada SKU yang dipilih untuk diperbaiki.', 'warning');
+      return;
+    }
 
     try {
       setIsAnalyzing(true);
-      showToast('Menghitung rekomendasi pemindahan data...', 'info');
+      showToast(`Menghitung rekomendasi pemindahan data untuk ${skusToProcess.length} SKU...`, 'info');
 
-      // 1. Fetch ALL relevant logs for this specific SKU
-      const { data: allLogs, error } = await supabase
-        .from('database_log')
-        .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah')
-        .ilike('sku', analysisSku.trim())
-        .or('type.ilike.%IN%,type.ilike.%OUT%')
-        .order('id', { ascending: true });
+      // 1. Fetch ALL relevant logs for the target SKUs
+      let allLogs: any[] = [];
+      if (skusToProcess.length === 1) {
+        const { data, error } = await supabase
+          .from('database_log')
+          .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu')
+          .ilike('sku', skusToProcess[0])
+          .or('type.ilike.%IN%,type.ilike.%OUT%')
+          .order('id', { ascending: true });
 
-      if (error) throw error;
-      if (!allLogs || allLogs.length === 0) {
+        if (error) throw error;
+        if (data) allLogs = data;
+      } else {
+        const skuBatchSize = 50;
+        for (let i = 0; i < skusToProcess.length; i += skuBatchSize) {
+          const chunk = skusToProcess.slice(i, i + skuBatchSize);
+          const { data, error } = await supabase
+            .from('database_log')
+            .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu')
+            .in('sku', chunk)
+            .or('type.ilike.%IN%,type.ilike.%OUT%')
+            .order('id', { ascending: true });
+
+          if (error) throw error;
+          if (data) allLogs.push(...data);
+        }
+      }
+
+      if (allLogs.length === 0) {
         showToast('Tidak ada data untuk diperbaiki.', 'warning');
         return;
       }
 
-      // 2. Group into balances and collect OUT rows by group
-      const groups = new Map<string, {
-        balance: number,
-        tglScanRaw: string,
-        normalizedTglScan: string,
-        rak: string,
-        outRows: any[]
-      }>();
-
       const excludedList = excludedScanDates.split(',').map(d => d.trim().toUpperCase()).filter(Boolean);
-
-      allLogs.forEach(log => {
-        const normRak = (log.rak || '').trim().toUpperCase();
-        const rawTgl = (log.tgl_scan || '').trim();
-        const normTglScan = formatDateDisplay(rawTgl) || 'No Date';
-        const normType = (log.type || '').trim().toUpperCase();
-        const finalType = normType.includes('IN') ? 'IN' : 'OUT';
-        const key = `${normRak}|${normTglScan}`;
-
-        if (!groups.has(key)) {
-          groups.set(key, {
-            balance: 0,
-            tglScanRaw: rawTgl,
-            normalizedTglScan: normTglScan,
-            rak: (log.rak || '').trim(),
-            outRows: []
-          });
-        }
-
-        const g = groups.get(key)!;
-        const qty = Number(log.jumlah || 0);
-        if (finalType === 'IN') {
-          g.balance += qty;
-        } else {
-          g.balance -= qty;
-          g.outRows.push({
-            id: log.id,
-            jumlah: qty,
-            tglScan: rawTgl
-          });
-        }
-      });
-
-      const moves: any[] = [];
-      const checkIfExcluded = (g: any) => {
-        const normTgl = g.normalizedTglScan.toUpperCase();
+      const checkIfExcluded = (targetTgl: string) => {
+        const normTgl = (formatDateDisplay(targetTgl) || targetTgl || '').toUpperCase();
         return excludedList.some(excluded => {
           const normExcluded = formatDateDisplay(excluded).toUpperCase();
           return normTgl === normExcluded || normTgl === excluded.toUpperCase();
         });
       };
 
-      const groupList = Array.from(groups.values());
+      // 2. Separate Inflow Buckets (Supply IN) and Outflow Candidates (Demand OUT)
+      interface InflowBucket {
+        id: string;
+        tgl: string;
+        waktu: string;
+        targetTglScan: string;
+        rak: string;
+        sub_rak: string;
+        totalCapacity: number;
+        remainingCapacity: number;
+        timestamp: number;
+      }
 
-      // Phase 1: Same-Rak Redistribution
-      const rakKeys = Array.from(new Set(groupList.map(g => g.rak.toUpperCase())));
+      interface OutCandidate {
+        id: string;
+        tgl: string;
+        waktu: string;
+        jumlah: number;
+        rak: string;
+        sub_rak: string;
+        oldTglScan: string;
+        timestamp: number;
+        isAssigned: boolean;
+        newRak: string;
+        newSubRak: string;
+        newTglScan: string;
+      }
 
-      rakKeys.forEach(rakName => {
-        const rakGroups = groupList.filter(g => g.rak.toUpperCase() === rakName);
-        const surpluses = rakGroups.filter(g => g.balance > 0 && !checkIfExcluded(g)).sort((a, b) => b.balance - a.balance);
-        const deficits = rakGroups.filter(g => g.balance < 0 && !checkIfExcluded(g));
+      const logsBySku = new Map<string, any[]>();
+      allLogs.forEach(log => {
+        const normSku = (log.sku || '').trim().toUpperCase();
+        if (!logsBySku.has(normSku)) logsBySku.set(normSku, []);
+        logsBySku.get(normSku)!.push(log);
+      });
 
-        deficits.forEach(negG => {
-          const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
+      const moves: any[] = [];
 
-          for (const row of rows) {
-            if (negG.balance >= 0) break;
-            const targetEntry = surpluses.find(tg => tg.balance > 0);
-            if (targetEntry) {
-              moves.push({
-                id: row.id,
-                sku: analysisSku,
-                rak: negG.rak,
-                toRak: targetEntry.rak,
-                fromTgl: negG.tglScanRaw,
-                toTgl: targetEntry.tglScanRaw,
-                jumlah: row.jumlah,
-                type: 'SAME_RAK'
-              });
+      logsBySku.forEach((skuLogs, currentSku) => {
+        const inBuckets: InflowBucket[] = [];
+        const outCandidates: OutCandidate[] = [];
 
-              negG.balance += row.jumlah;
-              targetEntry.balance -= row.jumlah;
-              surpluses.sort((a, b) => b.balance - a.balance);
-            }
+        skuLogs.forEach(log => {
+          const qty = Number(log.jumlah || 0);
+          const normType = (log.type || '').trim().toUpperCase();
+          if (normType.includes('IN')) {
+            const targetTglScan = normalizeDate(log.tgl_scan) || normalizeDate(log.tgl);
+            inBuckets.push({
+              id: log.id,
+              tgl: normalizeDate(log.tgl),
+              waktu: normalizeTime(log.waktu),
+              targetTglScan,
+              rak: (log.rak || '').trim(),
+              sub_rak: (log.sub_rak || log.rak || '').trim(),
+              totalCapacity: qty,
+              remainingCapacity: qty,
+              timestamp: toTimestamp(log.tgl, log.waktu)
+            });
+          } else if (normType.includes('OUT')) {
+            outCandidates.push({
+              id: log.id,
+              tgl: normalizeDate(log.tgl),
+              waktu: normalizeTime(log.waktu),
+              jumlah: qty,
+              rak: (log.rak || '').trim(),
+              sub_rak: (log.sub_rak || log.rak || '').trim(),
+              oldTglScan: normalizeDate(log.tgl_scan),
+              timestamp: toTimestamp(log.tgl, log.waktu),
+              isAssigned: false,
+              newRak: (log.rak || '').trim(),
+              newSubRak: (log.sub_rak || log.rak || '').trim(),
+              newTglScan: normalizeDate(log.tgl_scan)
+            });
+          }
+        });
+
+        inBuckets.sort((a, b) => a.timestamp - b.timestamp);
+        outCandidates.sort((a, b) => a.timestamp - b.timestamp);
+
+        // --- TAHAP 0: PRIORITAS NOMOR 1 MUTLAK — MATCHING IDENTIK SKU & QTY (1-ke-1) ---
+        // Cari pasangan 1-ke-1 yang memiliki QTY sama persis (misal IN 1 vs OUT 1, IN 24 vs OUT 24),
+        // mengutamakan kedekatan waktu nota (timestamp) bahkan jika saat ini berada di rak atau tgl_scan lain.
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
+
+          const exactQtyMatches = outCandidates.filter(
+            c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
+          );
+
+          if (exactQtyMatches.length > 0) {
+            exactQtyMatches.sort((a, b) => {
+              const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
+              const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
+              const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
+              const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
+
+              if (aSameRak !== bSameRak) {
+                const aDays = distA / (24 * 3600 * 1000);
+                const bDays = distB / (24 * 3600 * 1000);
+                if (aDays < 30 && bDays > 30) return -1;
+                if (bDays < 30 && aDays > 30) return 1;
+              }
+
+              return distA - distB;
+            });
+
+            const bestMatch = exactQtyMatches[0];
+            bestMatch.isAssigned = true;
+            bestMatch.newRak = bucket.rak;
+            bestMatch.newSubRak = bucket.sub_rak || bucket.rak;
+            bestMatch.newTglScan = bucket.targetTglScan;
+            bucket.remainingCapacity -= bestMatch.jumlah;
+          }
+        }
+
+        // --- TAHAP 1: MATCHING DALAM RAK YANG SAMA (SAME RAK FIFO / CHRONOLOGICAL) ---
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
+
+          while (bucket.remainingCapacity > 0) {
+            const sameRakMatches = outCandidates.filter(
+              c => !c.isAssigned &&
+                   c.jumlah <= bucket.remainingCapacity &&
+                   normRak(c.rak) === normRak(bucket.rak)
+            );
+
+            if (sameRakMatches.length === 0) break;
+
+            sameRakMatches.sort((a, b) =>
+              getChronologicalDistance(a.timestamp, bucket.timestamp) -
+              getChronologicalDistance(b.timestamp, bucket.timestamp)
+            );
+
+            const best = sameRakMatches[0];
+            best.isAssigned = true;
+            best.newRak = bucket.rak;
+            best.newSubRak = bucket.sub_rak || bucket.rak;
+            best.newTglScan = bucket.targetTglScan;
+            bucket.remainingCapacity -= best.jumlah;
+          }
+        }
+
+        // --- TAHAP 2: CROSS RAK NEAREST DATE (BEDA RAK, TANGGAL TERDEKAT) ---
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
+          if (isForbiddenTransferRack(bucket.rak)) continue;
+
+          while (bucket.remainingCapacity > 0) {
+            const crossMatches = outCandidates.filter(
+              c => !c.isAssigned &&
+                   c.jumlah <= bucket.remainingCapacity &&
+                   !isForbiddenTransferRack(c.rak)
+            );
+
+            if (crossMatches.length === 0) break;
+
+            crossMatches.sort((a, b) =>
+              getChronologicalDistance(a.timestamp, bucket.timestamp) -
+              getChronologicalDistance(b.timestamp, bucket.timestamp)
+            );
+
+            const best = crossMatches[0];
+            best.isAssigned = true;
+            best.newRak = bucket.rak;
+            best.newSubRak = bucket.sub_rak || bucket.rak;
+            best.newTglScan = bucket.targetTglScan;
+            bucket.remainingCapacity -= best.jumlah;
+          }
+        }
+
+        // 3. Kumpulkan rekomendasi pemindahan (HANYA untuk transaksi OUT yang berubah rak atau tgl_scan)
+        outCandidates.forEach(c => {
+          if (!c.isAssigned) return;
+          const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
+          const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
+
+          if (isRakChanged || isTglChanged) {
+            moves.push({
+              id: c.id,
+              sku: currentSku,
+              rak: c.rak,
+              toRak: c.newRak,
+              fromTgl: c.oldTglScan,
+              toTgl: c.newTglScan,
+              jumlah: c.jumlah,
+              type: isRakChanged ? 'CROSS_RAK' : 'SAME_RAK'
+            });
           }
         });
       });
-
-      // Phase 2: Cross-Rak Redistribution (if deficits still remain and other raks have surplus)
-      const remainingDeficits = groupList.filter(g => g.balance < 0 && !checkIfExcluded(g) && !isForbiddenTransferRack(g.rak));
-      const remainingSurpluses = groupList
-        .filter(g => g.balance > 0 && !checkIfExcluded(g) && !isForbiddenTransferRack(g.rak))
-        .sort((a, b) => b.balance - a.balance);
-
-      if (remainingDeficits.length > 0 && remainingSurpluses.length > 0) {
-        remainingDeficits.forEach(negG => {
-          const rows = [...negG.outRows].filter(r => !moves.some(m => m.id === r.id)).sort((a, b) => b.jumlah - a.jumlah);
-
-          for (const row of rows) {
-            if (negG.balance >= 0) break;
-            const targetEntry = remainingSurpluses.find(tg => tg.balance > 0 && !isForbiddenTransferRack(tg.rak));
-            if (targetEntry) {
-              moves.push({
-                id: row.id,
-                sku: analysisSku,
-                rak: negG.rak,
-                toRak: targetEntry.rak,
-                fromTgl: negG.tglScanRaw,
-                toTgl: targetEntry.tglScanRaw,
-                jumlah: row.jumlah,
-                type: 'CROSS_RAK'
-              });
-
-              negG.balance += row.jumlah;
-              targetEntry.balance -= row.jumlah;
-              remainingSurpluses.sort((a, b) => b.balance - a.balance);
-            }
-          }
-        });
-      }
 
       if (moves.length === 0) {
         showToast('Semua saldo sudah optimal atau tidak ada kapasitas untuk memindahkan lebih potong.', 'info');
@@ -1091,42 +1548,77 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       setIsProcessingRedistribution(true);
       showToast(`Memproses ${redistributeMoves.length} pembaruan data...`, 'info');
 
-      // Process in batches
-      const batchSize = 50;
-      let successCount = 0;
+      // Group moves by identical payload to avoid statement timeouts (500 Internal Server Error)
+      const payloadGroups = new Map<string, { payload: Record<string, any>; ids: string[] }>();
 
-      for (let i = 0; i < redistributeMoves.length; i += batchSize) {
-        const batch = redistributeMoves.slice(i, i + batchSize);
+      redistributeMoves.forEach(move => {
+        const isRakChanged = move.toRak && move.toRak !== move.rak;
+        const isTglChanged = move.toTgl !== move.fromTgl;
 
-        const promises = batch.map(move => {
-          const updatePayload: any = {
-            tgl_scan: move.toTgl,
-            log_update_user: move.toRak && move.toRak !== move.rak
-              ? `DEVMODE: Redistribute Move ${move.rak}->${move.toRak}`
-              : `DEVMODE: Redistribute Tgl Scan`
-          };
+        const payload: Record<string, any> = {
+          log_update_user: isRakChanged
+            ? `DEVMODE: Auto-Fix Move ${move.rak}->${move.toRak}`
+            : 'DEVMODE: Auto-Fix Tgl Scan'
+        };
 
-          if (move.toRak && move.toRak !== move.rak) {
-            updatePayload.rak = move.toRak;
-            updatePayload.sub_rak = move.toRak;
+        if (isTglChanged && move.toTgl) {
+          payload.tgl_scan = move.toTgl;
+        }
+        if (isRakChanged && move.toRak) {
+          payload.rak = move.toRak;
+          payload.sub_rak = move.toRak;
+        }
+
+        const key = JSON.stringify(payload);
+        if (!payloadGroups.has(key)) {
+          payloadGroups.set(key, { payload, ids: [] });
+        }
+        payloadGroups.get(key)!.ids.push(move.id);
+      });
+
+      let totalSuccess = 0;
+      let totalError = 0;
+
+      // Execute each group in safe chunks of 25 with retry
+      for (const group of payloadGroups.values()) {
+        const { payload, ids } = group;
+        const chunkSize = 25;
+
+        for (let i = 0; i < ids.length; i += chunkSize) {
+          const chunkIds = ids.slice(i, i + chunkSize);
+          let success = false;
+          let attempts = 0;
+
+          while (!success && attempts < 3) {
+            attempts++;
+            const { error } = await supabase
+              .from('database_log')
+              .update(payload)
+              .in('id', chunkIds);
+
+            if (!error) {
+              success = true;
+              totalSuccess += chunkIds.length;
+            } else {
+              console.warn(`Update attempt ${attempts} failed for ${chunkIds.length} rows:`, error.message);
+              if (attempts < 3) {
+                await new Promise(r => setTimeout(r, 600));
+              } else {
+                totalError += chunkIds.length;
+              }
+            }
           }
-
-          return supabase
-            .from('database_log')
-            .update(updatePayload)
-            .eq('id', move.id);
-        });
-
-        const results = await Promise.all(promises);
-        results.forEach(res => {
-          if (!res.error) successCount++;
-        });
+        }
       }
 
-      showToast(`Sukses memperbarui ${successCount} data log!`, 'success');
+      if (totalError === 0) {
+        showToast(`Sukses memperbarui ${totalSuccess} data log tanpa error!`, 'success');
+      } else {
+        showToast(`Berhasil memperbarui ${totalSuccess} data log, ${totalError} data gagal.`, 'warning');
+      }
       setIsRedistributeModalOpen(false);
       setRedistributeMoves([]);
-      handleAnalyzeStockBalance(analysisSku);
+      handleAnalyzeStockBalance();
       loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
     } catch (error) {
       console.error('Error executing redistribution:', error);
@@ -1136,30 +1628,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
   };
 
-  const [toast, setToast] = useState<{
-    show: boolean;
-    message: string;
-    type: 'success' | 'error' | 'warning' | 'info';
-  }>({
-    show: false,
-    message: '',
-    type: 'info'
-  });
 
-  const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info') => {
-    setToast({
-      show: true,
-      message,
-      type
-    });
-    setTimeout(() => {
-      setToast(prev => ({ ...prev, show: false }));
-    }, 5000);
-  };
-
-  const hideToast = () => {
-    setToast(prev => ({ ...prev, show: false }));
-  };
 
   const handleOpenSubsequentLogsFromTop = useCallback(async (customSku?: string) => {
     const targetSku = (customSku || filters.sku || '').trim();
@@ -1385,13 +1854,13 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       transferLogs.forEach(row => {
         const normSku = (row.sku || '').trim().toUpperCase();
         const normType = (row.type || '').trim().toUpperCase();
-        const normRak = (row.rak || '').trim().toUpperCase();
+        const rowNormRak = (row.rak || '').trim().toUpperCase();
         const normSubRak = (row.sub_rak || '').trim().toUpperCase();
         const qty = Number(row.jumlah || 0);
         const normTgl = (row.tgl || '').trim();
         const normTglScan = (row.tgl_scan || '').trim();
         const normWaktu = (row.waktu || '').trim();
-        const key = `${normSku}|${normType}|${normRak}|${normSubRak}|${qty}|${normTgl}|${normTglScan}|${normWaktu}`;
+        const key = `${normSku}|${normType}|${rowNormRak}|${normSubRak}|${qty}|${normTgl}|${normTglScan}|${normWaktu}`;
 
         if (!duplicateGroups.has(key)) duplicateGroups.set(key, []);
         duplicateGroups.get(key)!.push(row);
@@ -2469,6 +2938,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       if (isNaN(safePerPage) || safePerPage < 1) safePerPage = 100;
 
       const hasSpecificFilter = Boolean(
+        activeBulkSkuSearch.length > 0 ||
         currentFilters.sku || 
         currentFilters.type || 
         currentFilters.gudang || 
@@ -2505,7 +2975,32 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           .order('id', { ascending: false });
       }
 
-      if (currentFilters.sku) {
+      if (activeBulkSkuSearch.length > 0) {
+        if (bulkSkuSearchMode === 'exact') {
+          const termsSet = new Set<string>();
+          activeBulkSkuSearch.forEach(t => {
+            const trimmed = t.trim();
+            if (trimmed) {
+              termsSet.add(trimmed);
+              termsSet.add(trimmed.toUpperCase());
+              termsSet.add(trimmed.toLowerCase());
+            }
+          });
+          query = query.in('sku', Array.from(termsSet));
+        } else {
+          const orTerms = activeBulkSkuSearch
+            .map(t => t.trim().replace(/[,()%]/g, ''))
+            .filter(Boolean)
+            .slice(0, 50)
+            .map(t => `sku.ilike.%${t}%`);
+          if (orTerms.length > 0) {
+            query = query.or(orTerms.join(','));
+          }
+        }
+        if (currentFilters.sku) {
+          query = query.ilike('sku', `%${currentFilters.sku}%`);
+        }
+      } else if (currentFilters.sku) {
         query = query.eq('sku', currentFilters.sku);
       }
       if (currentFilters.type) {
@@ -2656,7 +3151,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     if (dataLoaded) {
       loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
     }
-  }, [debouncedFilters, currentPage, itemsPerPage, sortConfig]);
+  }, [debouncedFilters, activeBulkSkuSearch, bulkSkuSearchMode, currentPage, itemsPerPage, sortConfig]);
 
   useEffect(() => {
     // Jangan reset seleksi jika mode 'onlySelected' sedang aktif,
@@ -2914,9 +3409,9 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         const normTgl = (entry.tgl || '').trim();
         const normWaktu = (entry.waktu || '').trim();
         const normSku = (entry.sku || '').trim().toUpperCase();
-        const normRak = (entry.rak || '').trim().toUpperCase();
+        const entryRak = (entry.rak || '').trim().toUpperCase();
         const normJumlah = Math.abs(Number(entry.jumlah || 0));
-        const key = `${normTgl}_${normWaktu}_${normSku}_${normRak}_${normJumlah}`;
+        const key = `${normTgl}_${normWaktu}_${normSku}_${entryRak}_${normJumlah}`;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key)!.push(entry);
       });
@@ -3302,6 +3797,199 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     } catch (error) {
       console.error('Error syncing tgl_scan with tgl:', error);
       showToast('Terjadi kesalahan saat menyamakan Tgl Scan', 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
+  const handleBulkClearTglScan = async () => {
+    if (selectedIds.size === 0) return;
+
+    if (!confirm(`Apakah Anda yakin ingin menghapus / mengosongkan Tgl Scan untuk ${selectedIds.size} data terpilih?`)) {
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const selectedArray = Array.from(selectedIds);
+      const batchSize = 100;
+      let totalSuccess = 0;
+      let totalError = 0;
+      const todayStr = new Date().toISOString().slice(0, 10);
+
+      for (let i = 0; i < selectedArray.length; i += batchSize) {
+        const batchIds = selectedArray.slice(i, i + batchSize);
+        const { error: updateError } = await supabase
+          .from('database_log')
+          .update({
+            tgl_scan: null,
+            log_update_user: `DEVMODE: Hapus Tgl Scan (${todayStr})`
+          })
+          .in('id', batchIds);
+
+        if (updateError) {
+          console.error('Error clearing tgl_scan:', updateError);
+          totalError += batchIds.length;
+        } else {
+          totalSuccess += batchIds.length;
+        }
+      }
+
+      if (totalError === 0) {
+        showToast(`Berhasil mengosongkan Tgl Scan untuk ${totalSuccess} data!`, 'success');
+      } else {
+        showToast(`Berhasil mengosongkan Tgl Scan untuk ${totalSuccess} data, ${totalError} gagal.`, 'warning');
+      }
+
+      clearSelection();
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (error: any) {
+      console.error('Error in handleBulkClearTglScan:', error);
+      showToast(`Terjadi kesalahan saat mengosongkan Tgl Scan: ${error?.message || error}`, 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
+  // --- HANDLER HAPUS TGL SCAN BATCH MINUS / DEFISIT (MASSAL & SATU PERSATU) ---
+  const handleOpenClearDeficitModal = () => {
+    const deficitBatches = batchGroupData.filter(g => g.balance < 0);
+    if (deficitBatches.length === 0) {
+      showToast('Tidak ditemukan batch yang berstatus minus (defisit).', 'info');
+      return;
+    }
+    const outWithScan = deficitBatches.flatMap(g => g.outEntries.filter(e => Boolean(e.tgl_scan)));
+    if (outWithScan.length === 0) {
+      showToast('Seluruh batch minus sudah tidak memiliki Tgl Scan pada transaksi OUT-nya.', 'info');
+      return;
+    }
+    setIsClearDeficitModalOpen(true);
+  };
+
+  const handleExecuteClearDeficitBatches = async (selectedGroupIds: string[]) => {
+    if (selectedGroupIds.length === 0) {
+      showToast('Pilih minimal 1 batch minus untuk dikosongkan Tgl Scan-nya.', 'warning');
+      return;
+    }
+
+    const targetGroups = batchGroupData.filter(g => selectedGroupIds.includes(g.id));
+    const outEntriesToClear = targetGroups.flatMap(g => g.outEntries.filter(e => Boolean(e.tgl_scan)));
+    const outIdsToClear = outEntriesToClear.map(e => e.id);
+
+    if (outIdsToClear.length === 0) {
+      showToast('Tidak ada transaksi OUT dengan Tgl Scan pada batch terpilih.', 'info');
+      return;
+    }
+
+    try {
+      setIsClearingDeficitScanDates(true);
+      const batchSize = 100;
+      let totalSuccess = 0;
+      let totalError = 0;
+      const todayStr = new Date().toISOString().slice(0, 10);
+
+      for (let i = 0; i < outIdsToClear.length; i += batchSize) {
+        const chunkIds = outIdsToClear.slice(i, i + batchSize);
+        const { error: updateError } = await supabase
+          .from('database_log')
+          .update({
+            tgl_scan: null,
+            log_update_user: `DEVMODE: Hapus Tgl Scan Batch Minus (${todayStr})`
+          })
+          .in('id', chunkIds);
+
+        if (updateError) {
+          console.error('Error clearing deficit batch tgl_scan:', updateError);
+          totalError += chunkIds.length;
+        } else {
+          totalSuccess += chunkIds.length;
+        }
+      }
+
+      if (totalError === 0) {
+        showToast(`Berhasil mengosongkan Tgl Scan untuk ${totalSuccess} transaksi OUT pada ${targetGroups.length} batch minus!`, 'success');
+      } else {
+        showToast(`Berhasil mengosongkan Tgl Scan untuk ${totalSuccess} data, ${totalError} gagal.`, 'warning');
+      }
+
+      setIsClearDeficitModalOpen(false);
+      clearSelection();
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (error: any) {
+      console.error('Error in handleExecuteClearDeficitBatches:', error);
+      showToast(`Terjadi kesalahan saat mengosongkan Tgl Scan batch minus: ${error?.message || error}`, 'error');
+    } finally {
+      setIsClearingDeficitScanDates(false);
+    }
+  };
+
+  const handleClearTglScanForBatch = async (group: BatchGroupItem) => {
+    const outEntriesToClear = group.outEntries.filter(e => Boolean(e.tgl_scan));
+    if (outEntriesToClear.length === 0) {
+      showToast('Tidak ada transaksi OUT dengan Tgl Scan di batch ini.', 'warning');
+      return;
+    }
+
+    const outIdsToClear = outEntriesToClear.map(e => e.id);
+    const totalPcs = outEntriesToClear.reduce((sum, e) => sum + (Number(e.jumlah) || 0), 0);
+
+    const rakText = group.rak ? `Rak: ${group.rak}, ` : '';
+    if (!confirm(`Hapus Tgl Scan untuk ${outIdsToClear.length} transaksi OUT (${totalPcs} pcs) pada Batch ${group.sku} (${rakText}Tgl Scan: ${group.tglScan}) yang defisit ${group.balance} pcs?\n\nSetelah dikosongkan, transaksi OUT ini tidak lagi membebani batch tanggal ${group.tglScan}.`)) {
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const { error: updateError } = await supabase
+        .from('database_log')
+        .update({
+          tgl_scan: null,
+          log_update_user: `DEVMODE: Hapus Tgl Scan Batch Minus (${todayStr})`
+        })
+        .in('id', outIdsToClear);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      showToast(`Berhasil mengosongkan Tgl Scan untuk ${outIdsToClear.length} transaksi OUT pada batch ${group.sku}!`, 'success');
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (error: any) {
+      console.error('Error clearing batch tgl_scan:', error);
+      showToast(`Gagal mengosongkan Tgl Scan batch: ${error?.message || error}`, 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
+  const handleClearSingleEntryTglScan = async (entry: DatabaseLogEntry) => {
+    if (!entry.tgl_scan) return;
+
+    if (!confirm(`Hapus Tgl Scan (${entry.tgl_scan}) pada transaksi OUT ${entry.sku} (${entry.jumlah} pcs di rak ${entry.rak})?`)) {
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const { error: updateError } = await supabase
+        .from('database_log')
+        .update({
+          tgl_scan: null,
+          log_update_user: `DEVMODE: Hapus Tgl Scan Transaksi (${todayStr})`
+        })
+        .eq('id', entry.id);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      showToast(`Tgl Scan (${entry.tgl_scan}) berhasil dikosongkan!`, 'success');
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (error: any) {
+      console.error('Error clearing single tgl_scan:', error);
+      showToast(`Gagal mengosongkan Tgl Scan: ${error?.message || error}`, 'error');
     } finally {
       setIsBulkOperationLoading(false);
     }
@@ -3745,7 +4433,32 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           .not('gudang', 'in', '("VERIFY","UNVERIFY")');
 
         // Apply Filters to Count Query
-        if (filters.sku) countQuery = countQuery.eq('sku', filters.sku);
+        if (activeBulkSkuSearch.length > 0) {
+          if (bulkSkuSearchMode === 'exact') {
+            const termsSet = new Set<string>();
+            activeBulkSkuSearch.forEach(t => {
+              const trimmed = t.trim();
+              if (trimmed) {
+                termsSet.add(trimmed);
+                termsSet.add(trimmed.toUpperCase());
+                termsSet.add(trimmed.toLowerCase());
+              }
+            });
+            countQuery = countQuery.in('sku', Array.from(termsSet));
+          } else {
+            const orTerms = activeBulkSkuSearch
+              .map(t => t.trim().replace(/[,()%]/g, ''))
+              .filter(Boolean)
+              .slice(0, 50)
+              .map(t => `sku.ilike.%${t}%`);
+            if (orTerms.length > 0) {
+              countQuery = countQuery.or(orTerms.join(','));
+            }
+          }
+          if (filters.sku) countQuery = countQuery.ilike('sku', `%${filters.sku}%`);
+        } else if (filters.sku) {
+          countQuery = countQuery.eq('sku', filters.sku);
+        }
         if (filters.type) countQuery = countQuery.eq('type', filters.type);
         if (filters.gudang) countQuery = countQuery.ilike('gudang', `%${filters.gudang}%`);
         if (filters.excludeTransfer) countQuery = countQuery.neq('gudang', 'TRANSFER');
@@ -3782,7 +4495,32 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           let batchQuery = supabase.from('database_log').select('*').not('gudang', 'in', '("VERIFY","UNVERIFY")');
 
           // Apply Filters to Data Query
-          if (filters.sku) batchQuery = batchQuery.eq('sku', filters.sku);
+          if (activeBulkSkuSearch.length > 0) {
+            if (bulkSkuSearchMode === 'exact') {
+              const termsSet = new Set<string>();
+              activeBulkSkuSearch.forEach(t => {
+                const trimmed = t.trim();
+                if (trimmed) {
+                  termsSet.add(trimmed);
+                  termsSet.add(trimmed.toUpperCase());
+                  termsSet.add(trimmed.toLowerCase());
+                }
+              });
+              batchQuery = batchQuery.in('sku', Array.from(termsSet));
+            } else {
+              const orTerms = activeBulkSkuSearch
+                .map(t => t.trim().replace(/[,()%]/g, ''))
+                .filter(Boolean)
+                .slice(0, 50)
+                .map(t => `sku.ilike.%${t}%`);
+              if (orTerms.length > 0) {
+                batchQuery = batchQuery.or(orTerms.join(','));
+              }
+            }
+            if (filters.sku) batchQuery = batchQuery.ilike('sku', `%${filters.sku}%`);
+          } else if (filters.sku) {
+            batchQuery = batchQuery.eq('sku', filters.sku);
+          }
           if (filters.type) batchQuery = batchQuery.eq('type', filters.type);
           if (filters.gudang) batchQuery = batchQuery.ilike('gudang', `%${filters.gudang}%`);
           if (filters.excludeTransfer) batchQuery = batchQuery.neq('gudang', 'TRANSFER');
@@ -4381,6 +5119,46 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     type="button"
                     onClick={() => {
                       setIsDevToolsModalOpen(false);
+                      const target = filters.sku || '';
+                      setScanDateAutoMatchSku(target);
+                      setIsScanDateAutoMatchModalOpen(true);
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-cyan-500/15 border border-slate-700/80 hover:border-cyan-400/50 transition-all active:scale-[0.98] text-left flex flex-col gap-2.5 group cursor-pointer"
+                    title="Klop Tgl Scan & Rak OUT (Auto-Match Tgl Masuk IN)"
+                  >
+                    <div className="p-2.5 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-400/30 group-hover:bg-cyan-500 group-hover:text-white transition-colors w-fit">
+                      <CheckCheck className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white group-hover:text-cyan-200">Klop Tgl Scan & Rak OUT</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Selaraskan tgl scan & rak OUT otomatis sesuai nota masuk IN terdekat</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      const target = filters.sku || '';
+                      setSyncTransferOutSku(target);
+                      setIsSyncTransferOutModalOpen(true);
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-amber-500/15 border border-slate-700/80 hover:border-amber-400/50 transition-all active:scale-[0.98] text-left flex flex-col gap-2.5 group cursor-pointer"
+                    title="Sinkronkan Tgl Scan TRANSFER OUT (Klop Rak Asal)"
+                  >
+                    <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-400/30 group-hover:bg-amber-500 group-hover:text-white transition-colors w-fit">
+                      <ArrowRightLeft className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white group-hover:text-amber-200">Sinkron TRANSFER OUT</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Selaraskan tgl scan TRANSFER OUT ke tgl barang masuk rak asal (TRANSFER IN tetap real-time)</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
                       setIsTransferAuditModalOpen(true);
                       const targetSku = filters.sku || transferAuditSku;
                       if (targetSku) {
@@ -4727,7 +5505,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   )}
                 </button>
 
-                {/* TOGGLE MODE GROUPING (SKU + TGL SCAN + IN/OUT) */}
+                {/* TOGGLE MODE GROUPING (SKU + RAK + TGL SCAN + IN/OUT) */}
                 <button
                   type="button"
                   onClick={() => setIsGroupedMode(prev => !prev)}
@@ -4736,16 +5514,48 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       ? 'bg-gradient-to-r from-blue-700 to-indigo-700 text-white border-blue-600 shadow-sm ring-2 ring-blue-300'
                       : 'bg-blue-50 hover:bg-blue-100 text-blue-900 border-blue-300'
                   }`}
-                  title="Kelompokkan data berdasarkan SKU, Tgl Scan, dan Type (IN di atas, OUT di bawah) dengan subtotal jumlah"
+                  title="Kelompokkan data berdasarkan SKU, Rak, Tgl Scan, dan Type (IN di atas, OUT di bawah) dengan subtotal saldo"
                 >
                   <Layers className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Mode Kelompok (SKU + Tgl Scan)</span>
+                  <span>Mode Kelompok ({groupIncludeRak ? 'SKU + Rak + Tgl Scan' : 'SKU + Tgl Scan'})</span>
                   {isGroupedMode && (
                     <span className="ml-1 bg-white/25 text-white px-1.5 py-0.2 rounded text-[10px] font-black uppercase">
                       {batchSummaryStats.totalGroups} BATCH
                     </span>
                   )}
                 </button>
+
+                {/* PILIHAN PRESISI KELOMPOK (RAK + SCAN vs SCAN SAJA) */}
+                {isGroupedMode && (
+                  <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-xl border border-slate-200">
+                    <button
+                      type="button"
+                      onClick={() => setGroupIncludeRak(true)}
+                      className={`px-2 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
+                        groupIncludeRak
+                          ? 'bg-white text-blue-900 shadow-xs border border-blue-200'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                      title="Hitung saldo dan kelompokkan data per SKU + Rak + Tgl Scan (Saldo akurat tiap rak)"
+                    >
+                      <Package className="w-3 h-3 text-blue-600" />
+                      <span>Sama Rak & Tgl Scan</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGroupIncludeRak(false)}
+                      className={`px-2 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
+                        !groupIncludeRak
+                          ? 'bg-white text-blue-900 shadow-xs border border-blue-200'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                      title="Kelompokkan data per SKU + Tgl Scan saja (menggabungkan seluruh rak di tanggal scan yang sama)"
+                    >
+                      <Calendar className="w-3 h-3 text-slate-500" />
+                      <span>Tgl Scan Saja</span>
+                    </button>
+                  </div>
+                )}
 
                 {/* TOMBOL RIWAYAT MUTASI SETELAHNYA */}
                 {showFixDates && (
@@ -4850,9 +5660,21 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     <span>Copy Laporan Lebih Potong</span>
                   </button>
                 )}
+
+                {batchSummaryStats.deficitGroups > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleOpenClearDeficitModal}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white border-red-700 shadow-md animate-pulse"
+                    title="Deteksi otomatis & kosongkan Tgl Scan untuk transaksi OUT pada seluruh batch minus (defisit)"
+                  >
+                    <CalendarX className="w-3.5 h-3.5" />
+                    <span>Hapus Tgl Scan Batch Minus ({batchSummaryStats.deficitGroups})</span>
+                  </button>
+                )}
               </div>
 
-              {Boolean(filters.sku || filters.type || filters.gudang || filters.rak || filters.user || filters.tanggal || filters.tglScan || filters.waktu || filters.subRak || filters.logUpdateUser || filters.isAdjustment) && (
+              {Boolean(activeBulkSkuSearch.length > 0 || filters.sku || filters.type || filters.gudang || filters.rak || filters.user || filters.tanggal || filters.tglScan || filters.waktu || filters.subRak || filters.logUpdateUser || filters.isAdjustment) && (
                 <button
                   type="button"
                   onClick={clearAllFilters}
@@ -4863,10 +5685,98 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
               )}
             </div>
 
+            {/* Banner Pencarian Massal SKU Aktif */}
+            {activeBulkSkuSearch.length > 0 && (
+              <div className="bg-gradient-to-r from-indigo-50 to-blue-50 border border-indigo-200 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 shadow-sm animate-in fade-in mb-4">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <span className="px-2.5 py-1 bg-indigo-600 text-white text-xs font-black rounded-lg shadow-sm">
+                    Pencarian Massal SKU Aktif
+                  </span>
+                  <span className="text-xs font-bold text-indigo-950">
+                    {activeBulkSkuSearch.length} SKU dicari &bull; Ditemukan {totalCount.toLocaleString()} baris log
+                  </span>
+                  <span className="text-[11px] text-indigo-700 font-medium hidden sm:inline">
+                    (Mode: {bulkSkuSearchMode === 'exact' ? 'Sesuai Persis / Exact' : 'Mengandung Kata / Partial'})
+                  </span>
+                  {batchSummaryStats.deficitGroups > 0 && (
+                    <span className="px-2.5 py-0.5 rounded-lg bg-rose-100 text-rose-800 border border-rose-300 font-bold text-[11px] flex items-center gap-1 shadow-xs">
+                      <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
+                      {batchSummaryStats.deficitGroups} Batch Minus Terdeteksi
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAnalysisSkuInputMode('bulk');
+                      setBulkAnalysisSkuInput(activeBulkSkuSearch.join('\n'));
+                      setIsAnalysisModalOpen(true);
+                      handleAnalyzeStockBalance(activeBulkSkuSearch);
+                    }}
+                    disabled={isAnalyzing}
+                    className="px-3 py-1.5 text-xs font-bold text-white bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 rounded-xl shadow-sm transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 border border-teal-500 disabled:opacity-50"
+                    title="Cek Saldo & Diagnosa data minus secara massal untuk semua SKU yang sedang dicari"
+                  >
+                    {isAnalyzing ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Calculator className="h-3.5 w-3.5" />
+                    )}
+                    <span>Cek Saldo Massal ({activeBulkSkuSearch.length} SKU)</span>
+                  </button>
+                  {batchSummaryStats.deficitGroups > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleOpenClearDeficitModal}
+                      className="px-3.5 py-1.5 text-xs font-black text-white bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 border border-red-700"
+                      title="Deteksi otomatis & kosongkan Tgl Scan transaksi OUT pada seluruh batch minus untuk SKU yang dicari"
+                    >
+                      <CalendarX className="h-3.5 w-3.5" />
+                      <span>Hapus Tgl Scan Batch Minus ({batchSummaryStats.deficitGroups})</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsBulkSkuModalOpen(true)}
+                    className="px-3 py-1.5 text-xs font-bold text-indigo-700 hover:text-indigo-900 bg-white hover:bg-indigo-100/50 rounded-xl border border-indigo-300 transition-all cursor-pointer shadow-sm"
+                  >
+                    Ubah Daftar SKU ({activeBulkSkuSearch.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearBulkSkuSearch}
+                    className="px-3 py-1.5 text-xs font-bold text-rose-700 hover:text-rose-900 bg-white hover:bg-rose-50 rounded-xl border border-rose-300 transition-all cursor-pointer shadow-sm flex items-center gap-1"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Hapus Filter Massal
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 ${showFixDates ? 'xl:grid-cols-5' : 'xl:grid-cols-7'} gap-4`}>
               <div>
-                <div className="bg-blue-600 text-white px-3 py-2 rounded-t-md">
+                <div className="bg-blue-600 text-white px-3 py-2 rounded-t-md flex items-center justify-between">
                   <span className="font-medium">SKU</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsBulkSkuModalOpen(true)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                      activeBulkSkuSearch.length > 0
+                        ? 'bg-amber-400 text-amber-950 font-black shadow-xs'
+                        : 'bg-white/20 hover:bg-white/30 text-white'
+                    }`}
+                    title="Pencarian Massal SKU (Paste banyak SKU sekaligus dari Excel/Catatan)"
+                  >
+                    <Clipboard className="h-3 w-3" />
+                    <span>Cari Massal</span>
+                    {activeBulkSkuSearch.length > 0 && (
+                      <span className="bg-amber-950 text-white text-[9px] px-1 rounded-full font-black">
+                        {activeBulkSkuSearch.length}
+                      </span>
+                    )}
+                  </button>
                 </div>
                 <FilterDropdown
                   value={filters.sku}
@@ -5326,6 +6236,15 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       </Button>
                     )}
                     <Button
+                      onClick={handleBulkClearTglScan}
+                      className="h-9 px-3.5 bg-gradient-to-r from-rose-500 to-amber-600 hover:from-rose-600 hover:to-amber-700 text-white font-bold rounded-lg shadow-md transition-all flex items-center justify-center border border-rose-400/30"
+                      disabled={isBulkOperationLoading}
+                      title="Hapus / Kosongkan Tanggal Scan pada seluruh data terpilih"
+                    >
+                      <CalendarX className="h-3.5 w-3.5 mr-1.5" />
+                      <span className="text-[10px] uppercase tracking-wider font-extrabold">Hapus Tgl Scan</span>
+                    </Button>
+                    <Button
                       onClick={handleSyncSubRakWithRak}
                       className="h-9 px-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold rounded-lg shadow-md transition-all flex items-center justify-center border border-emerald-400/30"
                       disabled={isBulkOperationLoading}
@@ -5612,11 +6531,20 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                           {group.sku}
                                         </span>
                                         <span className="text-slate-400">|</span>
+                                        {group.rak && (
+                                          <>
+                                            <span className="text-slate-200 font-medium flex items-center gap-1">
+                                              <Package className="w-3.5 h-3.5 text-cyan-400" />
+                                              Rak: <strong className="text-cyan-300 font-bold">{group.rak}</strong>
+                                            </span>
+                                            <span className="text-slate-400">|</span>
+                                          </>
+                                        )}
                                         <span className="text-slate-200 font-medium flex items-center gap-1">
                                           <Calendar className="w-3.5 h-3.5 text-blue-400" />
                                           Tgl Scan: <strong className="text-white">{group.tglScan}</strong>
                                         </span>
-                                        {group.initialInRaksList.length > 0 && (
+                                        {group.initialInRaksList.length > 0 && !group.rak && (
                                           <span className="bg-slate-700/90 text-slate-200 px-2.5 py-0.5 rounded text-[11px] font-medium border border-slate-600">
                                             Rak Masuk (IN): <strong className="text-emerald-300 font-bold">{group.initialInRaksList.join(', ')}</strong>
                                           </span>
@@ -5816,9 +6744,30 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                 {/* GROUP SUBTOTAL / SUMMARY ROW */}
                                 <tr className="bg-slate-100/95 border-b-4 border-b-slate-300 text-xs font-bold text-slate-800">
                                   <td colSpan={4} className="px-4 py-2.5 text-left border-r border-slate-300">
-                                    <span className="font-black text-slate-700 uppercase tracking-wider">
-                                      Total {group.sku} ({group.tglScan}):
-                                    </span>
+                                    <div>
+                                      <span className="font-black text-slate-700 uppercase tracking-wider">
+                                        Total {group.sku} {group.rak ? `(Rak: ${group.rak}, ${group.tglScan})` : `(${group.tglScan})`}:
+                                      </span>
+                                      {group.rakBreakdown && group.rakBreakdown.length > 1 && (
+                                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                          <span className="text-[10px] text-slate-500 font-bold">Saldo per Rak:</span>
+                                          {group.rakBreakdown.map(rb => (
+                                            <span
+                                              key={rb.rak}
+                                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                                rb.balance < 0
+                                                  ? 'bg-red-50 text-red-700 border-red-300'
+                                                  : rb.balance > 0
+                                                  ? 'bg-blue-50 text-blue-700 border-blue-300'
+                                                  : 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                                              }`}
+                                            >
+                                              {rb.rak}: {rb.balance > 0 ? `+${rb.balance}` : rb.balance}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
                                   </td>
                                   <td className="px-4 py-2.5 text-center border-r border-slate-300">
                                     <div className="flex items-center justify-center gap-1.5 font-mono text-xs">
@@ -5844,7 +6793,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                         <button
                                           type="button"
                                           onClick={() => {
-                                            const primaryRak = group.initialInRaksList[0] || group.sortedEntries[0]?.rak || '-';
+                                            const primaryRak = group.rak || group.initialInRaksList[0] || group.sortedEntries[0]?.rak || '-';
                                             const text = formatDeficitReportSentence(group.sku, primaryRak, group.tglScan, group.balance, group.totalIn, group.totalOut);
                                             navigator.clipboard.writeText(text);
                                             showToast(`Laporan Lebih Potong disalin: "${text}"`, 'success');
@@ -5854,6 +6803,17 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                         >
                                           <Copy className="w-3.5 h-3.5" />
                                         </button>
+                                        {group.outEntries.some(e => Boolean(e.tgl_scan)) && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleClearTglScanForBatch(group)}
+                                            className="p-1 px-1.5 bg-rose-200 hover:bg-rose-300 text-rose-900 rounded border border-rose-400 transition-all cursor-pointer shadow-2xs flex items-center gap-1 text-[11px] font-bold"
+                                            title="Hapus Tgl Scan pada transaksi OUT di batch minus ini"
+                                          >
+                                            <CalendarX className="w-3.5 h-3.5 text-rose-800" />
+                                            <span>Hapus Tgl Scan Batch</span>
+                                          </button>
+                                        )}
                                       </div>
                                     )}
                                   </td>
@@ -5866,7 +6826,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                     ) : (
                                       <span className="text-emerald-800 font-medium flex items-center gap-1">
                                         <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-                                        Seluruh transaksi OUT sesuai dengan rak nota masuk awal ({group.initialInRaksList.join(', ') || '-'})
+                                        Seluruh transaksi OUT sesuai dengan rak nota masuk awal ({group.initialInRaksList.join(', ') || group.rak || '-'})
                                       </span>
                                     )}
                                   </td>
@@ -6058,7 +7018,12 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                 </span>
                               </div>
                               <div className="text-xs text-slate-300 flex items-center justify-between">
-                                <span>Scan: <strong>{group.tglScan}</strong></span>
+                                <span>
+                                  {group.rak && (
+                                    <span className="mr-2">Rak: <strong className="text-cyan-300">{group.rak}</strong></span>
+                                  )}
+                                  Scan: <strong>{group.tglScan}</strong>
+                                </span>
                                 {group.hasRakMismatch ? (
                                   <span className="bg-amber-500/25 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded font-bold text-[10px] flex items-center gap-1">
                                     <AlertTriangle className="w-3 h-3 text-amber-400" />
@@ -6071,7 +7036,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                   </span>
                                 )}
                               </div>
-                              {group.initialInRaksList.length > 0 && (
+                              {group.initialInRaksList.length > 0 && !group.rak && (
                                 <div className="text-[11px] text-slate-300 bg-slate-700/80 px-2 py-1 rounded border border-slate-600">
                                   Rak Masuk (IN): <strong className="text-emerald-300">{group.initialInRaksList.join(', ')}</strong>
                                 </div>
@@ -6166,6 +7131,15 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                           >
                                             <History className="h-3.5 w-3.5 mr-1" /> Setelahnya
                                           </Button>
+                                          {entry.type === 'OUT' && Boolean(entry.tgl_scan) && (
+                                            <Button
+                                              onClick={() => handleClearSingleEntryTglScan(entry)}
+                                              className="h-8 px-2 bg-rose-50 text-rose-600 rounded-lg font-bold text-xs flex items-center justify-center border border-rose-200 flex-1"
+                                              title={`Hapus Tgl Scan (${entry.tgl_scan}) baris ini`}
+                                            >
+                                              <CalendarX className="h-3.5 w-3.5 mr-1" /> Hapus Scan
+                                            </Button>
+                                          )}
                                           <Button
                                             onClick={() => handleEdit(entry)}
                                             className="h-8 px-2 bg-blue-50 text-blue-600 rounded-lg font-bold text-xs flex items-center justify-center border border-blue-100 flex-1"
@@ -6189,13 +7163,34 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                             {/* Mobile Group Subtotal Footer */}
                             <div className="bg-slate-100 p-3 text-xs space-y-1.5 border-t border-slate-200">
                               <div className="flex items-center justify-between font-bold">
-                                <span className="text-slate-700 uppercase">Subtotal {group.sku}:</span>
+                                <span className="text-slate-700 uppercase">
+                                  Subtotal {group.sku} {group.rak ? `(${group.rak})` : ''}:
+                                </span>
                                 <div className="flex items-center gap-2 font-mono">
                                   <span className="text-emerald-700">IN: {group.totalIn}</span>
                                   <span className="text-slate-400">|</span>
                                   <span className="text-rose-700">OUT: {group.totalOut}</span>
                                 </div>
                               </div>
+                              {group.rakBreakdown && group.rakBreakdown.length > 1 && (
+                                <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-slate-200/60">
+                                  <span className="text-[10px] text-slate-500 font-bold">Saldo Rak:</span>
+                                  {group.rakBreakdown.map(rb => (
+                                    <span
+                                      key={rb.rak}
+                                      className={`px-1.5 py-0.2 rounded text-[10px] font-bold border ${
+                                        rb.balance < 0
+                                          ? 'bg-red-50 text-red-700 border-red-300'
+                                          : rb.balance > 0
+                                          ? 'bg-blue-50 text-blue-700 border-blue-300'
+                                          : 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                                      }`}
+                                    >
+                                      {rb.rak}: {rb.balance > 0 ? `+${rb.balance}` : rb.balance}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                               <div className="flex items-center justify-between pt-1 border-t border-slate-200/80">
                                 <span className="text-slate-600">Sisa Stok:</span>
                                 {group.balance === 0 ? (
@@ -6207,9 +7202,21 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                     +{group.balance.toLocaleString()}
                                   </span>
                                 ) : (
-                                  <span className="px-2 py-0.5 rounded bg-red-100 text-red-800 font-black border border-red-300">
-                                    {group.balance.toLocaleString()}
-                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="px-2 py-0.5 rounded bg-red-100 text-red-800 font-black border border-red-300">
+                                      {group.balance.toLocaleString()}
+                                    </span>
+                                    {group.outEntries.some(e => Boolean(e.tgl_scan)) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleClearTglScanForBatch(group)}
+                                        className="p-1 px-1.5 bg-rose-200 hover:bg-rose-300 text-rose-900 rounded border border-rose-400 text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                                      >
+                                        <CalendarX className="w-3 h-3 text-rose-800" />
+                                        <span>Hapus Scan</span>
+                                      </button>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             </div>
@@ -6415,6 +7422,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                         <option value={100}>100 per halaman</option>
                         <option value={200}>200 per halaman</option>
                         <option value={500}>500 per halaman</option>
+                        <option value={1000}>1000 per halaman</option>
                       </select>
                       <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-gray-400">
                         <ChevronDown className="h-4 w-4" />
@@ -6971,80 +7979,220 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
           {/* Search & Control Panel */}
           <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-              <div>
-                <label className="block text-xs font-bold text-slate-600 uppercase mb-2 ml-1">Cari / Pilih SKU</label>
-                <FilterDropdown
-                  value={analysisSku}
-                  onChange={(val) => setAnalysisSku(val)}
-                  options={allSkus}
-                  placeholder="Ketik nama produk..."
-                  loading={dropdownsLoading}
-                />
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  onClick={() => handleAnalyzeStockBalance(analysisSku)}
-                  disabled={isAnalyzing}
-                  className="flex-1 h-11 bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95"
-                >
-                  {isAnalyzing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />}
-                  <span>{isAnalyzing ? 'Menganalisis...' : 'Mulai Analisis'}</span>
-                </Button>
-                {analysisResults.some(r => r.balance < 0) && (
-                  <>
-                    <Button
-                      onClick={handlePrepareRedistribute}
-                      disabled={isAnalyzing || isProcessingRemediation}
-                      className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95"
-                      title="Perbaiki semua selisih secara otomatis ke tanggal atau rak yang memiliki surplus"
-                    >
-                      <RefreshCw className="h-4 w-4" />
-                      <span>Auto-Fix Semua</span>
-                    </Button>
-                    <Button
-                      type="button"
-                      onClick={() => {
-                        const deficits = analysisResults.filter(r => r.balance < 0);
-                        const lines = deficits.map(d =>
-                          formatDeficitReportSentence(analysisSku, d.rak, d.tglScan, d.balance, d.totalIn, d.totalOut)
-                        );
-                        const text = `LAPORAN LEBIH POTONG (SKU: ${analysisSku}):\n` + lines.join('\n');
-                        navigator.clipboard.writeText(text);
-                        showToast(`${lines.length} baris Laporan Lebih Potong disalin!`, 'success');
-                      }}
-                      className="h-11 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-300 shadow-sm transition-all flex items-center justify-center space-x-1.5 active:scale-95"
-                      title="Salin seluruh baris laporan lebih potong untuk tim"
-                    >
-                      <Copy className="h-4 w-4" />
-                      <span>Copy Laporan Lebih Potong</span>
-                    </Button>
-                  </>
-                )}
+            {/* Mode Selector */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-700 uppercase">Mode Input SKU:</span>
+                <div className="bg-slate-200 p-0.5 rounded-xl flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => setAnalysisSkuInputMode('single')}
+                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-all ${analysisSkuInputMode === 'single' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-900 cursor-pointer'}`}
+                  >
+                    Pilih 1 SKU
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAnalysisSkuInputMode('bulk')}
+                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-all ${analysisSkuInputMode === 'bulk' ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-600 hover:text-slate-900 cursor-pointer'}`}
+                  >
+                    Paste Massal SKU
+                  </button>
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-600 uppercase mb-2 ml-1">Kecualikan Tgl Scan (Koma)</label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={excludedScanDates}
-                    onChange={(e) => setExcludedScanDates(e.target.value)}
-                    placeholder="Contoh: No Date, 2025-12-06"
-                    className="w-full h-11 px-4 pr-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-sm bg-white text-sm"
-                  />
-                  {excludedScanDates && (
+              {analysisSkuInputMode === 'bulk' && (
+                <div className="flex items-center gap-2">
+                  {(() => {
+                    const skus = Array.from(new Set(bulkAnalysisSkuInput.split(/[\r\n,]+/).map(s => s.trim().toUpperCase()).filter(Boolean)));
+                    return skus.length > 0 ? (
+                      <span className="px-2.5 py-0.5 bg-teal-100 text-teal-800 text-[11px] font-black rounded-lg border border-teal-200">
+                        {skus.length} SKU Terdeteksi
+                      </span>
+                    ) : null;
+                  })()}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const text = await navigator.clipboard.readText();
+                        if (text) setBulkAnalysisSkuInput(text);
+                      } catch {
+                        showToast('Tidak dapat mengakses clipboard. Silakan gunakan Ctrl+V.', 'info');
+                      }
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 hover:underline cursor-pointer"
+                  >
+                    <Clipboard className="h-3.5 w-3.5" />
+                    Tempel Clipboard
+                  </button>
+                  {bulkAnalysisSkuInput && (
                     <button
-                      onClick={() => setExcludedScanDates('')}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500"
-                      title="Bersihkan"
+                      type="button"
+                      onClick={() => setBulkAnalysisSkuInput('')}
+                      className="text-xs text-slate-400 hover:text-rose-600 cursor-pointer font-bold"
                     >
-                      <X className="h-4 w-4" />
+                      Bersihkan
                     </button>
                   )}
                 </div>
-              </div>
+              )}
             </div>
+
+            {analysisSkuInputMode === 'single' ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase mb-2 ml-1">Cari / Pilih SKU</label>
+                  <FilterDropdown
+                    value={analysisSku}
+                    onChange={(val) => setAnalysisSku(val)}
+                    options={allSkus}
+                    placeholder="Ketik nama produk..."
+                    loading={dropdownsLoading}
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => handleAnalyzeStockBalance()}
+                    disabled={isAnalyzing}
+                    className="flex-1 h-11 bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95"
+                  >
+                    {isAnalyzing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />}
+                    <span>{isAnalyzing ? 'Menganalisis...' : 'Mulai Analisis'}</span>
+                  </Button>
+                  {analysisResults.some(r => r.balance < 0) && (
+                    <>
+                      <Button
+                        onClick={handlePrepareRedistribute}
+                        disabled={isAnalyzing || isProcessingRemediation}
+                        className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95"
+                        title="Perbaiki semua selisih secara otomatis ke tanggal atau rak yang memiliki surplus"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        <span>Auto-Fix Semua</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          const deficits = analysisResults.filter(r => r.balance < 0);
+                          const lines = deficits.map(d =>
+                            formatDeficitReportSentence(d.sku || analysisSku, d.rak, d.tglScan, d.balance, d.totalIn, d.totalOut)
+                          );
+                          const text = `LAPORAN LEBIH POTONG (${analysisSku}):\n` + lines.join('\n');
+                          navigator.clipboard.writeText(text);
+                          showToast(`${lines.length} baris Laporan Lebih Potong disalin!`, 'success');
+                        }}
+                        className="h-11 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-300 shadow-sm transition-all flex items-center justify-center space-x-1.5 active:scale-95"
+                        title="Salin seluruh baris laporan lebih potong untuk tim"
+                      >
+                        <Copy className="h-4 w-4" />
+                        <span>Copy Laporan Lebih Potong</span>
+                      </Button>
+                    </>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase mb-2 ml-1">Kecualikan Tgl Scan (Koma)</label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={excludedScanDates}
+                      onChange={(e) => setExcludedScanDates(e.target.value)}
+                      placeholder="Contoh: No Date, 2025-12-06"
+                      className="w-full h-11 px-4 pr-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-sm bg-white text-sm"
+                    />
+                    {excludedScanDates && (
+                      <button
+                        onClick={() => setExcludedScanDates('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500"
+                        title="Bersihkan"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase mb-1 ml-1">
+                    Daftar SKU / Nama Produk (Format Vertikal per Baris dari Hasil Salin Data Gudang / Excel):
+                  </label>
+                  <textarea
+                    value={bulkAnalysisSkuInput}
+                    onChange={(e) => setBulkAnalysisSkuInput(e.target.value)}
+                    rows={4}
+                    placeholder={"Tempel daftar nama produk di sini (satu per baris):\nBAG-RSB-100-7X10\nBAG-RSB-102-20X15/1PC\nDESKSET-DS-20"}
+                    className="w-full p-3 border border-slate-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-teal-500 bg-white"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 flex-1 min-w-[280px]">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        value={excludedScanDates}
+                        onChange={(e) => setExcludedScanDates(e.target.value)}
+                        placeholder="Kecualikan Tgl Scan (Koma): No Date, 2025-12-06"
+                        className="w-full h-11 px-4 pr-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-sm bg-white text-xs"
+                      />
+                      {excludedScanDates && (
+                        <button
+                          onClick={() => setExcludedScanDates('')}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500"
+                          title="Bersihkan"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      onClick={() => handleAnalyzeStockBalance()}
+                      disabled={isAnalyzing || !bulkAnalysisSkuInput.trim()}
+                      className="h-11 px-5 bg-gradient-to-r from-teal-600 to-emerald-700 hover:from-teal-700 hover:to-emerald-800 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50"
+                    >
+                      {isAnalyzing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />}
+                      <span>{isAnalyzing ? 'Menganalisis...' : 'Mulai Analisis Massal'}</span>
+                    </Button>
+                    {analysisResults.some(r => r.balance < 0) && (
+                      <>
+                        <Button
+                          onClick={handlePrepareRedistribute}
+                          disabled={isAnalyzing || isProcessingRemediation}
+                          className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95"
+                          title="Perbaiki semua selisih secara otomatis ke tanggal atau rak yang memiliki surplus"
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          <span>Auto-Fix Semua</span>
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            const deficits = analysisResults.filter(r => r.balance < 0);
+                            const lines = deficits.map(d =>
+                              formatDeficitReportSentence(d.sku || analysisSku, d.rak, d.tglScan, d.balance, d.totalIn, d.totalOut)
+                            );
+                            const text = `LAPORAN LEBIH POTONG (${analyzedSkusList.length} SKU):\n` + lines.join('\n');
+                            navigator.clipboard.writeText(text);
+                            showToast(`${lines.length} baris Laporan Lebih Potong disalin!`, 'success');
+                          }}
+                          className="h-11 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-300 shadow-sm transition-all flex items-center justify-center space-x-1.5 active:scale-95"
+                          title="Salin seluruh baris laporan lebih potong untuk tim"
+                        >
+                          <Copy className="h-4 w-4" />
+                          <span>Copy Laporan Lebih Potong</span>
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Quick Filter in Results */}
             <div className="relative">
@@ -7203,9 +8351,10 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                           </tr>
                         );
                       }
-
                       return displayedItems.map((res, idx) => {
-                        const rowKey = `${res.rak}|${res.tglScan}`;
+                        const rowKey = res.outTransactions && res.outTransactions.length === 1 && res.outTransactions[0].id
+                          ? `${res.rak}|${res.tglScan}|${res.outTransactions[0].id}`
+                          : `${res.rak}|${res.tglScan}`;
                         const normResTgl = res.tglScan.toUpperCase();
                         const isExcluded = excludedList.some(excluded => {
                           const normExcluded = formatDateDisplay(excluded).toUpperCase();
@@ -7301,7 +8450,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                       <button
                                         type="button"
                                         onClick={() => {
-                                          const text = formatDeficitReportSentence(analysisSku, res.rak, res.tglScan, res.balance, res.totalIn, res.totalOut);
+                                          const text = formatDeficitReportSentence(res.sku || analysisSku, res.rak, res.tglScan, res.balance, res.totalIn, res.totalOut);
                                           navigator.clipboard.writeText(text);
                                           showToast(`Laporan Lebih Potong disalin: "${text}"`, 'success');
                                         }}
@@ -7576,6 +8725,179 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         onLogUpdated={() => {
           loadLogEntries(currentPage, itemsPerPage);
         }}
+      />
+
+      {/* MODAL KLOP TGL SCAN OUT (AUTO-MATCH TGL MASUK IN) */}
+      <ScanDateAutoMatchModal
+        isOpen={isScanDateAutoMatchModalOpen}
+        onClose={() => setIsScanDateAutoMatchModalOpen(false)}
+        initialSku={scanDateAutoMatchSku || filters.sku || ''}
+        allSkus={allSkus}
+        currentLogs={filteredEntries}
+        showToast={showToast}
+        onSuccessUpdate={() => {
+          loadLogEntries(currentPage, itemsPerPage);
+        }}
+      />
+
+      {/* MODAL SINKRONISASI TGL SCAN TRANSFER OUT (KLOP RAK ASAL) */}
+      <SyncTransferOutScanDateModal
+        isOpen={isSyncTransferOutModalOpen}
+        onClose={() => setIsSyncTransferOutModalOpen(false)}
+        initialSku={syncTransferOutSku || filters.sku || ''}
+        showToast={showToast}
+        onSuccessUpdate={() => {
+          loadLogEntries(currentPage, itemsPerPage);
+        }}
+      />
+
+{/* MODAL PENCARIAN MASSAL SKU */}
+      <Modal
+        isOpen={isBulkSkuModalOpen}
+        onClose={() => setIsBulkSkuModalOpen(false)}
+        title="Pencarian Data Massal SKU (Database Log)"
+        size="lg"
+      >
+        <div className="space-y-4">
+          {/* Guidance Banner */}
+          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-2xl p-4 flex items-start space-x-3">
+            <FileText className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+            <div className="text-xs text-blue-900 leading-relaxed">
+              <p className="font-bold text-blue-950 mb-1">Cari Banyak SKU Sekaligus di Database Log:</p>
+              <p>
+                Tempel (paste) daftar SKU yang ingin Anda cari dari Excel, Google Sheet, atau catatan teks.
+                Sistem akan memfilter seluruh log riwayat transaksi (IN, OUT, mutasi) yang sesuai dengan SKU tersebut.
+              </p>
+            </div>
+          </div>
+
+          {/* Input Box & Toolbar */}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="text-xs font-bold text-slate-700 uppercase">
+                Daftar SKU:
+              </label>
+              <div className="flex items-center gap-2">
+                {(() => {
+                  const detected = Array.from(new Set(bulkSkuSearchInput.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean)));
+                  return detected.length > 0 ? (
+                    <span className="px-2.5 py-0.5 bg-blue-100 text-blue-800 text-[11px] font-black rounded-lg border border-blue-200">
+                      {detected.length} SKU Terdeteksi
+                    </span>
+                  ) : null;
+                })()}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      if (text) setBulkSkuSearchInput(text);
+                    } catch {
+                      showToast('Tidak dapat mengakses clipboard. Silakan gunakan tombol Ctrl+V.', 'info');
+                    }
+                  }}
+                  className="text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 hover:underline cursor-pointer"
+                >
+                  <Clipboard className="h-3.5 w-3.5" />
+                  Tempel Clipboard
+                </button>
+                {bulkSkuSearchInput && (
+                  <button
+                    type="button"
+                    onClick={() => setBulkSkuSearchInput('')}
+                    className="text-xs text-slate-400 hover:text-rose-600 cursor-pointer font-bold"
+                  >
+                    Bersihkan
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <textarea
+              value={bulkSkuSearchInput}
+              onChange={(e) => setBulkSkuSearchInput(e.target.value)}
+              rows={8}
+              placeholder={"Tempel nama produk/SKU di sini (satu per baris atau dipisahkan koma):\nBAG-RSB-100-7X10\nBAG-RSB-102-20X15/1PC\nBOOK-GB-2833R-7\nDESKSET-DS-20"}
+              className="w-full p-3 border border-slate-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-blue-500 bg-white shadow-inner"
+            />
+          </div>
+
+          {/* Mode Pencocokan */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3">
+            <span className="text-xs font-bold text-slate-700">Mode Pencocokan SKU:</span>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 cursor-pointer">
+                <input
+                  type="radio"
+                  name="bulkSkuSearchMatchMode"
+                  value="exact"
+                  checked={bulkSkuSearchMode === 'exact'}
+                  onChange={() => setBulkSkuSearchMode('exact')}
+                  className="text-blue-600"
+                />
+                <span>Sesuai Persis / Exact (Rekomendasi)</span>
+              </label>
+              <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 cursor-pointer">
+                <input
+                  type="radio"
+                  name="bulkSkuSearchMatchMode"
+                  value="partial"
+                  checked={bulkSkuSearchMode === 'partial'}
+                  onChange={() => setBulkSkuSearchMode('partial')}
+                  className="text-blue-600"
+                />
+                <span>Mengandung Kata / Partial</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Footer Actions */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+            <div>
+              {activeBulkSkuSearch.length > 0 && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => {
+                    handleClearBulkSkuSearch();
+                    setIsBulkSkuModalOpen(false);
+                  }}
+                  className="h-10 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200 font-bold"
+                >
+                  Hapus Pencarian Massal
+                </Button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setIsBulkSkuModalOpen(false)}
+                className="h-10 text-xs font-bold"
+              >
+                Batal
+              </Button>
+              <Button
+                type="button"
+                onClick={() => handleApplyBulkSkuSearch()}
+                disabled={!bulkSkuSearchInput.trim()}
+                className="h-10 px-5 text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white shadow-md active:scale-95 disabled:opacity-50"
+              >
+                <Search className="h-3.5 w-3.5 mr-1" />
+                <span>Terapkan Pencarian</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL HAPUS TGL SCAN BATCH MINUS (MASSAL & TERPILIH) */}
+      <ClearDeficitScanDatesModal
+        isOpen={isClearDeficitModalOpen}
+        onClose={() => setIsClearDeficitModalOpen(false)}
+        deficitGroups={batchGroupData.filter(g => g.balance < 0)}
+        isProcessing={isClearingDeficitScanDates}
+        onConfirmClear={handleExecuteClearDeficitBatches}
       />
 
       {/* MODAL PICKER SKU UNTUK RIWAYAT MUTASI SETELAHNYA */}
@@ -8867,5 +10189,286 @@ function EditDropdown({ value, onChange, options, placeholder, loading = false }
         </div>
       )}
     </div>
+  );
+}
+
+// --- MODAL HAPUS TGL SCAN BATCH MINUS (DEFISIT) ---
+interface ClearDeficitScanDatesModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  deficitGroups: BatchGroupItem[];
+  isProcessing: boolean;
+  onConfirmClear: (selectedGroupIds: string[]) => void;
+}
+
+function ClearDeficitScanDatesModal({
+  isOpen,
+  onClose,
+  deficitGroups,
+  isProcessing,
+  onConfirmClear
+}: ClearDeficitScanDatesModalProps) {
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
+  const [searchTerm, setSearchTerm] = useState('');
+
+  // Sinkronisasi pilihan saat modal dibuka
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedGroupIds(new Set(deficitGroups.map(g => g.id)));
+      setSearchTerm('');
+    }
+  }, [isOpen, deficitGroups]);
+
+  // Filter batch berdasarkan pencarian
+  const filteredBatches = useMemo(() => {
+    if (!searchTerm.trim()) return deficitGroups;
+    const term = searchTerm.toLowerCase();
+    return deficitGroups.filter(g =>
+      g.sku.toLowerCase().includes(term) ||
+      (g.rak && g.rak.toLowerCase().includes(term)) ||
+      g.tglScan.toLowerCase().includes(term) ||
+      g.initialInRaksList.some(r => r.toLowerCase().includes(term)) ||
+      g.outEntries.some(o => (o.rak || '').toLowerCase().includes(term))
+    );
+  }, [deficitGroups, searchTerm]);
+
+  // Hitung total OUT transaksi yang akan dikosongkan
+  const selectedBatchesList = useMemo(() => {
+    return deficitGroups.filter(g => selectedGroupIds.has(g.id));
+  }, [deficitGroups, selectedGroupIds]);
+
+  const totalOutRowsToClear = useMemo(() => {
+    return selectedBatchesList.reduce(
+      (sum, g) => sum + g.outEntries.filter(e => Boolean(e.tgl_scan)).length,
+      0
+    );
+  }, [selectedBatchesList]);
+
+  const totalOutQtyToClear = useMemo(() => {
+    return selectedBatchesList.reduce(
+      (sum, g) =>
+        sum +
+        g.outEntries
+          .filter(e => Boolean(e.tgl_scan))
+          .reduce((s, e) => s + (Number(e.jumlah) || 0), 0),
+      0
+    );
+  }, [selectedBatchesList]);
+
+  const isAllSelected = filteredBatches.length > 0 && filteredBatches.every(g => selectedGroupIds.has(g.id));
+
+  const handleToggleAll = () => {
+    if (isAllSelected) {
+      const next = new Set(selectedGroupIds);
+      filteredBatches.forEach(g => next.delete(g.id));
+      setSelectedGroupIds(next);
+    } else {
+      const next = new Set(selectedGroupIds);
+      filteredBatches.forEach(g => next.add(g.id));
+      setSelectedGroupIds(next);
+    }
+  };
+
+  const handleToggleBatch = (id: string) => {
+    const next = new Set(selectedGroupIds);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setSelectedGroupIds(next);
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Hapus Tgl Scan Batch Minus (Defisit)" size="xl">
+      <div className="space-y-4 text-xs">
+        {/* Info Banner */}
+        <div className="bg-gradient-to-r from-rose-50 via-red-50 to-amber-50 border border-rose-200 p-4 rounded-xl flex items-start gap-3 shadow-xs">
+          <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-md">
+            <CalendarX className="w-5 h-5" />
+          </div>
+          <div className="flex-1 space-y-1">
+            <h4 className="text-sm font-black text-rose-950">
+              Deteksi Otomatis &amp; Pembersihan Tgl Scan Batch Minus
+            </h4>
+            <p className="text-rose-800 leading-relaxed text-[11px]">
+              Sistem menemukan <strong>{deficitGroups.length} batch</strong> dengan saldo minus (Total IN &lt; Total OUT pada rak &amp; tgl scan yang sama).
+              Mengosongkan kolom <code>tgl_scan</code> pada transaksi OUT yang surplus/kelebihan akan melepaskan transaksi tersebut dari batch tanggal scan ini sehingga saldo tidak lagi minus.
+            </p>
+          </div>
+        </div>
+
+        {/* Stat Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-slate-50 border border-slate-200 p-3 rounded-xl">
+            <p className="text-[10px] uppercase font-bold text-slate-500">Total Batch Minus</p>
+            <p className="text-lg font-black text-slate-900 mt-0.5">{deficitGroups.length} Batch</p>
+          </div>
+          <div className="bg-rose-50 border border-rose-200 p-3 rounded-xl">
+            <p className="text-[10px] uppercase font-bold text-rose-700">Transaksi OUT Dipilih</p>
+            <p className="text-lg font-black text-rose-900 mt-0.5">{totalOutRowsToClear} Baris</p>
+          </div>
+          <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl">
+            <p className="text-[10px] uppercase font-bold text-amber-700">Total Qty OUT Terpilih</p>
+            <p className="text-lg font-black text-amber-900 mt-0.5">{totalOutQtyToClear.toLocaleString()} Pcs</p>
+          </div>
+        </div>
+
+        {/* Search & Actions Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              placeholder="Cari SKU, Tgl Scan, atau Rak..."
+              className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-rose-500 bg-white"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleToggleAll}
+              className="px-2.5 py-1.5 text-[11px] font-bold rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 transition-colors cursor-pointer"
+            >
+              {isAllSelected ? 'Batalkan Semua' : 'Pilih Semua'}
+            </button>
+          </div>
+        </div>
+
+        {/* Batches Table List */}
+        <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[340px] overflow-y-auto shadow-inner bg-white">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-100 text-slate-700 sticky top-0 font-bold border-b border-slate-200 z-10">
+              <tr>
+                <th className="px-3 py-2 text-center w-10">
+                  <input
+                    type="checkbox"
+                    checked={isAllSelected}
+                    onChange={handleToggleAll}
+                    className="w-4 h-4 cursor-pointer rounded"
+                  />
+                </th>
+                <th className="px-3 py-2 text-left">SKU</th>
+                <th className="px-3 py-2 text-left">Rak</th>
+                <th className="px-3 py-2 text-left">Tgl Scan</th>
+                <th className="px-3 py-2 text-center">IN / OUT</th>
+                <th className="px-3 py-2 text-center">Sisa (Defisit)</th>
+                <th className="px-3 py-2 text-center">Data OUT Dikosongkan</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredBatches.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                    Tidak ditemukan batch minus yang sesuai pencarian.
+                  </td>
+                </tr>
+              ) : (
+                filteredBatches.map(group => {
+                  const isChecked = selectedGroupIds.has(group.id);
+                  const outWithScan = group.outEntries.filter(e => Boolean(e.tgl_scan));
+                  const outQty = outWithScan.reduce((s, e) => s + (Number(e.jumlah) || 0), 0);
+                  const inRaks = group.initialInRaksList.join(', ') || '-';
+                  const outRaks = Array.from(new Set(group.outEntries.map(e => e.rak))).join(', ') || '-';
+
+                  return (
+                    <tr
+                      key={group.id}
+                      onClick={() => handleToggleBatch(group.id)}
+                      className={`cursor-pointer transition-colors ${
+                        isChecked ? 'bg-rose-50/60 hover:bg-rose-100/60' : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <td className="px-3 py-2 text-center" onClick={e => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => handleToggleBatch(group.id)}
+                          className="w-4 h-4 cursor-pointer rounded"
+                        />
+                      </td>
+                      <td className="px-3 py-2 font-mono font-bold text-slate-900">{group.sku}</td>
+                      <td className="px-3 py-2 text-slate-700">
+                        {group.rak ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-bold text-[11px] bg-slate-100 text-slate-900 border border-slate-300">
+                            <Package className="w-3 h-3 text-cyan-600" />
+                            {group.rak}
+                          </span>
+                        ) : (
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-[10px] text-emerald-800">
+                              IN: <strong>{inRaks}</strong>
+                            </span>
+                            <span className="text-[10px] text-rose-800">
+                              OUT: <strong>{outRaks}</strong>
+                            </span>
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 font-medium text-slate-700">{group.tglScan}</td>
+                      <td className="px-3 py-2 text-center font-mono font-bold">
+                        <span className="text-emerald-700">{group.totalIn}</span>
+                        <span className="text-slate-400 mx-1">/</span>
+                        <span className="text-rose-700">{group.totalOut}</span>
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <span className="inline-flex px-2 py-0.5 rounded-full bg-red-100 text-red-800 font-black text-[10px] border border-red-300">
+                          {group.balance} Pcs
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-800 font-bold text-[10px] border border-slate-200">
+                          <CalendarX className="w-3 h-3 text-rose-600" />
+                          {outWithScan.length} Baris ({outQty} Pcs)
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Footer Actions */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
+          <div className="text-slate-600 text-[11px]">
+            Terpilih: <strong className="text-rose-700">{selectedGroupIds.size} batch</strong> (
+            <strong>{totalOutRowsToClear} transaksi OUT</strong> / <strong>{totalOutQtyToClear.toLocaleString()} pcs</strong>)
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={onClose}
+              disabled={isProcessing}
+              className="h-9 px-4 text-xs font-bold"
+            >
+              Batal
+            </Button>
+            <Button
+              type="button"
+              onClick={() => onConfirmClear(Array.from(selectedGroupIds))}
+              disabled={isProcessing || selectedGroupIds.size === 0 || totalOutRowsToClear === 0}
+              className="h-9 px-4 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-md flex items-center gap-1.5"
+            >
+              {isProcessing ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Mengosongkan...</span>
+                </>
+              ) : (
+                <>
+                  <CalendarX className="w-3.5 h-3.5" />
+                  <span>Kosongkan Tgl Scan ({totalOutRowsToClear} Baris OUT)</span>
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }

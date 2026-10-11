@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle, PackageCheck, RotateCcw, EyeOff, Copy } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle, PackageCheck, RotateCcw, EyeOff, Copy, Clipboard } from 'lucide-react';
 import { EntriDataModal } from './EntriDataModal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
@@ -15,6 +15,7 @@ import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { DatabaseService } from '../lib/DatabaseService';
 import { SyncSkuCasingModal } from './SyncSkuCasingModal';
 import { getMasterProductsMap, normalizeSkuSync } from '../services/skuNormalizationService';
+import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance } from '../services/scanDateMatchService';
 
 export interface RedistributionMove {
   id: string;
@@ -424,6 +425,14 @@ export function DataGudang() {
   const [isRedistributePreviewOpen, setIsRedistributePreviewOpen] = useState(false);
   const [redistributeMoves, setRedistributeMoves] = useState<RedistributionMove[]>([]);
   const [previewSearchTerm, setPreviewSearchTerm] = useState('');
+  const [isBulkCheckBalanceModalOpen, setIsBulkCheckBalanceModalOpen] = useState(false);
+  const [bulkCheckBalanceInput, setBulkCheckBalanceInput] = useState('');
+
+  // --- BULK PRODUCT SEARCH STATE ---
+  const [isBulkSearchModalOpen, setIsBulkSearchModalOpen] = useState(false);
+  const [bulkSearchInput, setBulkSearchInput] = useState('');
+  const [activeBulkSearch, setActiveBulkSearch] = useState<string[]>([]);
+  const [bulkSearchMode, setBulkSearchMode] = useState<'exact' | 'partial'>('exact');
 
   // Click outside to close rack dropdown
   useEffect(() => {
@@ -534,8 +543,36 @@ export function DataGudang() {
     );
   };
 
+  const handleApplyBulkSearch = useCallback((customInput?: string) => {
+    const raw = customInput !== undefined ? customInput : bulkSearchInput;
+    const list = Array.from(
+      new Set(
+        raw
+          .split(/[\r\n,]+/)
+          .map(s => s.trim())
+          .filter(Boolean)
+      )
+    );
+    if (list.length === 0) {
+      showToast('Silakan masukkan atau tempel setidaknya 1 SKU / Nama Produk.', 'warning');
+      return;
+    }
+    setActiveBulkSearch(list);
+    setIsBulkSearchModalOpen(false);
+    setCurrentPage(1);
+    showToast(`Pencarian massal aktif untuk ${list.length} SKU / Nama Produk.`, 'success');
+  }, [bulkSearchInput, showToast]);
+
+  const handleClearBulkSearch = useCallback(() => {
+    setActiveBulkSearch([]);
+    setBulkSearchInput('');
+    setCurrentPage(1);
+    showToast('Filter pencarian massal dinonaktifkan.', 'info');
+  }, [showToast]);
+
   const hasActiveFilters = Boolean(
     searchTerm ||
+    activeBulkSearch.length > 0 ||
     selectedRackBatch ||
     (selectedRack && selectedRack !== 'Semua Rak') ||
     showMinusOnly ||
@@ -545,6 +582,8 @@ export function DataGudang() {
 
   const handleResetAllFilters = useCallback(() => {
     setSearchTerm('');
+    setActiveBulkSearch([]);
+    setBulkSearchInput('');
     setRackSearchTerm('');
     setSelectedRackBatch('');
     setSelectedRack('');
@@ -683,7 +722,7 @@ export function DataGudang() {
     if (!initialLoading) {
       loadStockData();
     }
-  }, [debouncedSearchTerm, selectedRackBatch, selectedRack, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly, showAvailableOnly, sortConfig]);
+  }, [debouncedSearchTerm, activeBulkSearch, bulkSearchMode, selectedRackBatch, selectedRack, currentPage, itemsPerPage, filters, snapshotFilter.enabled, showMinusOnly, showAvailableOnly, sortConfig]);
 
   const loadInitialData = async () => {
     try {
@@ -711,8 +750,37 @@ export function DataGudang() {
         .eq('status', 'Aktif')
         .order(sortConfig.key === 'nama_produk' ? 'nama_produk' : 'created_at', { ascending: sortConfig.direction === 'asc' });
 
-      // Apply search filter
-      if (debouncedSearchTerm) {
+      // Apply search filter (Single or Bulk)
+      if (activeBulkSearch.length > 0) {
+        if (bulkSearchMode === 'exact') {
+          // Exact SKU search (case-insensitive by checking uppercase, lowercase, and original forms)
+          const termsSet = new Set<string>();
+          activeBulkSearch.forEach(t => {
+            const trimmed = t.trim();
+            if (trimmed) {
+              termsSet.add(trimmed);
+              termsSet.add(trimmed.toUpperCase());
+              termsSet.add(trimmed.toLowerCase());
+            }
+          });
+          query = query.in('nama_produk', Array.from(termsSet));
+        } else {
+          // Partial match: nama_produk contains any of the search terms
+          const orTerms = activeBulkSearch
+            .map(t => t.trim().replace(/[,()%]/g, ''))
+            .filter(Boolean)
+            .slice(0, 50)
+            .map(t => `nama_produk.ilike.%${t}%`);
+          if (orTerms.length > 0) {
+            query = query.or(orTerms.join(','));
+          }
+        }
+
+        // Jika user juga mengetik pencarian tunggal di saat yang sama, persempit lagi
+        if (debouncedSearchTerm) {
+          query = query.or(`nama_produk.ilike.%${debouncedSearchTerm}%,rak.ilike.%${debouncedSearchTerm}%`);
+        }
+      } else if (debouncedSearchTerm) {
         query = query.or(`nama_produk.ilike.%${debouncedSearchTerm}%,rak.ilike.%${debouncedSearchTerm}%`);
       }
 
@@ -932,21 +1000,97 @@ export function DataGudang() {
     }
   };
 
-  // Multi-SKU Balance Check & Redistribution Logic (Like Database Log)
-  const handleCheckBalanceSelected = async () => {
+  // Helper to extract product names for all selected IDs (supporting pagination / across-pages)
+  const getSelectedProductNames = async (): Promise<string[]> => {
+    if (selectedIds.size === 0) return [];
+
+    const idArray = Array.from(selectedIds);
+    const nameMap = new Map<string, string>();
+
+    // 1. Ambil dari memori lokal terlebih dahulu
+    stockData.forEach(item => {
+      if (selectedIds.has(item.id) && item.nama_produk) {
+        nameMap.set(item.id, item.nama_produk.trim());
+      }
+    });
+
+    // 2. Ambil ID yang belum ada di memori lokal (misal jika select across pages)
+    const missingIds = idArray.filter(id => !nameMap.has(id));
+    if (missingIds.length > 0) {
+      const batchSize = 500;
+      for (let i = 0; i < missingIds.length; i += batchSize) {
+        const chunk = missingIds.slice(i, i + batchSize);
+        const { data, error } = await supabase
+          .from('stock_items')
+          .select('id, nama_produk')
+          .in('id', chunk);
+
+        if (error) {
+          console.error('Error fetching missing product names:', error);
+          break;
+        }
+
+        if (data) {
+          data.forEach((item: any) => {
+            if (item.nama_produk) {
+              nameMap.set(item.id, item.nama_produk.trim());
+            }
+          });
+        }
+      }
+    }
+
+    const productNames: string[] = [];
+    idArray.forEach(id => {
+      const name = nameMap.get(id);
+      if (name) productNames.push(name);
+    });
+
+    return productNames;
+  };
+
+  // Salin kolom nama produk terpilih (vertikal seperti Excel tanpa header)
+  const handleCopySelectedProductNames = async () => {
     if (selectedIds.size === 0) {
-      showToast('Pilih setidaknya 1 SKU untuk cek saldo.', 'warning');
+      showToast('Pilih setidaknya 1 produk untuk disalin.', 'warning');
       return;
     }
 
-    // Extract selected SKUs
-    const selectedSkus = Array.from(selectedIds)
-      .map(id => stockData.find(item => item.id === id)?.nama_produk)
-      .filter((sku): sku is string => Boolean(sku && sku.trim()));
+    try {
+      const productNames = await getSelectedProductNames();
+      if (productNames.length === 0) {
+        showToast('Tidak ada nama produk yang valid untuk disalin.', 'warning');
+        return;
+      }
 
-    const uniqueSkus = Array.from(new Set(selectedSkus));
+      // Format vertikal per baris seperti Excel (tanpa header)
+      const textToCopy = productNames.join('\r\n');
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(textToCopy);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = textToCopy;
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+
+      showToast(`Sukses! ${productNames.length} nama produk disalin (format vertikal Excel).`, 'success');
+    } catch (err: any) {
+      console.error('Gagal menyalin nama produk:', err);
+      showToast(`Gagal menyalin: ${err.message || 'unknown error'}`, 'error');
+    }
+  };
+
+  // Multi-SKU Balance Check & Redistribution Engine (Like Database Log)
+  const runCheckBalanceForSkus = async (skus: string[]) => {
+    const uniqueSkus = Array.from(new Set(skus.map(s => s.trim()).filter(Boolean)));
     if (uniqueSkus.length === 0) {
-      showToast('Tidak ada SKU terpilih yang valid.', 'warning');
+      showToast('Tidak ada SKU yang valid untuk dicek.', 'warning');
       return;
     }
 
@@ -954,21 +1098,51 @@ export function DataGudang() {
       setIsAnalyzingBalance(true);
       showToast(`Menganalisis saldo stok untuk ${uniqueSkus.length} SKU...`, 'info');
 
-      // Fetch logs in chunks of 50 SKUs to avoid URL size limit
-      const batchSize = 50;
+      // Fetch logs in chunks of 30 SKUs with pagination (.range) to prevent 1000-row limit truncation
+      const skuBatchSize = 30;
       let allLogs: any[] = [];
 
-      for (let i = 0; i < uniqueSkus.length; i += batchSize) {
-        const skuChunk = uniqueSkus.slice(i, i + batchSize);
-        const { data, error } = await supabase
-          .from('database_log')
-          .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah')
-          .in('sku', skuChunk)
-          .or('type.ilike.%IN%,type.ilike.%OUT%')
-          .order('id', { ascending: true });
+      for (let i = 0; i < uniqueSkus.length; i += skuBatchSize) {
+        const rawChunk = uniqueSkus.slice(i, i + skuBatchSize);
+        // Include uppercase, lowercase, and original casing to ensure exact match across any casing in DB
+        const skuSet = new Set<string>();
+        rawChunk.forEach(s => {
+          const trimmed = s.trim();
+          if (trimmed) {
+            skuSet.add(trimmed);
+            skuSet.add(trimmed.toUpperCase());
+            skuSet.add(trimmed.toLowerCase());
+          }
+        });
+        const skuChunk = Array.from(skuSet);
 
-        if (error) throw error;
-        if (data) allLogs.push(...data);
+        let from = 0;
+        let hasMore = true;
+
+        while (hasMore) {
+          const { data, error } = await supabase
+            .from('database_log')
+            .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu')
+            .in('sku', skuChunk)
+            .or('type.ilike.%IN%,type.ilike.%OUT%')
+            .order('id', { ascending: true })
+            .range(from, from + 999);
+
+          if (error) throw error;
+          if (data && data.length > 0) {
+            allLogs.push(...data);
+            from += 1000;
+            if (data.length < 1000) hasMore = false;
+          } else {
+            hasMore = false;
+          }
+
+          if (allLogs.length > 50000) {
+            showToast('Data log sangat banyak (>50.000 baris). Analisis dibatasi untuk kestabilan.', 'warning');
+            hasMore = false;
+            break;
+          }
+        }
       }
 
       if (allLogs.length === 0) {
@@ -985,158 +1159,186 @@ export function DataGudang() {
       });
 
       const moves: RedistributionMove[] = [];
+      const normRak = (r?: string) => (r || '').trim().toUpperCase().replace(/\./g, '');
 
       skuGroups.forEach((logs, normSku) => {
-        // Group into (rak|tgl_scan)
-        const groups = new Map<string, {
-          balance: number;
-          tglScanRaw: string;
-          normalizedTglScan: string;
-          tglScanTime: number;
+        // 1. Kumpulkan Inflow Buckets (Supply IN) dan Outflow Candidates (Demand OUT)
+        interface InflowBucket {
+          id: string;
+          tgl: string;
+          waktu: string;
+          targetTglScan: string;
           rak: string;
-          outRows: any[];
-        }>();
+          sub_rak: string;
+          totalCapacity: number;
+          remainingCapacity: number;
+          timestamp: number;
+        }
+
+        interface OutCandidate {
+          id: string;
+          tgl: string;
+          waktu: string;
+          jumlah: number;
+          rak: string;
+          sub_rak: string;
+          oldTglScan: string;
+          timestamp: number;
+          isAssigned: boolean;
+          newRak: string;
+          newSubRak: string;
+          newTglScan: string;
+        }
+
+        const inBuckets: InflowBucket[] = [];
+        const outCandidates: OutCandidate[] = [];
 
         logs.forEach(log => {
-          const normRak = (log.rak || '').trim().toUpperCase();
-          const normTglScan = formatDateDisplay(log.tgl_scan) || 'No Date';
-          const normType = (log.type || '').trim().toUpperCase();
-          const finalType = normType.includes('IN') ? 'IN' : 'OUT';
-          const key = `${normRak}|${normTglScan}`;
-
-          if (!groups.has(key)) {
-            groups.set(key, {
-              balance: 0,
-              tglScanRaw: (log.tgl_scan || '').trim(),
-              normalizedTglScan: normTglScan,
-              tglScanTime: parseDateToTime(normTglScan),
-              rak: (log.rak || '').trim(),
-              outRows: []
-            });
-          }
-
-          const g = groups.get(key)!;
           const qty = Number(log.jumlah || 0);
-          if (finalType === 'IN') {
-            g.balance += qty;
-          } else {
-            g.balance -= qty;
-            g.outRows.push({
+          const normType = (log.type || '').trim().toUpperCase();
+          if (normType.includes('IN')) {
+            const targetTglScan = normalizeDate(log.tgl_scan) || normalizeDate(log.tgl);
+            inBuckets.push({
               id: log.id,
+              tgl: normalizeDate(log.tgl),
+              waktu: normalizeTime(log.waktu),
+              targetTglScan,
+              rak: (log.rak || '').trim(),
+              sub_rak: (log.sub_rak || log.rak || '').trim(),
+              totalCapacity: qty,
+              remainingCapacity: qty,
+              timestamp: toTimestamp(log.tgl, log.waktu)
+            });
+          } else if (normType.includes('OUT')) {
+            outCandidates.push({
+              id: log.id,
+              tgl: normalizeDate(log.tgl),
+              waktu: normalizeTime(log.waktu),
               jumlah: qty,
               rak: (log.rak || '').trim(),
               sub_rak: (log.sub_rak || log.rak || '').trim(),
-              tglScan: (log.tgl_scan || '').trim()
+              oldTglScan: normalizeDate(log.tgl_scan),
+              timestamp: toTimestamp(log.tgl, log.waktu),
+              isAssigned: false,
+              newRak: (log.rak || '').trim(),
+              newSubRak: (log.sub_rak || log.rak || '').trim(),
+              newTglScan: normalizeDate(log.tgl_scan)
             });
           }
         });
 
-        const groupList = Array.from(groups.values());
-        const deficitGroups = groupList.filter(g => g.balance < 0);
-        const surplusGroups = groupList.filter(g => g.balance > 0);
+        inBuckets.sort((a, b) => a.timestamp - b.timestamp);
+        outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-        // PHASE 1: Cross-Rak Fix for the EXACT SAME Tgl Scan (e.g. IN at B7 on 2025-09-12, OUT at UTAMA on 2025-09-12)
-        deficitGroups.forEach(negG => {
-          if (negG.balance >= 0) return;
-          // Dilarang memindahkan stok dari rak khusus (ECER-M, ECER-N, ECER-O, LANTAI 2, LANTAI 4, BLOK-I)
-          if (isForbiddenTransferRack(negG.rak)) return;
+        // --- TAHAP 0: PRIORITAS NOMOR 1 MUTLAK — MATCHING IDENTIK SKU & QTY (1-ke-1) ---
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0) continue;
 
-          const sameDateSurplus = surplusGroups.find(
-            posG => posG.balance > 0 &&
-                    posG.normalizedTglScan === negG.normalizedTglScan &&
-                    posG.rak.toUpperCase() !== negG.rak.toUpperCase() &&
-                    !isForbiddenTransferRack(posG.rak)
+          const exactQtyMatches = outCandidates.filter(
+            c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
           );
 
-          if (sameDateSurplus) {
-            const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
-            for (const row of rows) {
-              if (negG.balance >= 0 || sameDateSurplus.balance <= 0) break;
-              if (row.jumlah <= sameDateSurplus.balance || negG.balance + row.jumlah <= 0) {
-                moves.push({
-                  id: row.id,
-                  sku: normSku,
-                  actionType: 'FIX_RAK',
-                  fromRak: negG.rak,
-                  toRak: sameDateSurplus.rak,
-                  fromTgl: negG.tglScanRaw,
-                  toTgl: sameDateSurplus.tglScanRaw,
-                  jumlah: row.jumlah,
-                  keterangan: `Perbaiki Rak: ${negG.rak} → ${sameDateSurplus.rak} (Tgl Scan: ${negG.normalizedTglScan})`
-                });
+          if (exactQtyMatches.length > 0) {
+            exactQtyMatches.sort((a, b) => {
+              const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
+              const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
+              const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
+              const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
 
-                negG.balance += row.jumlah;
-                sameDateSurplus.balance -= row.jumlah;
+              if (aSameRak !== bSameRak) {
+                const aDays = distA / (24 * 3600 * 1000);
+                const bDays = distB / (24 * 3600 * 1000);
+                if (aDays < 30 && bDays > 30) return -1;
+                if (bDays < 30 && aDays > 30) return 1;
               }
-            }
+
+              return distA - distB;
+            });
+
+            const bestMatch = exactQtyMatches[0];
+            bestMatch.isAssigned = true;
+            bestMatch.newRak = bucket.rak;
+            bestMatch.newSubRak = bucket.sub_rak || bucket.rak;
+            bestMatch.newTglScan = bucket.targetTglScan;
+            bucket.remainingCapacity -= bestMatch.jumlah;
           }
-        });
+        }
 
-        // PHASE 2: Same Rak, Nearest Date Proximity (Chronological date proximity within the same Rak)
-        deficitGroups.forEach(negG => {
-          if (negG.balance >= 0) return;
+        // --- TAHAP 1: MATCHING DALAM RAK YANG SAMA (SAME RAK FIFO) ---
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0) continue;
 
-          const sameRakSurpluses = surplusGroups
-            .filter(posG => posG.balance > 0 && posG.rak.toUpperCase() === negG.rak.toUpperCase())
-            .sort((a, b) => Math.abs(a.tglScanTime - negG.tglScanTime) - Math.abs(b.tglScanTime - negG.tglScanTime));
+          while (bucket.remainingCapacity > 0) {
+            const sameRakMatches = outCandidates.filter(
+              c => !c.isAssigned &&
+                   c.jumlah <= bucket.remainingCapacity &&
+                   normRak(c.rak) === normRak(bucket.rak)
+            );
 
-          for (const posG of sameRakSurpluses) {
-            if (negG.balance >= 0) break;
-            const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
+            if (sameRakMatches.length === 0) break;
 
-            for (const row of rows) {
-              if (negG.balance >= 0 || posG.balance <= 0) break;
-              moves.push({
-                id: row.id,
-                sku: normSku,
-                actionType: 'FIX_TGL_SCAN',
-                fromRak: negG.rak,
-                toRak: posG.rak,
-                fromTgl: negG.tglScanRaw,
-                toTgl: posG.tglScanRaw,
-                jumlah: row.jumlah,
-                keterangan: `Perbaiki Tgl Scan di Rak ${negG.rak}: ${negG.tglScanRaw} → ${posG.tglScanRaw}`
-              });
+            sameRakMatches.sort((a, b) =>
+              getChronologicalDistance(a.timestamp, bucket.timestamp) -
+              getChronologicalDistance(b.timestamp, bucket.timestamp)
+            );
 
-              negG.balance += row.jumlah;
-              posG.balance -= row.jumlah;
-            }
+            const best = sameRakMatches[0];
+            best.isAssigned = true;
+            best.newRak = bucket.rak;
+            best.newSubRak = bucket.sub_rak || bucket.rak;
+            best.newTglScan = bucket.targetTglScan;
+            bucket.remainingCapacity -= best.jumlah;
           }
-        });
+        }
 
-        // PHASE 3: Cross-Rak, Nearest Date Proximity (Fallback if any remaining)
-        deficitGroups.forEach(negG => {
-          if (negG.balance >= 0) return;
-          // Dilarang memindahkan stok dari rak khusus (ECER-M, ECER-N, ECER-O, LANTAI 2, LANTAI 4, BLOK-I)
-          if (isForbiddenTransferRack(negG.rak)) return;
+        // --- TAHAP 2: CROSS RAK NEAREST DATE (BEDA RAK, TANGGAL TERDEKAT) ---
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0) continue;
+          if (isForbiddenTransferRack(bucket.rak)) continue;
 
-          const crossSurpluses = surplusGroups
-            .filter(posG => posG.balance > 0 &&
-                            posG.rak.toUpperCase() !== negG.rak.toUpperCase() &&
-                            !isForbiddenTransferRack(posG.rak))
-            .sort((a, b) => Math.abs(a.tglScanTime - negG.tglScanTime) - Math.abs(b.tglScanTime - negG.tglScanTime));
+          while (bucket.remainingCapacity > 0) {
+            const crossMatches = outCandidates.filter(
+              c => !c.isAssigned &&
+                   c.jumlah <= bucket.remainingCapacity &&
+                   !isForbiddenTransferRack(c.rak)
+            );
 
-          for (const posG of crossSurpluses) {
-            if (negG.balance >= 0) break;
-            const rows = [...negG.outRows].sort((a, b) => b.jumlah - a.jumlah);
+            if (crossMatches.length === 0) break;
 
-            for (const row of rows) {
-              if (negG.balance >= 0 || posG.balance <= 0) break;
-              moves.push({
-                id: row.id,
-                sku: normSku,
-                actionType: 'FIX_RAK_DAN_TGL',
-                fromRak: negG.rak,
-                toRak: posG.rak,
-                fromTgl: negG.tglScanRaw,
-                toTgl: posG.tglScanRaw,
-                jumlah: row.jumlah,
-                keterangan: `Perbaiki Rak & Tgl: ${negG.rak} (${negG.tglScanRaw}) → ${posG.rak} (${posG.tglScanRaw})`
-              });
+            crossMatches.sort((a, b) =>
+              getChronologicalDistance(a.timestamp, bucket.timestamp) -
+              getChronologicalDistance(b.timestamp, bucket.timestamp)
+            );
 
-              negG.balance += row.jumlah;
-              posG.balance -= row.jumlah;
-            }
+            const best = crossMatches[0];
+            best.isAssigned = true;
+            best.newRak = bucket.rak;
+            best.newSubRak = bucket.sub_rak || bucket.rak;
+            best.newTglScan = bucket.targetTglScan;
+            bucket.remainingCapacity -= best.jumlah;
+          }
+        }
+
+        // Kumpulkan moves untuk SKU ini
+        outCandidates.forEach(c => {
+          if (!c.isAssigned) return;
+          const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
+          const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
+
+          if (isRakChanged || isTglChanged) {
+            moves.push({
+              id: c.id,
+              sku: normSku,
+              actionType: isRakChanged && isTglChanged ? 'FIX_RAK_DAN_TGL' : isRakChanged ? 'FIX_RAK' : 'FIX_TGL_SCAN',
+              fromRak: c.rak,
+              toRak: c.newRak,
+              fromTgl: c.oldTglScan,
+              toTgl: c.newTglScan,
+              jumlah: c.jumlah,
+              keterangan: isRakChanged
+                ? `Perbaiki Rak: ${c.rak} → ${c.newRak} & Tgl Scan: ${c.newTglScan}`
+                : `Perbaiki Tgl Scan di Rak ${c.rak}: ${c.oldTglScan || '(KOSONG)'} → ${c.newTglScan}`
+            });
           }
         });
       });
@@ -1155,6 +1357,15 @@ export function DataGudang() {
     } finally {
       setIsAnalyzingBalance(false);
     }
+  };
+
+  const handleCheckBalanceSelected = async () => {
+    if (selectedIds.size === 0) {
+      showToast('Pilih setidaknya 1 SKU untuk cek saldo.', 'warning');
+      return;
+    }
+    const selectedSkus = await getSelectedProductNames();
+    await runCheckBalanceForSkus(selectedSkus);
   };
 
   const handleExecuteRedistribute = async () => {
@@ -1181,34 +1392,74 @@ export function DataGudang() {
       const batchSize = 50;
       let successCount = 0;
 
-      for (let i = 0; i < movesToExecute.length; i += batchSize) {
-        const batch = movesToExecute.slice(i, i + batchSize);
-        const promises = batch.map(move => {
-          const updatePayload: Record<string, any> = {
-            log_update_user: move.toRak !== move.fromRak
-              ? `DEVMODE: Redistribute Move ${move.fromRak}->${move.toRak}`
-              : 'DEVMODE: Redistribute Tgl Scan'
-          };
-          if (move.toTgl !== move.fromTgl) {
-            updatePayload.tgl_scan = move.toTgl;
-          }
-          if (move.toRak !== move.fromRak) {
-            updatePayload.rak = move.toRak;
-            updatePayload.sub_rak = move.toRak;
-          }
-          return supabase
-            .from('database_log')
-            .update(updatePayload)
-            .eq('id', move.id);
-        });
+      // Group moves by identical payload to avoid overwhelming PostgreSQL with 50 concurrent single-row PATCH requests
+      const payloadGroups = new Map<string, { payload: Record<string, any>; ids: string[] }>();
 
-        const results = await Promise.all(promises);
-        results.forEach(res => {
-          if (!res.error) successCount++;
-        });
+      movesToExecute.forEach(move => {
+        const isRakChanged = move.toRak && move.toRak !== move.fromRak;
+        const isTglChanged = move.toTgl !== move.fromTgl;
+
+        const payload: Record<string, any> = {
+          log_update_user: isRakChanged
+            ? `DEVMODE: Auto-Fix Move ${move.fromRak}->${move.toRak}`
+            : 'DEVMODE: Auto-Fix Tgl Scan'
+        };
+
+        if (isTglChanged && move.toTgl) {
+          payload.tgl_scan = move.toTgl;
+        }
+        if (isRakChanged && move.toRak) {
+          payload.rak = move.toRak;
+          payload.sub_rak = move.toRak;
+        }
+
+        const key = JSON.stringify(payload);
+        if (!payloadGroups.has(key)) {
+          payloadGroups.set(key, { payload, ids: [] });
+        }
+        payloadGroups.get(key)!.ids.push(move.id);
+      });
+
+      let totalSuccess = 0;
+      let totalError = 0;
+
+      // Execute each group in safe chunks of 25 with retry
+      for (const group of payloadGroups.values()) {
+        const { payload, ids } = group;
+        const chunkSize = 25;
+
+        for (let i = 0; i < ids.length; i += chunkSize) {
+          const chunkIds = ids.slice(i, i + chunkSize);
+          let success = false;
+          let attempts = 0;
+
+          while (!success && attempts < 3) {
+            attempts++;
+            const { error } = await supabase
+              .from('database_log')
+              .update(payload)
+              .in('id', chunkIds);
+
+            if (!error) {
+              success = true;
+              totalSuccess += chunkIds.length;
+            } else {
+              console.warn(`Update attempt ${attempts} failed for ${chunkIds.length} rows:`, error.message);
+              if (attempts < 3) {
+                await new Promise(r => setTimeout(r, 600));
+              } else {
+                totalError += chunkIds.length;
+              }
+            }
+          }
+        }
       }
 
-      showToast(`Sukses memperbarui ${successCount} data log! Memuat ulang stok...`, 'success');
+      if (totalError === 0) {
+        showToast(`Sukses memperbarui ${totalSuccess} data log tanpa error! Memuat ulang stok...`, 'success');
+      } else {
+        showToast(`Berhasil memperbarui ${totalSuccess} data log, ${totalError} data gagal.`, 'warning');
+      }
       setIsRedistributePreviewOpen(false);
       setRedistributeMoves([]);
       setSelectedIds(new Set());
@@ -1311,6 +1562,8 @@ export function DataGudang() {
     setLogCache(new Map()); // Clear log cache
     // Reset filter
     clearSearch();
+    setActiveBulkSearch([]);
+    setBulkSearchInput('');
     clearRackFilter();
     setSelectedRackBatch('');
     // Jika mode firebase, data sudah realtime, cukup pancing render ulang.
@@ -2873,15 +3126,26 @@ export function DataGudang() {
                 </button>
 
                 {isDevMode && (
-                  <button
-                    onClick={() => setIsSkuCasingModalOpen(true)}
-                    disabled={loading}
-                    className="h-11 px-4 lg:px-5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-teal-400/50 backdrop-blur-md disabled:opacity-50"
-                    title="Sinkronisasi Huruf Besar/Kecil SKU Sesuai Master Data SKU (DevMode)"
-                  >
-                    <Sparkles className="h-4 w-4" />
-                    <span className="uppercase text-[10px] lg:text-xs font-black">Sinkron Huruf SKU</span>
-                  </button>
+                  <>
+                    <button
+                      onClick={() => setIsSkuCasingModalOpen(true)}
+                      disabled={loading}
+                      className="h-11 px-4 lg:px-5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-teal-400/50 backdrop-blur-md disabled:opacity-50"
+                      title="Sinkronisasi Huruf Besar/Kecil SKU Sesuai Master Data SKU (DevMode)"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      <span className="uppercase text-[10px] lg:text-xs font-black">Sinkron Huruf SKU</span>
+                    </button>
+                    <button
+                      onClick={() => setIsBulkCheckBalanceModalOpen(true)}
+                      disabled={loading}
+                      className="h-11 px-4 lg:px-5 bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-teal-400/50 backdrop-blur-md disabled:opacity-50"
+                      title="Audit & Cek Saldo Lebih Potong dengan Paste Massal SKU (DevMode)"
+                    >
+                      <Scale className="h-4 w-4" />
+                      <span className="uppercase text-[10px] lg:text-xs font-black">Cek Saldo Massal</span>
+                    </button>
+                  </>
                 )}
 
                 {snapshotFilter.enabled ? (
@@ -3117,22 +3381,40 @@ export function DataGudang() {
                     <Download className="h-4 w-4" />
                     <span className="text-xs lg:text-sm">Export Terpilih ({selectedIds.size})</span>
                   </button>
+                  <button
+                    onClick={handleCopySelectedProductNames}
+                    className="h-9 px-3.5 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 border border-blue-400 cursor-pointer"
+                    title="Salin kolom Nama Produk terpilih (vertikal tanpa header untuk Excel / Cek Saldo)"
+                  >
+                    <Copy className="h-4 w-4" />
+                    <span className="text-xs lg:text-sm">Salin Produk ({selectedIds.size})</span>
+                  </button>
                   {isDevMode && (
-                    <button
-                      onClick={handleCheckBalanceSelected}
-                      disabled={isAnalyzingBalance}
-                      className="h-9 px-3.5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 border border-teal-400 cursor-pointer"
-                      title="Analisis dan Perbaiki Saldo Lebih Potong untuk SKU terpilih (DevMode)"
-                    >
-                      {isAnalyzingBalance ? (
-                        <RefreshCw className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Scale className="h-4 w-4" />
-                      )}
-                      <span className="text-xs lg:text-sm">
-                        {isAnalyzingBalance ? 'Menganalisis...' : 'Cek Saldo'}
-                      </span>
-                    </button>
+                    <>
+                      <button
+                        onClick={handleCheckBalanceSelected}
+                        disabled={isAnalyzingBalance}
+                        className="h-9 px-3.5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 border border-teal-400 cursor-pointer"
+                        title="Analisis dan Perbaiki Saldo Lebih Potong untuk SKU terpilih (DevMode)"
+                      >
+                        {isAnalyzingBalance ? (
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Scale className="h-4 w-4" />
+                        )}
+                        <span className="text-xs lg:text-sm">
+                          {isAnalyzingBalance ? 'Menganalisis...' : 'Cek Saldo'}
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => setIsBulkCheckBalanceModalOpen(true)}
+                        className="h-9 px-3 bg-teal-700/70 hover:bg-teal-700 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1 border border-teal-400/50 cursor-pointer"
+                        title="Cek Saldo dari Daftar SKU Paste Massal (DevMode)"
+                      >
+                        <Clipboard className="h-4 w-4" />
+                        <span className="text-xs lg:text-sm">Paste Massal</span>
+                      </button>
+                    </>
                   )}
                   <button
                     onClick={handleBulkDeactivateClick}
@@ -3181,35 +3463,64 @@ export function DataGudang() {
             {/* Search Inputs (Grid) */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 md:gap-4 items-center">
               
-              {/* Search Product */}
-              <div className="relative lg:col-span-3">
-                <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (val.toLowerCase() === 'devmode') {
-                      localStorage.setItem('devmode', 'true');
-                      setIsDevMode(true);
-                      showToast('DevMode Aktif! Fitur Sinkron Huruf SKU & Cek Saldo ditampilkan.', 'success');
-                      setSearchTerm('');
-                      return;
+              {/* Search Product & Bulk Search */}
+              <div className="relative lg:col-span-3 flex items-center gap-1.5">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val.toLowerCase() === 'devmode') {
+                        localStorage.setItem('devmode', 'true');
+                        setIsDevMode(true);
+                        showToast('DevMode Aktif! Fitur Sinkron Huruf SKU & Cek Saldo ditampilkan.', 'success');
+                        setSearchTerm('');
+                        return;
+                      }
+                      setSearchTerm(val);
+                      setCurrentPage(1);
+                    }}
+                    className={`w-full pl-10 pr-10 py-2.5 text-sm text-gray-800 bg-white rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all font-medium placeholder-gray-400 shadow-sm ${
+                      activeBulkSearch.length > 0
+                        ? 'border-indigo-400 ring-1 ring-indigo-300'
+                        : 'border-gray-200'
+                    }`}
+                    placeholder={
+                      activeBulkSearch.length > 0
+                        ? `Filter dalam ${activeBulkSearch.length} SKU massal...`
+                        : "Cari nama produk, sku, atau rak..."
                     }
-                    setSearchTerm(val);
-                    setCurrentPage(1);
-                  }}
-                  className="w-full pl-10 pr-10 py-2.5 text-sm text-gray-800 bg-white rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all font-medium placeholder-gray-400 shadow-sm"
-                  placeholder="Cari nama produk, sku, atau rak..."
-                />
-                {searchTerm && (
-                  <button
-                    onClick={clearSearch}
-                    className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-full transition-colors text-gray-400 hover:text-gray-600"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                )}
+                  />
+                  {searchTerm && (
+                    <button
+                      onClick={clearSearch}
+                      className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1.5 hover:bg-gray-100 rounded-full transition-colors text-gray-400 hover:text-gray-600"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsBulkSearchModalOpen(true)}
+                  className={`h-[42px] px-3 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm flex-shrink-0 cursor-pointer active:scale-95 ${
+                    activeBulkSearch.length > 0
+                      ? 'bg-gradient-to-r from-indigo-600 to-blue-700 text-white ring-2 ring-indigo-300'
+                      : 'bg-white hover:bg-blue-50 text-blue-700 border border-blue-200'
+                  }`}
+                  title="Pencarian Data Massal: Tempel banyak SKU sekaligus (dari Excel / Catatan)"
+                >
+                  <Clipboard className="h-4 w-4" />
+                  <span className="hidden sm:inline">Cari Massal</span>
+                  {activeBulkSearch.length > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-amber-400 text-amber-950 font-black">
+                      {activeBulkSearch.length}
+                    </span>
+                  )}
+                </button>
               </div>
 
               
@@ -3410,11 +3721,64 @@ export function DataGudang() {
               </div>
             </div>
 
+            {/* Banner Pencarian Massal Aktif */}
+            {activeBulkSearch.length > 0 && (
+              <div className="bg-gradient-to-r from-indigo-50 to-blue-50 border border-indigo-200 rounded-2xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-sm animate-in fade-in my-2">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <span className="px-2.5 py-1 bg-indigo-600 text-white text-xs font-black rounded-lg shadow-sm">
+                    Pencarian Massal Aktif
+                  </span>
+                  <span className="text-xs font-bold text-indigo-950">
+                    {activeBulkSearch.length} SKU dicari &bull; Ditemukan {paginationInfo.totalCount.toLocaleString()} baris data
+                  </span>
+                  <span className="text-[11px] text-indigo-700 font-medium hidden md:inline">
+                    (Mode: {bulkSearchMode === 'exact' ? 'Sesuai Persis / Exact' : 'Mengandung Kata / Partial'})
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => runCheckBalanceForSkus(activeBulkSearch)}
+                    disabled={isAnalyzingBalance}
+                    className="px-3 py-1.5 text-xs font-bold text-white bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 rounded-xl shadow-sm transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 border border-teal-500 disabled:opacity-50"
+                    title="Cek Saldo & Diagnosa data minus secara massal untuk semua SKU yang sedang dicari"
+                  >
+                    {isAnalyzingBalance ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Scale className="h-3.5 w-3.5" />
+                    )}
+                    <span>Cek Saldo Massal ({activeBulkSearch.length} SKU)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsBulkSearchModalOpen(true)}
+                    className="px-3 py-1.5 text-xs font-bold text-indigo-700 hover:text-indigo-900 bg-white hover:bg-indigo-100/50 rounded-xl border border-indigo-300 transition-all cursor-pointer shadow-sm"
+                  >
+                    Ubah Daftar SKU ({activeBulkSearch.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearBulkSearch}
+                    className="px-3 py-1.5 text-xs font-bold text-rose-700 hover:text-rose-900 bg-white hover:bg-rose-50 rounded-xl border border-rose-300 transition-all cursor-pointer shadow-sm flex items-center gap-1"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Hapus Filter Massal
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Bottom row of Toolbar: Item Count & Mode SO */}
             <div className="flex items-center justify-between pt-3 mt-1 border-t border-blue-500/30 flex-wrap gap-2">
               <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-blue-100 flex-wrap">
                 <div className="h-1.5 w-1.5 bg-blue-300 rounded-full animate-pulse shadow-[0_0_8px_rgba(147,197,253,0.8)]"></div>
                 <span>Total {paginationInfo.totalCount.toLocaleString()} SKU Aktif</span>
+                {activeBulkSearch.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-md bg-amber-400 text-amber-950 font-black text-[10px] normal-case flex items-center gap-1 shadow-sm">
+                    Pencarian Massal: {activeBulkSearch.length} SKU
+                  </span>
+                )}
                 {selectedRackBatch && (
                   <span className="px-2 py-0.5 rounded-md bg-white/20 text-white border border-white/30 text-[10px] normal-case font-bold">
                     Batch: {RACK_BATCH_OPTIONS.find(o => o.value === selectedRackBatch)?.label || selectedRackBatch}
@@ -4316,6 +4680,252 @@ export function DataGudang() {
                   )}
                 </button>
               </div>
+            </div>
+          </div>
+        </Modal>
+
+{/* Modal Pencarian Massal SKU / Produk */}
+        <Modal
+          isOpen={isBulkSearchModalOpen}
+          onClose={() => setIsBulkSearchModalOpen(false)}
+          title="Pencarian Data Massal Produk / SKU"
+          size="lg"
+        >
+          <div className="space-y-4">
+            {/* Guidance Banner */}
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-2xl p-4 flex items-start space-x-3">
+              <FileText className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+              <div className="text-xs text-blue-900 leading-relaxed">
+                <p className="font-bold text-blue-950 mb-1">Cari Banyak SKU Sekaligus:</p>
+                <p>
+                  Tempel (paste) daftar nama produk atau SKU yang ingin Anda cari dari Excel, Google Sheet, atau pesan teks.
+                  Sistem akan memfilter tabel Data Gudang untuk menampilkan produk-produk tersebut.
+                </p>
+              </div>
+            </div>
+
+            {/* Input Box & Toolbar */}
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-xs font-bold text-slate-700 uppercase">
+                  Daftar SKU / Nama Produk:
+                </label>
+                <div className="flex items-center gap-2">
+                  {(() => {
+                    const detected = Array.from(new Set(bulkSearchInput.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean)));
+                    return detected.length > 0 ? (
+                      <span className="px-2.5 py-0.5 bg-blue-100 text-blue-800 text-[11px] font-black rounded-lg border border-blue-200">
+                        {detected.length} SKU Terdeteksi
+                      </span>
+                    ) : null;
+                  })()}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const text = await navigator.clipboard.readText();
+                        if (text) setBulkSearchInput(text);
+                      } catch {
+                        showToast('Tidak dapat mengakses clipboard. Silakan gunakan tombol Ctrl+V.', 'info');
+                      }
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 hover:underline cursor-pointer"
+                  >
+                    <Clipboard className="h-3.5 w-3.5" />
+                    Tempel Clipboard
+                  </button>
+                  {bulkSearchInput && (
+                    <button
+                      type="button"
+                      onClick={() => setBulkSearchInput('')}
+                      className="text-xs text-slate-400 hover:text-rose-600 cursor-pointer font-bold"
+                    >
+                      Bersihkan
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <textarea
+                value={bulkSearchInput}
+                onChange={(e) => setBulkSearchInput(e.target.value)}
+                rows={8}
+                placeholder={"Tempel nama produk hasil copy di sini (satu per baris atau dipisahkan koma):\nBAG-RSB-100-7X10\nBAG-RSB-102-20X15/1PC\nBOOK-GB-2833R-7\nDESKSET-DS-20"}
+                className="w-full p-3 border border-slate-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-blue-500 bg-white shadow-inner"
+              />
+            </div>
+
+            {/* Mode Pencocokan */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3">
+              <span className="text-xs font-bold text-slate-700">Mode Pencocokan:</span>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="bulkSearchMatchMode"
+                    value="exact"
+                    checked={bulkSearchMode === 'exact'}
+                    onChange={() => setBulkSearchMode('exact')}
+                    className="text-blue-600"
+                  />
+                  <span>Sesuai Persis / Exact (Rekomendasi)</span>
+                </label>
+                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="bulkSearchMatchMode"
+                    value="partial"
+                    checked={bulkSearchMode === 'partial'}
+                    onChange={() => setBulkSearchMode('partial')}
+                    className="text-blue-600"
+                  />
+                  <span>Mengandung Kata / Partial</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Footer Actions */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              <div>
+                {activeBulkSearch.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      handleClearBulkSearch();
+                      setIsBulkSearchModalOpen(false);
+                    }}
+                    className="h-10 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200 font-bold"
+                  >
+                    Hapus Pencarian Massal
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setIsBulkSearchModalOpen(false)}
+                  className="h-10 text-xs font-bold"
+                >
+                  Batal
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => handleApplyBulkSearch()}
+                  disabled={!bulkSearchInput.trim()}
+                  className="h-10 px-5 text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white shadow-md active:scale-95 disabled:opacity-50"
+                >
+                  <Search className="h-3.5 w-3.5 mr-1" />
+                  <span>Terapkan Pencarian</span>
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+
+        {/* Modal Paste Massal SKU untuk Cek Saldo */}
+        <Modal
+          isOpen={isBulkCheckBalanceModalOpen}
+          onClose={() => setIsBulkCheckBalanceModalOpen(false)}
+          title="Cek Saldo Stok - Paste Massal SKU (DevMode)"
+          size="lg"
+        >
+          <div className="space-y-4">
+            <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-2xl p-4 flex items-start space-x-3">
+              <Scale className="h-5 w-5 text-teal-600 mt-0.5 flex-shrink-0" />
+              <div className="text-xs text-teal-900 leading-relaxed">
+                <p className="font-bold text-teal-950 mb-1">Audit Saldo Lebih Potong Multi-SKU:</p>
+                <p>
+                  Tempel daftar nama produk / SKU di bawah (format vertikal per baris seperti Excel). Sistem akan menganalisis seluruh histori IN dan OUT, mencocokkan pasangan identik (Tahap 0), dan menyiapkan rekomendasi pemindahan saldo secara otomatis.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-700 uppercase">
+                  Daftar SKU / Nama Produk:
+                </label>
+                <div className="flex items-center gap-2">
+                  {(() => {
+                    const skus = Array.from(new Set(bulkCheckBalanceInput.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean)));
+                    return skus.length > 0 ? (
+                      <span className="px-2.5 py-0.5 bg-teal-100 text-teal-800 text-[11px] font-black rounded-lg">
+                        {skus.length} SKU Terdeteksi
+                      </span>
+                    ) : null;
+                  })()}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const text = await navigator.clipboard.readText();
+                        if (text) setBulkCheckBalanceInput(text);
+                      } catch {
+                        showToast('Tidak dapat mengakses clipboard. Silakan gunakan Ctrl+V.', 'info');
+                      }
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 hover:underline cursor-pointer"
+                  >
+                    <Clipboard className="h-3.5 w-3.5" />
+                    Tempel Clipboard
+                  </button>
+                  {bulkCheckBalanceInput && (
+                    <button
+                      type="button"
+                      onClick={() => setBulkCheckBalanceInput('')}
+                      className="text-xs text-slate-400 hover:text-rose-600 cursor-pointer"
+                    >
+                      Bersihkan
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <textarea
+                value={bulkCheckBalanceInput}
+                onChange={(e) => setBulkCheckBalanceInput(e.target.value)}
+                rows={6}
+                placeholder={"Tempel nama produk di sini (satu SKU per baris):\nBAG-RSB-100-7X10\nBAG-RSB-102-20X15/1PC\nBOOK-GB-2833R-7"}
+                className="w-full p-3 border border-slate-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-teal-500 bg-white"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setIsBulkCheckBalanceModalOpen(false)}
+                className="h-10 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-all"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const skus = Array.from(new Set(bulkCheckBalanceInput.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean)));
+                  if (skus.length === 0) {
+                    showToast('Silakan tempel setidaknya 1 SKU.', 'warning');
+                    return;
+                  }
+                  setIsBulkCheckBalanceModalOpen(false);
+                  await runCheckBalanceForSkus(skus);
+                }}
+                disabled={isAnalyzingBalance || !bulkCheckBalanceInput.trim()}
+                className="h-10 px-5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-teal-600/20 active:scale-95 transition-all disabled:opacity-50 cursor-pointer"
+              >
+                {isAnalyzingBalance ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    <span>Menganalisis...</span>
+                  </>
+                ) : (
+                  <>
+                    <Scale className="h-4 w-4" />
+                    <span>Mulai Cek Saldo & Perbaiki</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </Modal>
