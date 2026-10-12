@@ -1401,7 +1401,8 @@ export function UpdateLokasi() {
       let selectedDate: Date;
 
       if (filters.tanggal_masuk.match(/^\d{4}-\d{2}-\d{2}$/)) {
-        selectedDate = new Date(filters.tanggal_masuk);
+        const [y, m, d] = filters.tanggal_masuk.split('-').map(Number);
+        selectedDate = new Date(y, m - 1, d);
       } else {
         const parsedDate = parseDateFlexible(filters.tanggal_masuk);
         if (!parsedDate) {
