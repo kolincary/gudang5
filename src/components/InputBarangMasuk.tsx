@@ -173,6 +173,7 @@ export function InputBarangMasuk() {
     // Rak resmi yang diperbolehkan di menu Input Barang Masuk
     const ALLOWED_INPUT_MASUK_RACKS = React.useMemo(() => [
         'UTAMA',
+        'TEMP-0',
         'ECER-O',
         'ECER-N',
         'ECER-M',
@@ -182,16 +183,19 @@ export function InputBarangMasuk() {
     ], []);
 
     // Helper untuk mengecek apakah suatu nama rak adalah rak masuk yang sah
-    // Menolak secara tegas sub-rak A1-Z9999, Lorong 1 s/d Lorong Utama, dan Temp
+    // Menolak secara tegas sub-rak A1-Z9999, Lorong 1 s/d Lorong Utama, dan Temp (kecuali TEMP-0)
     const isAllowedInputMasukRack = React.useCallback((rackName?: string | null): boolean => {
         if (!rackName || !rackName.trim()) return false;
         const clean = rackName.toUpperCase().trim();
+
+        // 0. Izinkan TEMP-0 secara eksplisit
+        if (clean === 'TEMP-0' || clean === 'TEMP 0') return true;
 
         // 1. Tolak sub-rak A1-A999 s/d Z1-Z9999 (e.g. A1, A15, B23, K17, dll)
         if (/^[A-Z]\s*[-_.]?\s*\d+$/i.test(clean)) return false;
         // 2. Tolak LORONG-1 s/d LORONG-9999, LORONG-UTAMA, dll
         if (/^LORONG/i.test(clean)) return false;
-        // 3. Tolak rak TEMP-A, TEMP-B, dll
+        // 3. Tolak rak TEMP-A, TEMP-B, dll (kecuali TEMP-0 yang sudah diizinkan di atas)
         if (/^TEMP/i.test(clean)) return false;
 
         // 4. Cocokkan dengan rak standar Input Barang Masuk
@@ -207,6 +211,7 @@ export function InputBarangMasuk() {
     const normalizeInputMasukRack = React.useCallback((rackName?: string | null): string => {
         if (!rackName) return '';
         const clean = rackName.toUpperCase().trim();
+        if (clean === 'TEMP-0' || clean === 'TEMP 0') return 'TEMP-0';
         if (clean === 'LT4' || clean === 'LANTAI4' || clean.replace(/[-_]/g, ' ') === 'LANTAI 4') return 'LANTAI 4';
         if (clean === 'LT2' || clean === 'LANTAI2' || clean.replace(/[-_]/g, ' ') === 'LANTAI 2') return 'LANTAI 2';
         if (clean === 'BLOK I' || clean === 'BLOK-I') return 'BLOK-I';
@@ -303,6 +308,11 @@ export function InputBarangMasuk() {
         const selectedRackRaw = row.rak.trim();
         const selectedRackClean = normalizeInputMasukRack(selectedRackRaw);
 
+        // Khusus rak TEMP-0: Bebas konflik (rak staging sementara barang masuk)
+        if (selectedRackClean === 'TEMP-0') {
+            return { hasConflict: false, expectedRack: 'TEMP-0', message: '' };
+        }
+
         // 1. Validasi apakah rak yang dipilih diizinkan di menu Input Barang Masuk
         if (!isAllowedInputMasukRack(selectedRackRaw)) {
             const expected = getExpectedRackForSku(row.nama_produk);
@@ -310,7 +320,7 @@ export function InputBarangMasuk() {
                 hasConflict: true,
                 selectedRack: selectedRackRaw,
                 expectedRack: expected,
-                message: `Rak "${selectedRackRaw}" adalah sub-rak atau lorong dan tidak boleh digunakan di menu Input Barang Masuk. Gunakan lokasi rak resmi: ${expected} (atau rak masuk lainnya: UTAMA, ECER-O, ECER-N, ECER-M, LANTAI 2, LANTAI 4, BLOK-I).`
+                message: `Rak "${selectedRackRaw}" adalah sub-rak atau lorong dan tidak boleh digunakan di menu Input Barang Masuk. Gunakan lokasi rak resmi: ${expected} (atau rak masuk lainnya: UTAMA, TEMP-0, ECER-O, ECER-N, ECER-M, LANTAI 2, LANTAI 4, BLOK-I).`
             };
         }
 
@@ -678,7 +688,10 @@ export function InputBarangMasuk() {
             const filteredRacks = racksData.filter((item: any) =>
                 item.tampil_di_menu === 'KEDUANYA' || item.tampil_di_menu === 'INPUT_MASUK'
             );
-            const rackNames = filteredRacks.map((item: any) => item.nama).filter((name: any) => name && name.trim() !== '');
+            const rackNames = Array.from(new Set([
+                ...filteredRacks.map((item: any) => item.nama).filter((name: any) => name && name.trim() !== ''),
+                'TEMP-0'
+            ]));
 
             setValidProducts(uniqueProducts);
             setValidWarehouses(warehouseNames);
@@ -1033,6 +1046,7 @@ export function InputBarangMasuk() {
             case 'gudang':
                 return validWarehouses.includes(value);
             case 'rak':
+                if (value.toUpperCase().trim() === 'TEMP-0') return true;
                 return validRacks.includes(value);
             default:
                 return true;
@@ -1157,6 +1171,14 @@ export function InputBarangMasuk() {
         }
 
         try {
+            // Pastikan jika ada baris dengan rak TEMP-0, data di Data Gudang (stock_items) sudah dibuat
+            const temp0Skus = validRows
+                .filter(r => (r.rak || '').toUpperCase().trim() === 'TEMP-0')
+                .map(r => r.nama_produk);
+            if (temp0Skus.length > 0) {
+                await ensureTemp0StockItemsExist(temp0Skus);
+            }
+
             const today = new Date();
             const todayFormatted = `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, '0')}-${today.getDate().toString().padStart(2, '0')}`;
 
@@ -1890,12 +1912,107 @@ export function InputBarangMasuk() {
     };
     // --- END NEW FUNCTION: AUTO RACK ---
 
-    // --- FUNCTION: SET ALL RACKS TO UTAMA ---
-    const handleSetUtama = async () => {
+    // --- HELPER FUNCTION: ENSURE SKU WITH RAK TEMP-0 EXISTS IN DATA GUDANG (stock_items) ---
+    const ensureTemp0StockItemsExist = async (productNames: string[]): Promise<number> => {
+        const uniqueSkus = Array.from(new Set(
+            productNames.map(s => s?.trim()).filter(Boolean) as string[]
+        ));
+
+        if (uniqueSkus.length === 0) return 0;
+
+        try {
+            const existingSkuSet = new Set<string>();
+            const chunkSize = 50;
+
+            for (let i = 0; i < uniqueSkus.length; i += chunkSize) {
+                const chunk = uniqueSkus.slice(i, i + chunkSize);
+                const { data, error } = await supabase
+                    .from('stock_items')
+                    .select('nama_produk')
+                    .eq('rak', 'TEMP-0')
+                    .in('nama_produk', chunk);
+
+                if (error) {
+                    console.error('Error checking TEMP-0 stock items:', error);
+                }
+                if (data) {
+                    data.forEach(item => {
+                        if (item.nama_produk) existingSkuSet.add(item.nama_produk.toLowerCase().trim());
+                    });
+                }
+            }
+
+            const missingItems = uniqueSkus
+                .filter(sku => !existingSkuSet.has(sku.toLowerCase().trim()))
+                .map(sku => ({
+                    nama_produk: sku,
+                    packing: 'CTN/',
+                    rak: 'TEMP-0',
+                    sub_rak: 'TEMP-0',
+                    satuan: '', // SATUAN: kosongkan
+                    stok_awal: 0,
+                    masuk: 0,
+                    keluar: 0,
+                    tersedia: 0,
+                    status: 'Aktif'
+                }));
+
+            if (missingItems.length > 0) {
+                console.log(`Membuat ${missingItems.length} data baru di Data Gudang untuk rak TEMP-0...`);
+                let insertSuccess = false;
+                try {
+                    const { error: insertErr } = await DatabaseService.insertMasterData('stock_items', missingItems, writeMode);
+                    if (!insertErr) {
+                        insertSuccess = true;
+                    } else {
+                        console.error('Error insert via DatabaseService, fallback to direct supabase:', insertErr);
+                    }
+                } catch (svcErr) {
+                    console.error('Exception in DatabaseService insertMasterData:', svcErr);
+                }
+
+                if (!insertSuccess) {
+                    const { error: directErr } = await supabase.from('stock_items').insert(missingItems);
+                    if (directErr) {
+                        console.error('Direct supabase insert error for TEMP-0:', directErr);
+                        return 0;
+                    }
+                }
+
+                // Perbarui state lokal stockItems agar cache real-time langsung sinkron
+                setStockItems(prev => [
+                    ...prev,
+                    ...missingItems.map((item, idx) => ({
+                        id: 'temp0-' + Date.now() + '-' + idx,
+                        ...item
+                    }))
+                ]);
+
+                return missingItems.length;
+            }
+            return 0;
+        } catch (err) {
+            console.error('Failed to ensure TEMP-0 stock items:', err);
+            return 0;
+        }
+    };
+
+    // --- FUNCTION: SET ALL RACKS TO TEMP-0 & AUTO-CREATE DATA GUDANG IF NOT EXISTS ---
+    const handleSetTemp0 = async () => {
         try {
             if (rows.length === 0) {
                 showToast('Tidak ada baris untuk diatur', 'warning');
                 return;
+            }
+
+            // Kumpulkan semua nama produk non-kosong dari baris input
+            const productNames = rows
+                .map(r => r.nama_produk?.trim())
+                .filter(Boolean) as string[];
+
+            let newlyCreated = 0;
+            if (productNames.length > 0) {
+                newlyCreated = await ensureTemp0StockItemsExist(productNames);
             }
 
             const updatedRows = await Promise.all(
@@ -1905,10 +2022,10 @@ export function InputBarangMasuk() {
 
                     if (row.nama_produk && row.nama_produk.trim() !== '') {
                         try {
-                            stokTersedia = await calculateAvailableStock(row.nama_produk, 'UTAMA');
+                            stokTersedia = await calculateAvailableStock(row.nama_produk, 'TEMP-0');
                             totalStok = calculateTotalStock(stokTersedia, row.jumlah);
                         } catch (e) {
-                            console.error('Error fetching stock for UTAMA:', e);
+                            console.error('Error fetching stock for TEMP-0:', e);
                         }
                     }
 
@@ -1918,7 +2035,7 @@ export function InputBarangMasuk() {
 
                     return {
                         ...row,
-                        rak: 'UTAMA',
+                        rak: 'TEMP-0',
                         stok_tersedia: stokTersedia,
                         total_stok: totalStok,
                         validationErrors: cleanErrors && cleanErrors.length > 0 ? cleanErrors : undefined
@@ -1927,10 +2044,14 @@ export function InputBarangMasuk() {
             );
 
             setRows(updatedRows);
-            showToast(`Berhasil mengatur rak ke UTAMA untuk ${rows.length} baris!`, 'success');
+            if (newlyCreated > 0) {
+                showToast(`Rak berhasil diatur ke TEMP-0 (${newlyCreated} data baru dibuat di Data Gudang)!`, 'success');
+            } else {
+                showToast(`Berhasil mengatur rak ke TEMP-0 untuk ${rows.length} baris!`, 'success');
+            }
         } catch (error) {
-            console.error('Error setting rak to UTAMA:', error);
-            showToast('Gagal mengatur rak ke UTAMA', 'error');
+            console.error('Error setting rak to TEMP-0:', error);
+            showToast('Gagal mengatur rak ke TEMP-0', 'error');
         }
     };
 
@@ -1992,11 +2113,12 @@ export function InputBarangMasuk() {
                         {/* Mobile Action Buttons */}
                         <div className="lg:hidden w-full flex justify-end gap-2">
                             <Button
-                                onClick={handleSetUtama}
+                                onClick={handleSetTemp0}
                                 className="h-10 px-3 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-xl transition-all active:scale-95 flex items-center gap-1.5 shadow-md border border-amber-400"
+                                title="Atur semua baris ke rak TEMP-0 dan buat data gudang jika belum ada"
                             >
                                 <Layers className="h-4 w-4 text-slate-950" />
-                                <span className="text-[11px] uppercase font-bold">Set Utama</span>
+                                <span className="text-[11px] uppercase font-bold">Set TEMP-0</span>
                             </Button>
                             <Button
                                 onClick={handleClearAllClick}
@@ -2011,11 +2133,12 @@ export function InputBarangMasuk() {
                         {/* Desktop Action Buttons */}
                         <div className="hidden lg:flex flex-wrap justify-end items-center gap-3">
                             <Button
-                                onClick={handleSetUtama}
+                                onClick={handleSetTemp0}
                                 className="h-11 px-5 bg-amber-500 hover:bg-amber-600 text-slate-950 border border-amber-400 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 font-black shadow-md"
+                                title="Atur semua baris ke rak TEMP-0 dan buat data gudang jika belum ada"
                             >
                                 <Layers className="h-4 w-4 text-slate-950" />
-                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">Set Utama</span>
+                                <span className="text-[11px] uppercase tracking-wider whitespace-nowrap">Set TEMP-0</span>
                             </Button>
 
                             <Button

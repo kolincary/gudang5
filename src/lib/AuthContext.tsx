@@ -8,7 +8,7 @@ interface AuthContextType {
     session: Session | null;
     loading: boolean;
     signInWithGoogle: () => Promise<void>;
-    signInAsDevMode: (password: string) => Promise<boolean>;
+    signInAsDevMode: (password?: string) => Promise<boolean>;
     signOut: () => Promise<void>;
     userEmail: string;
     userName: string;
@@ -353,11 +353,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     };
 
-    const signInAsDevMode = async (password: string): Promise<boolean> => {
-        // Verify using pinValidator (checks Supabase app_pins or 8888 fallback)
-        const isValid = await verifyPin(password);
-        if (!isValid) {
-            return false;
+    const signInAsDevMode = async (password?: string): Promise<boolean> => {
+        // Bypass pin verification if triggered by shortcut or bypass parameter
+        const isBypass = !password || password === 'bypass' || password === 'logindevmode' || password === 'devmode';
+        if (!isBypass) {
+            // Verify using pinValidator (checks Supabase app_pins or 8888 fallback)
+            const isValid = await verifyPin(password);
+            if (!isValid) {
+                return false;
+            }
         }
 
         const devUser = {

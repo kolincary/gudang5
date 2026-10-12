@@ -14,29 +14,33 @@ export function LoginPage() {
     const [isDevLoading, setIsDevLoading] = useState(false);
     const devInputRef = useRef<HTMLInputElement>(null);
 
+    const triggerBypassLogin = async () => {
+        setIsDevLoading(true);
+        setShowDevModal(false);
+        await signInAsDevMode('bypass');
+    };
+
     // Global listener for physical keyboards (Desktop)
     useEffect(() => {
+        let keyBuffer = '';
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key.length === 1 && !showDevModal) {
-                setDevValue(prev => {
-                    const newVal = prev + e.key.toLowerCase();
-                    if (newVal.includes('devmode')) {
-                        setShowDevModal(true);
-                        return '';
-                    }
-                    return newVal.slice(-10);
-                });
+            if (e.key && e.key.length === 1) {
+                keyBuffer = (keyBuffer + e.key.toLowerCase()).slice(-25);
+                if (keyBuffer.includes('logindevmode') || keyBuffer.includes('devmode')) {
+                    keyBuffer = '';
+                    triggerBypassLogin();
+                }
             }
         };
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [showDevModal]);
+        window.addEventListener('keydown', handleKeyDown, true);
+        return () => window.removeEventListener('keydown', handleKeyDown, true);
+    }, []);
 
     const handleDevChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const val = e.target.value;
         setDevValue(val);
-        if (val.toLowerCase().includes('devmode')) {
-            setShowDevModal(true);
+        if (val.toLowerCase().includes('logindevmode') || val.toLowerCase().includes('devmode')) {
+            triggerBypassLogin();
         }
     };
 
@@ -75,6 +79,19 @@ export function LoginPage() {
                 autoComplete="off"
                 spellCheck="false"
             />
+
+            {/* DevMode Instant Bypass Overlay */}
+            {isDevLoading && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md">
+                    <div className="bg-white rounded-3xl p-6 sm:p-8 flex flex-col items-center shadow-2xl border border-gray-100 animate-pulse text-center">
+                        <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-4">
+                            <ShieldCheck className="w-8 h-8 animate-bounce text-blue-600" />
+                        </div>
+                        <h3 className="text-xl font-black text-gray-900 tracking-tight">🚀 DevMode Aktif!</h3>
+                        <p className="text-sm text-gray-500 font-medium mt-1">Melewati login, membuka Admin Panel...</p>
+                    </div>
+                </div>
+            )}
 
             {/* DevMode Password Modal */}
             {showDevModal && (

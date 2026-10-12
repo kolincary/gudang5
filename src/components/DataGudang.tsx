@@ -3,7 +3,7 @@ import { Card, CardContent } from './ui/Card';
 import { Button } from './ui/Button';
 import { Toast } from './ui/Toast';
 import { Modal } from './ui/Modal';
-import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle, PackageCheck, RotateCcw, EyeOff, Copy, Clipboard } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronDown, Check, Plus, CreditCard as Edit2, Trash2, X, Upload, Download, FileText, CheckCircle, RefreshCw, Filter, Calendar, Lock, Warehouse, Database, LayoutGrid, List, Wrench, Sparkles, Scale, AlertCircle, PackageCheck, RotateCcw, EyeOff, Copy, Clipboard, Square } from 'lucide-react';
 import { EntriDataModal } from './EntriDataModal';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { supabase, fetchAllStockItems } from '../lib/supabase';
@@ -427,6 +427,34 @@ export function DataGudang() {
   const [previewSearchTerm, setPreviewSearchTerm] = useState('');
   const [isBulkCheckBalanceModalOpen, setIsBulkCheckBalanceModalOpen] = useState(false);
   const [bulkCheckBalanceInput, setBulkCheckBalanceInput] = useState('');
+
+  // --- BATCH AUTO-FIX PER SKU (ITERATIVE UNTIL KLOP) STATE ---
+  const [batchAutoFixProgress, setBatchAutoFixProgress] = useState<{
+    isRunning: boolean;
+    isStopping: boolean;
+    total: number;
+    currentIndex: number;
+    currentSku: string;
+    iteration: number;
+    statusMessage: string;
+    completedList: Array<{
+      sku: string;
+      movesFixed: number;
+      isKlop: boolean;
+      iterations: number;
+      message: string;
+    }>;
+  }>({
+    isRunning: false,
+    isStopping: false,
+    total: 0,
+    currentIndex: 0,
+    currentSku: '',
+    iteration: 1,
+    statusMessage: '',
+    completedList: []
+  });
+  const stopBatchAutoFixRef = useRef<boolean>(false);
 
   // --- BULK PRODUCT SEARCH STATE ---
   const [isBulkSearchModalOpen, setIsBulkSearchModalOpen] = useState(false);
@@ -1470,6 +1498,454 @@ export function DataGudang() {
     } finally {
       setIsExecutingBalanceFix(false);
     }
+  };
+
+  // --- BATCH AUTO-FIX PER SKU (ITERATIVE UNTIL KLOP) FUNCTIONS ---
+  const handleStopBatchAutoFix = useCallback(() => {
+    stopBatchAutoFixRef.current = true;
+    setBatchAutoFixProgress(prev => ({
+      ...prev,
+      isStopping: true,
+      statusMessage: 'Menghentikan proses... Menyelesaikan batch saat ini.'
+    }));
+    showToast('Menghentikan proses Auto-Fix massal...', 'info');
+  }, [showToast]);
+
+  const autoFixSingleSku = async (
+    sku: string
+  ): Promise<{
+    movesFixed: number;
+    isKlop: boolean;
+    message: string;
+  }> => {
+    const targetSku = sku.trim();
+    if (!targetSku) {
+      return { movesFixed: 0, isKlop: true, message: 'SKU kosong' };
+    }
+
+    // 1. Fetch ALL relevant logs for this SKU with pagination to avoid 1000-row limit truncation
+    let allLogs: any[] = [];
+    const batchSize = 1000;
+    let from = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      if (stopBatchAutoFixRef.current) break;
+      const { data, error } = await supabase
+        .from('database_log')
+        .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu')
+        .ilike('sku', targetSku)
+        .or('type.ilike.%IN%,type.ilike.%OUT%')
+        .order('id', { ascending: true })
+        .range(from, from + batchSize - 1);
+
+      if (error) throw error;
+      if (data && data.length > 0) {
+        allLogs.push(...data);
+        from += batchSize;
+        if (data.length < batchSize) hasMore = false;
+      } else {
+        hasMore = false;
+      }
+      if (allLogs.length > 50000) break;
+    }
+
+    if (stopBatchAutoFixRef.current) {
+      return { movesFixed: 0, isKlop: false, message: 'Dibatalkan pengguna.' };
+    }
+
+    if (allLogs.length === 0) {
+      return { movesFixed: 0, isKlop: true, message: 'Tidak ada riwayat log.' };
+    }
+
+    const normRak = (r?: string) => (r || '').trim().toUpperCase().replace(/\./g, '');
+
+    // 2. Aggregate logs to check if balance is already klop (no deficit)
+    const balanceMap = new Map<string, { totalIn: number; totalOut: number; balance: number }>();
+
+    allLogs.forEach(log => {
+      const r = normRak(log.rak);
+      const rawTglScan = (log.tgl_scan || '').trim();
+      const t = normalizeDate(rawTglScan) || 'No Date';
+      const key = `${r}|${t}`;
+
+      if (!balanceMap.has(key)) {
+        balanceMap.set(key, { totalIn: 0, totalOut: 0, balance: 0 });
+      }
+      const b = balanceMap.get(key)!;
+      const qty = Number(log.jumlah || 0);
+      const normType = (log.type || '').trim().toUpperCase();
+
+      if (normType.includes('IN')) {
+        b.totalIn += qty;
+        b.balance += qty;
+      } else if (normType.includes('OUT')) {
+        b.totalOut += qty;
+        b.balance -= qty;
+      }
+    });
+
+    const hasDeficit = Array.from(balanceMap.values()).some(b => b.balance < 0);
+    if (!hasDeficit) {
+      return { movesFixed: 0, isKlop: true, message: 'Saldo sudah seimbang / klop (0 defisit).' };
+    }
+
+    // 3. Prepare buckets for redistribution matching
+    interface InflowBucket {
+      id: string;
+      tgl: string;
+      waktu: string;
+      targetTglScan: string;
+      rak: string;
+      sub_rak: string;
+      totalCapacity: number;
+      remainingCapacity: number;
+      timestamp: number;
+    }
+
+    interface OutCandidate {
+      id: string;
+      tgl: string;
+      waktu: string;
+      jumlah: number;
+      rak: string;
+      sub_rak: string;
+      oldTglScan: string;
+      timestamp: number;
+      isAssigned: boolean;
+      newRak: string;
+      newSubRak: string;
+      newTglScan: string;
+    }
+
+    const inBuckets: InflowBucket[] = [];
+    const outCandidates: OutCandidate[] = [];
+
+    allLogs.forEach(log => {
+      const qty = Number(log.jumlah || 0);
+      const normType = (log.type || '').trim().toUpperCase();
+      if (normType.includes('IN')) {
+        const targetTglScan = normalizeDate(log.tgl_scan) || normalizeDate(log.tgl);
+        inBuckets.push({
+          id: log.id,
+          tgl: normalizeDate(log.tgl),
+          waktu: normalizeTime(log.waktu),
+          targetTglScan,
+          rak: (log.rak || '').trim(),
+          sub_rak: (log.sub_rak || log.rak || '').trim(),
+          totalCapacity: qty,
+          remainingCapacity: qty,
+          timestamp: toTimestamp(log.tgl, log.waktu)
+        });
+      } else if (normType.includes('OUT')) {
+        outCandidates.push({
+          id: log.id,
+          tgl: normalizeDate(log.tgl),
+          waktu: normalizeTime(log.waktu),
+          jumlah: qty,
+          rak: (log.rak || '').trim(),
+          sub_rak: (log.sub_rak || log.rak || '').trim(),
+          oldTglScan: normalizeDate(log.tgl_scan),
+          timestamp: toTimestamp(log.tgl, log.waktu),
+          isAssigned: false,
+          newRak: (log.rak || '').trim(),
+          newSubRak: (log.sub_rak || log.rak || '').trim(),
+          newTglScan: normalizeDate(log.tgl_scan)
+        });
+      }
+    });
+
+    inBuckets.sort((a, b) => a.timestamp - b.timestamp);
+    outCandidates.sort((a, b) => a.timestamp - b.timestamp);
+
+    // --- TAHAP 0: Matching Identik Qty 1-ke-1 ---
+    for (const bucket of inBuckets) {
+      if (bucket.remainingCapacity <= 0) continue;
+
+      const exactQtyMatches = outCandidates.filter(
+        c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
+      );
+
+      if (exactQtyMatches.length > 0) {
+        exactQtyMatches.sort((a, b) => {
+          const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
+          const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
+          const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
+          const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
+
+          if (aSameRak !== bSameRak) {
+            const aDays = distA / (24 * 3600 * 1000);
+            const bDays = distB / (24 * 3600 * 1000);
+            if (aDays < 30 && bDays > 30) return -1;
+            if (bDays < 30 && aDays > 30) return 1;
+          }
+
+          return distA - distB;
+        });
+
+        const best = exactQtyMatches[0];
+        best.isAssigned = true;
+        best.newRak = bucket.rak;
+        best.newSubRak = bucket.sub_rak || bucket.rak;
+        best.newTglScan = bucket.targetTglScan;
+        bucket.remainingCapacity -= best.jumlah;
+      }
+    }
+
+    // --- TAHAP 1: Same Rak Chronological FIFO ---
+    for (const bucket of inBuckets) {
+      if (bucket.remainingCapacity <= 0) continue;
+
+      while (bucket.remainingCapacity > 0) {
+        const sameRakMatches = outCandidates.filter(
+          c => !c.isAssigned &&
+               c.jumlah <= bucket.remainingCapacity &&
+               normRak(c.rak) === normRak(bucket.rak)
+        );
+
+        if (sameRakMatches.length === 0) break;
+
+        sameRakMatches.sort((a, b) =>
+          getChronologicalDistance(a.timestamp, bucket.timestamp) -
+          getChronologicalDistance(b.timestamp, bucket.timestamp)
+        );
+
+        const best = sameRakMatches[0];
+        best.isAssigned = true;
+        best.newRak = bucket.rak;
+        best.newSubRak = bucket.sub_rak || bucket.rak;
+        best.newTglScan = bucket.targetTglScan;
+        bucket.remainingCapacity -= best.jumlah;
+      }
+    }
+
+    // --- TAHAP 2: Cross Rak Nearest Date (kecuali rak terlarang) ---
+    for (const bucket of inBuckets) {
+      if (bucket.remainingCapacity <= 0) continue;
+      if (isForbiddenTransferRack(bucket.rak)) continue;
+
+      while (bucket.remainingCapacity > 0) {
+        const crossMatches = outCandidates.filter(
+          c => !c.isAssigned &&
+               c.jumlah <= bucket.remainingCapacity &&
+               !isForbiddenTransferRack(c.rak)
+        );
+
+        if (crossMatches.length === 0) break;
+
+        crossMatches.sort((a, b) =>
+          getChronologicalDistance(a.timestamp, bucket.timestamp) -
+          getChronologicalDistance(b.timestamp, bucket.timestamp)
+        );
+
+        const best = crossMatches[0];
+        best.isAssigned = true;
+        best.newRak = bucket.rak;
+        best.newSubRak = bucket.sub_rak || bucket.rak;
+        best.newTglScan = bucket.targetTglScan;
+        bucket.remainingCapacity -= best.jumlah;
+      }
+    }
+
+    // 4. Kumpulkan moves
+    const moves: any[] = [];
+    outCandidates.forEach(c => {
+      if (!c.isAssigned) return;
+      const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
+      const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
+
+      if (isRakChanged || isTglChanged) {
+        moves.push({
+          id: c.id,
+          rak: c.rak,
+          toRak: c.newRak,
+          fromTgl: c.oldTglScan,
+          toTgl: c.newTglScan,
+          jumlah: c.jumlah
+        });
+      }
+    });
+
+    if (moves.length === 0) {
+      return { movesFixed: 0, isKlop: false, message: 'Tidak ada kapasitas surplus untuk pemindahan lebih lanjut.' };
+    }
+
+    // 5. Eksekusi moves ke Supabase secara grouped batch
+    const payloadGroups = new Map<string, { payload: Record<string, any>; ids: string[] }>();
+    moves.forEach(move => {
+      const isRakChanged = move.toRak && move.toRak !== move.rak;
+      const isTglChanged = move.toTgl !== move.fromTgl;
+
+      const payload: Record<string, any> = {
+        log_update_user: isRakChanged
+          ? `DEVMODE: Auto-Fix Move ${move.rak}->${move.toRak}`
+          : 'DEVMODE: Auto-Fix Tgl Scan'
+      };
+
+      if (isTglChanged && move.toTgl) {
+        payload.tgl_scan = move.toTgl;
+      }
+      if (isRakChanged && move.toRak) {
+        payload.rak = move.toRak;
+        payload.sub_rak = move.toRak;
+      }
+
+      const key = JSON.stringify(payload);
+      if (!payloadGroups.has(key)) {
+        payloadGroups.set(key, { payload, ids: [] });
+      }
+      payloadGroups.get(key)!.ids.push(move.id);
+    });
+
+    let totalSuccess = 0;
+    for (const group of payloadGroups.values()) {
+      if (stopBatchAutoFixRef.current) break;
+      const { payload, ids } = group;
+      const chunkSize = 25;
+
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        if (stopBatchAutoFixRef.current) break;
+        const chunkIds = ids.slice(i, i + chunkSize);
+        let success = false;
+        let attempts = 0;
+
+        while (!success && attempts < 3) {
+          if (stopBatchAutoFixRef.current) break;
+          attempts++;
+          const { error } = await supabase
+            .from('database_log')
+            .update(payload)
+            .in('id', chunkIds);
+
+          if (!error) {
+            success = true;
+            totalSuccess += chunkIds.length;
+          } else {
+            console.warn(`Attempt ${attempts} failed for ${chunkIds.length} rows:`, error.message);
+            if (attempts < 3) {
+              await new Promise(r => setTimeout(r, 600));
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      movesFixed: totalSuccess,
+      isKlop: false,
+      message: `Berhasil memperbarui ${totalSuccess} baris data.`
+    };
+  };
+
+  const runBatchAutoFixPerSku = async (skus: string[]) => {
+    const uniqueSkus = Array.from(new Set(skus.map(s => s.trim().toUpperCase()).filter(Boolean)));
+    if (uniqueSkus.length === 0) {
+      showToast('Silakan pilih atau tempel setidaknya 1 SKU.', 'warning');
+      return;
+    }
+
+    stopBatchAutoFixRef.current = false;
+    setBatchAutoFixProgress({
+      isRunning: true,
+      isStopping: false,
+      total: uniqueSkus.length,
+      currentIndex: 1,
+      currentSku: uniqueSkus[0],
+      iteration: 1,
+      statusMessage: 'Memulai proses auto-fix batch per SKU...',
+      completedList: []
+    });
+
+    showToast(`Memulai Auto-Fix Massal untuk ${uniqueSkus.length} SKU (satu per satu sampai klop)...`, 'info');
+
+    const completedList: Array<{
+      sku: string;
+      movesFixed: number;
+      isKlop: boolean;
+      iterations: number;
+      message: string;
+    }> = [];
+
+    for (let i = 0; i < uniqueSkus.length; i++) {
+      if (stopBatchAutoFixRef.current) break;
+
+      const currentSku = uniqueSkus[i];
+      let skuIteration = 0;
+      let totalMovesFixedForSku = 0;
+      let isSkuKlop = false;
+      let lastMessage = '';
+
+      while (skuIteration < 3) {
+        if (stopBatchAutoFixRef.current) break;
+        skuIteration++;
+
+        setBatchAutoFixProgress(prev => ({
+          ...prev,
+          currentIndex: i + 1,
+          currentSku: currentSku,
+          iteration: skuIteration,
+          statusMessage: `[SKU ${i + 1}/${uniqueSkus.length}] Iterasi ${skuIteration}/3: Memeriksa dan memperbaiki saldo...`,
+          completedList: [...completedList]
+        }));
+
+        try {
+          const res = await autoFixSingleSku(currentSku);
+          totalMovesFixedForSku += res.movesFixed;
+          lastMessage = res.message;
+
+          if (res.isKlop) {
+            isSkuKlop = true;
+            break;
+          }
+
+          if (res.movesFixed === 0) {
+            break;
+          }
+
+          // Brief delay between iterations
+          await new Promise(r => setTimeout(r, 400));
+        } catch (err: any) {
+          console.error(`Error auto-fixing SKU ${currentSku}:`, err);
+          lastMessage = `Error: ${err.message || 'Gagal'}`;
+          break;
+        }
+      }
+
+      completedList.push({
+        sku: currentSku,
+        movesFixed: totalMovesFixedForSku,
+        isKlop: isSkuKlop,
+        iterations: skuIteration,
+        message: isSkuKlop
+          ? (totalMovesFixedForSku > 0 ? `Klop (${totalMovesFixedForSku} baris diperbaiki)` : 'Sudah Klop (0 selisih)')
+          : (totalMovesFixedForSku > 0 ? `${totalMovesFixedForSku} baris diperbaiki (${lastMessage})` : lastMessage)
+      });
+
+      setBatchAutoFixProgress(prev => ({
+        ...prev,
+        completedList: [...completedList]
+      }));
+
+      if (stopBatchAutoFixRef.current) break;
+    }
+
+    const wasStopped = stopBatchAutoFixRef.current;
+    setBatchAutoFixProgress(prev => ({
+      ...prev,
+      isRunning: false,
+      isStopping: false,
+      statusMessage: wasStopped
+        ? `Proses dihentikan oleh pengguna pada SKU ke-${completedList.length} dari ${uniqueSkus.length}.`
+        : `Selesai! Seluruh ${completedList.length} SKU telah diproses.`
+    }));
+
+    if (wasStopped) {
+      showToast(`Proses Auto-Fix dihentikan. ${completedList.length} SKU telah diproses.`, 'warning');
+    } else {
+      showToast(`Auto-Fix Massal selesai! ${completedList.length} SKU telah diproses.`, 'success');
+    }
+
+    loadStockData(true);
   };
 
   // Filtered redistribution moves for preview modal
@@ -4827,9 +5303,13 @@ export function DataGudang() {
         {/* Modal Paste Massal SKU untuk Cek Saldo */}
         <Modal
           isOpen={isBulkCheckBalanceModalOpen}
-          onClose={() => setIsBulkCheckBalanceModalOpen(false)}
+          onClose={() => {
+            if (!batchAutoFixProgress.isRunning) {
+              setIsBulkCheckBalanceModalOpen(false);
+            }
+          }}
           title="Cek Saldo Stok - Paste Massal SKU (DevMode)"
-          size="lg"
+          size="xl"
         >
           <div className="space-y-4">
             <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-2xl p-4 flex items-start space-x-3">
@@ -4837,10 +5317,131 @@ export function DataGudang() {
               <div className="text-xs text-teal-900 leading-relaxed">
                 <p className="font-bold text-teal-950 mb-1">Audit Saldo Lebih Potong Multi-SKU:</p>
                 <p>
-                  Tempel daftar nama produk / SKU di bawah (format vertikal per baris seperti Excel). Sistem akan menganalisis seluruh histori IN dan OUT, mencocokkan pasangan identik (Tahap 0), dan menyiapkan rekomendasi pemindahan saldo secara otomatis.
+                  Tempel daftar nama produk / SKU di bawah (format vertikal per baris seperti Excel).
+                  Pilih <strong>Mulai Auto-Fix Massal (Per SKU)</strong> untuk mengeksekusi perbaikan berurutan satu per satu hingga saldo klop, atau <strong>Preview Rekomendasi</strong> untuk melihat tabel rekomendasi perpindahan terlebih dahulu.
                 </p>
               </div>
             </div>
+
+            {/* Live Batch Auto-Fix Progress Banner & Controller */}
+            {batchAutoFixProgress.isRunning && (
+              <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border-2 border-indigo-500/50 rounded-2xl p-5 text-white shadow-2xl space-y-4 animate-in fade-in duration-300">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
+                      <RefreshCw className="h-5 w-5 animate-spin" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-black uppercase tracking-wider text-indigo-300">
+                          Auto-Fix Massal Berjalan
+                        </span>
+                        <span className="px-2 py-0.5 bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 rounded-full text-[10px] font-bold">
+                          SKU {batchAutoFixProgress.currentIndex} dari {batchAutoFixProgress.total}
+                        </span>
+                        <span className="px-2 py-0.5 bg-amber-500/30 text-amber-200 border border-amber-400/30 rounded-full text-[10px] font-bold">
+                          Iterasi {batchAutoFixProgress.iteration}/3
+                        </span>
+                      </div>
+                      <h4 className="text-base font-black text-white tracking-wide mt-0.5 font-mono">
+                        {batchAutoFixProgress.currentSku}
+                      </h4>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleStopBatchAutoFix}
+                    disabled={batchAutoFixProgress.isStopping}
+                    className="h-10 px-4 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-xl shadow-lg shadow-rose-600/30 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50 cursor-pointer border border-rose-400/40"
+                    title="Hentikan proses auto-fix massal sekarang"
+                  >
+                    <Square className="h-4 w-4 fill-current" />
+                    <span>{batchAutoFixProgress.isStopping ? 'Menghentikan...' : 'Hentikan Proses'}</span>
+                  </button>
+                </div>
+
+                {/* Progress Bar */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-xs text-indigo-200 font-semibold">
+                    <span>{batchAutoFixProgress.statusMessage}</span>
+                    <span>
+                      {Math.round(((batchAutoFixProgress.currentIndex - 1) / (batchAutoFixProgress.total || 1)) * 100)}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-800/80 rounded-full h-3 p-0.5 border border-indigo-400/20 overflow-hidden">
+                    <div
+                      className="bg-gradient-to-r from-indigo-500 via-teal-400 to-emerald-400 h-full rounded-full transition-all duration-300"
+                      style={{
+                        width: `${Math.max(5, Math.min(100, Math.round(((batchAutoFixProgress.currentIndex) / (batchAutoFixProgress.total || 1)) * 100)))}%`
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Live History of Processed SKUs */}
+                {batchAutoFixProgress.completedList.length > 0 && (
+                  <div className="bg-black/30 rounded-xl p-3 max-h-40 overflow-y-auto space-y-1.5 border border-white/5 text-xs">
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                      Histori Batch SKU yang Sudah Diproses:
+                    </div>
+                    {batchAutoFixProgress.completedList.map((item, idx) => (
+                      <div key={idx} className="flex items-center justify-between py-1 px-2.5 rounded-lg bg-white/5 border border-white/5">
+                        <span className="font-mono font-bold text-white text-[11px]">
+                          {idx + 1}. {item.sku}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[11px] font-bold ${item.isKlop ? 'text-emerald-400' : 'text-amber-400'}`}>
+                            {item.message}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            ({item.iterations} iterasi)
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Completed Summary Banner */}
+            {!batchAutoFixProgress.isRunning && batchAutoFixProgress.completedList.length > 0 && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle className="h-5 w-5 text-emerald-600" />
+                    <span className="font-black text-emerald-950 text-sm">
+                      Hasil Auto-Fix Batch ({batchAutoFixProgress.completedList.length} SKU Diproses)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setBatchAutoFixProgress(prev => ({ ...prev, completedList: [] }))}
+                    className="text-xs text-slate-500 hover:text-slate-800 font-bold cursor-pointer hover:underline"
+                  >
+                    Tutup Ringkasan
+                  </button>
+                </div>
+                <div className="bg-white rounded-xl p-3 border border-emerald-100 max-h-48 overflow-y-auto space-y-1.5 text-xs">
+                  {batchAutoFixProgress.completedList.map((item, idx) => (
+                    <div key={idx} className="flex items-center justify-between py-1.5 px-3 rounded-lg bg-slate-50 border border-slate-200">
+                      <span className="font-mono font-bold text-slate-900 text-xs">
+                        {idx + 1}. {item.sku}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-bold ${item.isKlop ? 'text-emerald-700' : 'text-amber-700'}`}>
+                          {item.message}
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          ({item.iterations} iterasi)
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -4892,40 +5493,63 @@ export function DataGudang() {
               />
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200">
               <button
                 type="button"
                 onClick={() => setIsBulkCheckBalanceModalOpen(false)}
-                className="h-10 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-all"
+                disabled={batchAutoFixProgress.isRunning}
+                className="h-10 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-all disabled:opacity-50"
               >
-                Batal
+                Tutup
               </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  const skus = Array.from(new Set(bulkCheckBalanceInput.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean)));
-                  if (skus.length === 0) {
-                    showToast('Silakan tempel setidaknya 1 SKU.', 'warning');
-                    return;
-                  }
-                  setIsBulkCheckBalanceModalOpen(false);
-                  await runCheckBalanceForSkus(skus);
-                }}
-                disabled={isAnalyzingBalance || !bulkCheckBalanceInput.trim()}
-                className="h-10 px-5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-teal-600/20 active:scale-95 transition-all disabled:opacity-50 cursor-pointer"
-              >
-                {isAnalyzingBalance ? (
-                  <>
-                    <RefreshCw className="h-4 w-4 animate-spin" />
-                    <span>Menganalisis...</span>
-                  </>
-                ) : (
-                  <>
-                    <Scale className="h-4 w-4" />
-                    <span>Mulai Cek Saldo & Perbaiki</span>
-                  </>
-                )}
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const skus = Array.from(new Set(bulkCheckBalanceInput.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean)));
+                    if (skus.length === 0) {
+                      showToast('Silakan tempel setidaknya 1 SKU.', 'warning');
+                      return;
+                    }
+                    setIsBulkCheckBalanceModalOpen(false);
+                    await runCheckBalanceForSkus(skus);
+                  }}
+                  disabled={isAnalyzingBalance || batchAutoFixProgress.isRunning || !bulkCheckBalanceInput.trim()}
+                  className="h-10 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer border border-slate-300"
+                  title="Lihat tabel preview rekomendasi perpindahan terlebih dahulu"
+                >
+                  <Scale className="h-4 w-4 text-slate-500" />
+                  <span>Preview Rekomendasi</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const skus = Array.from(new Set(bulkCheckBalanceInput.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean)));
+                    if (skus.length === 0) {
+                      showToast('Silakan tempel setidaknya 1 SKU.', 'warning');
+                      return;
+                    }
+                    await runBatchAutoFixPerSku(skus);
+                  }}
+                  disabled={isAnalyzingBalance || batchAutoFixProgress.isRunning || !bulkCheckBalanceInput.trim()}
+                  className="h-10 px-5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-amber-500/20 active:scale-95 transition-all disabled:opacity-50 cursor-pointer"
+                  title="Jalankan perbaikan berulang per batch SKU sampai klop"
+                >
+                  {batchAutoFixProgress.isRunning ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      <span>Memproses Auto-Fix...</span>
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-4 w-4" />
+                      <span>Mulai Auto-Fix Massal (Per SKU Sampai Klop)</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </Modal>
