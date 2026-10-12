@@ -1449,17 +1449,20 @@ export function UpdateLokasi() {
         let isLocked = false;
         let lockReason = '';
 
-        // Aturan 1: Jika rak sudah bukan UTAMA (sudah pernah diupdate sekali)
-        if (item.rak && item.rak.toUpperCase() !== 'UTAMA') {
+        // Aturan 1: Jika rak bukan UTAMA dan bukan TEMP-0 (sudah pernah diupdate sekali)
+        const currentRak = (item.rak || '').toUpperCase().trim();
+        const isUpdatableInitialRack = currentRak === 'UTAMA' || currentRak === 'TEMP-0';
+
+        if (item.rak && !isUpdatableInitialRack) {
           isLocked = true;
-          lockReason = 'Sudah pernah diupdate (Telah dipindah dari UTAMA)';
+          lockReason = 'Sudah pernah diupdate (Telah dipindah dari lokasi awal)';
         }
         // Aturan Baru: Jika tgl_scan sebelum 01 Maret 2026
         else if (tglScan && tglScan < thresholdDate) {
           isLocked = true;
           lockReason = 'Data terkunci (Sebelum 01 Maret 2026)';
         }
-        // Logika ganti hari dihapus sesuai permintaan: selama >= 01 Maret dan lokasi UTAMA, tetap bisa update.
+        // Logika ganti hari dihapus: selama >= 01 Maret dan lokasi UTAMA atau TEMP-0, tetap bisa update.
 
         return {
           id: item.id,
@@ -1566,7 +1569,8 @@ export function UpdateLokasi() {
   const loadRackLocations = async () => {
     try {
       const excludedRacks = [
-        'UTAMA'
+        'UTAMA',
+        'TEMP-0'
       ];
 
       const { data, error } = await supabase
@@ -1762,7 +1766,8 @@ export function UpdateLokasi() {
               const newRak = updatedItem?.update_lokasi_rak || item.rak;
 
               // Tentukan apakah harus langsung dikunci
-              const shouldLock = newRak.toUpperCase() !== 'UTAMA';
+              const currentUpper = newRak.toUpperCase().trim();
+              const shouldLock = currentUpper !== 'UTAMA' && currentUpper !== 'TEMP-0';
 
               return {
                 ...item,
@@ -1772,7 +1777,7 @@ export function UpdateLokasi() {
                 update_lokasi_rak: '', // Kosongkan input
                 isValid: true,
                 isLocked: shouldLock,
-                lockReason: shouldLock ? 'Sudah diupdate (telah dipindah dari UTAMA)' : item.lockReason
+                lockReason: shouldLock ? 'Sudah diupdate (telah dipindah dari lokasi awal)' : item.lockReason
               };
             }
             return item;
@@ -1906,6 +1911,18 @@ export function UpdateLokasi() {
                   <span className="uppercase text-xs font-black">Refresh Data</span>
                 </button>
 
+                <button
+                  onClick={handleSubmit}
+                  disabled={submitting || filteredTransactions.length === 0}
+                  className="h-12 px-6 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-emerald-300/40 backdrop-blur-xl disabled:opacity-50"
+                  title="Simpan Update Lokasi"
+                >
+                  <Send className={`h-4 w-4 ${submitting ? 'animate-spin' : ''}`} />
+                  <span className="uppercase text-xs font-black">
+                    {submitting ? 'Memproses...' : 'Update Lokasi'}
+                  </span>
+                </button>
+
 
               </div>
             </div>
@@ -1997,7 +2014,7 @@ export function UpdateLokasi() {
                           <th className="hidden md:table-cell px-2 md:px-4 py-3 text-center text-[10px] font-extrabold text-white uppercase tracking-wider">Type</th>
                           <th className="hidden md:table-cell px-2 md:px-4 py-3 text-center text-[10px] font-extrabold text-white uppercase tracking-wider">Gudang</th>
                           <th className="px-2.5 md:px-4 py-3.5 text-center text-[10px] font-extrabold text-white uppercase tracking-wider align-middle">Lokasi Lama</th>
-                          <th className="md:hidden px-2.5 md:px-4 py-3.5 text-center text-[10px] font-extrabold text-white uppercase tracking-wider bg-blue-700/50 align-middle">Update Lokasi</th>
+                          <th className="px-2.5 md:px-4 py-3.5 text-center text-[10px] font-extrabold text-white uppercase tracking-wider bg-blue-700/50 align-middle">Update Lokasi</th>
                           <th className="px-2.5 md:px-4 py-3.5 text-center text-[10px] font-extrabold text-white uppercase tracking-wider align-middle">Diupdate Oleh</th>
                         </tr>
                       </thead>
@@ -2027,14 +2044,14 @@ export function UpdateLokasi() {
                             <td className="hidden md:table-cell px-2 md:px-4 py-3 text-center">
                               <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${item.type === 'OUT' ? 'bg-red-50 text-red-700 border-red-100' :
                                 item.type === 'IN' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
-                                  'bg-purple-50 text-purple-700 border-purple-100'
+                                   'bg-purple-50 text-purple-700 border-purple-100'
                                 }`}>
                                 {item.type}
                               </span>
                             </td>
                             <td className="hidden md:table-cell px-2 md:px-4 py-3 text-xs text-gray-500 text-center">{item.gudang}</td>
                             <td className="px-2.5 md:px-4 py-3.5 text-[10px] md:text-xs text-gray-500 text-center font-mono align-middle break-all w-16">{item.lokasi_penyimpanan}</td>
-                            <td className={`md:hidden px-2.5 md:px-4 py-3.5 align-middle ${item.isLocked ? 'bg-gray-100/50' : 'bg-blue-50/30'} min-w-[110px]`}>
+                            <td className={`px-2.5 md:px-4 py-3.5 align-middle ${item.isLocked ? 'bg-gray-100/50' : 'bg-blue-50/30'} min-w-[120px]`}>
                               {item.isLocked ? (
                                 <span className="text-[10px] text-gray-400 italic">Terkunci</span>
                               ) : (
