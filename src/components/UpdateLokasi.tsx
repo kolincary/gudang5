@@ -1912,18 +1912,6 @@ export function UpdateLokasi() {
                   <span className="uppercase text-xs font-black">Refresh Data</span>
                 </button>
 
-                <button
-                  onClick={handleSubmit}
-                  disabled={submitting || filteredTransactions.length === 0}
-                  className="h-12 px-6 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-emerald-300/40 backdrop-blur-xl disabled:opacity-50"
-                  title="Simpan Update Lokasi"
-                >
-                  <Send className={`h-4 w-4 ${submitting ? 'animate-spin' : ''}`} />
-                  <span className="uppercase text-xs font-black">
-                    {submitting ? 'Memproses...' : 'Update Lokasi'}
-                  </span>
-                </button>
-
 
               </div>
             </div>
@@ -2015,7 +2003,7 @@ export function UpdateLokasi() {
                           <th className="hidden md:table-cell px-2 md:px-4 py-3 text-center text-[10px] font-extrabold text-white uppercase tracking-wider">Type</th>
                           <th className="hidden md:table-cell px-2 md:px-4 py-3 text-center text-[10px] font-extrabold text-white uppercase tracking-wider">Gudang</th>
                           <th className="px-2.5 md:px-4 py-3.5 text-center text-[10px] font-extrabold text-white uppercase tracking-wider align-middle">Lokasi Lama</th>
-                          <th className="px-2.5 md:px-4 py-3.5 text-center text-[10px] font-extrabold text-white uppercase tracking-wider bg-blue-700/50 align-middle">Update Lokasi</th>
+                          <th className="md:hidden px-2.5 md:px-4 py-3.5 text-center text-[10px] font-extrabold text-white uppercase tracking-wider bg-blue-700/50 align-middle">Update Lokasi</th>
                           <th className="px-2.5 md:px-4 py-3.5 text-center text-[10px] font-extrabold text-white uppercase tracking-wider align-middle">Diupdate Oleh</th>
                         </tr>
                       </thead>
@@ -2052,7 +2040,7 @@ export function UpdateLokasi() {
                             </td>
                             <td className="hidden md:table-cell px-2 md:px-4 py-3 text-xs text-gray-500 text-center">{item.gudang}</td>
                             <td className="px-2.5 md:px-4 py-3.5 text-[10px] md:text-xs text-gray-500 text-center font-mono align-middle break-all w-16">{item.lokasi_penyimpanan}</td>
-                            <td className={`px-2.5 md:px-4 py-3.5 align-middle ${item.isLocked ? 'bg-gray-100/50' : 'bg-blue-50/30'} min-w-[120px]`}>
+                            <td className={`md:hidden px-2.5 md:px-4 py-3.5 align-middle ${item.isLocked ? 'bg-gray-100/50' : 'bg-blue-50/30'} min-w-[110px]`}>
                               {item.isLocked ? (
                                 <span className="text-[10px] text-gray-400 italic">Terkunci</span>
                               ) : (
