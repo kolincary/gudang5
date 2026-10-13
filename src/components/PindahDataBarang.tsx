@@ -2976,8 +2976,8 @@ export function PindahDataBarang() {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Form Section */}
-            <Card>
-              <CardContent className="p-6">
+            <Card className="overflow-visible relative z-30">
+              <CardContent className="p-6 overflow-visible">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-lg font-bold text-gray-800 flex items-center">
                     <ArrowRightLeft className="h-5 w-5 mr-2 text-blue-600" />
@@ -3032,7 +3032,7 @@ export function PindahDataBarang() {
                       )}
 
                       {showItemDropdown && (
-                        <div ref={itemDropdownRef} className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-300 rounded-md shadow-lg z-50 max-h-64 overflow-y-auto">
+                        <div ref={itemDropdownRef} className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-300 rounded-md shadow-2xl z-[9999] max-h-80 overflow-y-auto">
                           {filteredItems.length > 0 ? (
                             filteredItems.slice(0, 50).map((item, index) => (
                               <div

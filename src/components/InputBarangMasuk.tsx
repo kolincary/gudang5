@@ -626,6 +626,50 @@ export function InputBarangMasuk() {
         }, 4000);
     };
 
+    // DevMode State untuk Auto Rak (Default disembunyikan; muncul saat ketik devmode)
+    const [showAutoRak, setShowAutoRak] = useState(false);
+
+    useEffect(() => {
+        let devModeSequence = '';
+        const targetSequence = 'DEVMODE';
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            const target = event.target as HTMLElement;
+            if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+            if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+            if (event.key === 'Backspace') {
+                devModeSequence = devModeSequence.slice(0, -1);
+                return;
+            }
+
+            if (event.key.length === 1) {
+                const char = event.key.toUpperCase();
+                devModeSequence += char;
+
+                if (devModeSequence.length > targetSequence.length) {
+                    devModeSequence = devModeSequence.slice(-targetSequence.length);
+                }
+
+                if (devModeSequence === targetSequence) {
+                    devModeSequence = '';
+                    setShowAutoRak(prev => {
+                        const next = !prev;
+                        if (next) {
+                            showToast('DevMode Aktif! Tombol Auto Rak ditampilkan.', 'success');
+                        } else {
+                            showToast('DevMode Nonaktif. Tombol Auto Rak disembunyikan.', 'warning');
+                        }
+                        return next;
+                    });
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
     // A new helper function to fetch all paginated data from a Supabase table
     const fetchPaginatedData = async (tableName: string, columnName: string, sortColumn: string, filterColumn?: string, filterValue?: string, additionalFilter?: { column: string, value: string }) => {
         let allData: any[] = [];
@@ -2263,13 +2307,15 @@ export function InputBarangMasuk() {
                         <span className="text-[9px] uppercase tracking-tighter">Baris</span>
                     </Button>
 
-                    <Button
-                        onClick={handleOtomatisRak}
-                        className="bg-emerald-600 text-white font-bold rounded-xl h-10 px-0 flex flex-col items-center justify-center gap-0.5 active:scale-95 shadow-sm border-none"
-                    >
-                        <Warehouse className="h-4 w-4" />
-                        <span className="text-[9px] uppercase tracking-tighter">Auto Rak</span>
-                    </Button>
+                    {showAutoRak && (
+                        <Button
+                            onClick={handleOtomatisRak}
+                            className="bg-emerald-600 text-white font-bold rounded-xl h-10 px-0 flex flex-col items-center justify-center gap-0.5 active:scale-95 shadow-sm border-none"
+                        >
+                            <Warehouse className="h-4 w-4" />
+                            <span className="text-[9px] uppercase tracking-tighter">Auto Rak</span>
+                        </Button>
+                    )}
 
                     <Button
                         onClick={add50Rows}
@@ -2349,13 +2395,15 @@ export function InputBarangMasuk() {
                         </Button>
 
                         {/* AUTO RAK */}
-                        <Button
-                            onClick={handleOtomatisRak}
-                            className="h-10 px-5 bg-emerald-100/80 hover:bg-emerald-200 text-emerald-700 font-bold rounded-full transition-all flex items-center gap-2 shadow-none border border-emerald-200 flex-shrink-0"
-                        >
-                            <Warehouse className="h-4 w-4" />
-                            <span className="text-[11px] uppercase tracking-wider">Auto Rak</span>
-                        </Button>
+                        {showAutoRak && (
+                            <Button
+                                onClick={handleOtomatisRak}
+                                className="h-10 px-5 bg-emerald-100/80 hover:bg-emerald-200 text-emerald-700 font-bold rounded-full transition-all flex items-center gap-2 shadow-none border border-emerald-200 flex-shrink-0"
+                            >
+                                <Warehouse className="h-4 w-4" />
+                                <span className="text-[11px] uppercase tracking-wider">Auto Rak</span>
+                            </Button>
+                        )}
 
                         {/* ATUR / PENYESUAIAN */}
                         <Button

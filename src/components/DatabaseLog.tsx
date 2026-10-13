@@ -20,6 +20,7 @@ import { AdjustmentStockOutModal } from './AdjustmentStockOutModal';
 import { SubsequentLogsModal } from './SubsequentLogsModal';
 import { ScanDateAutoMatchModal } from './ScanDateAutoMatchModal';
 import { SyncTransferOutScanDateModal } from './SyncTransferOutScanDateModal';
+import { CekSaldo2Modal } from './CekSaldo2Modal';
 import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance, isOutDateEligibleForIn } from '../services/scanDateMatchService';
 
 const normRak = (r?: string) => (r || '').trim().toUpperCase().replace(/\./g, '');
@@ -58,6 +59,7 @@ export interface OutTransactionDetail {
   waktu: string;
   jumlah: number;
   user: string;
+  gudang?: string;
   tgl_scan: string;
   rak: string;
   sub_rak?: string;
@@ -328,10 +330,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
 
-  // DevMode State - uses global devmode key from Layout
-  const [showFixDates, setShowFixDates] = useState(() => {
-    return localStorage.getItem('devmode') === 'true';
-  });
+  // DevMode State - default disembunyikan; muncul saat ketik devmode
+  const [showFixDates, setShowFixDates] = useState(false);
 
   const [isDevToolsModalOpen, setIsDevToolsModalOpen] = useState(false);
 
@@ -765,6 +765,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
   // --- STOCK BALANCE ANALYSIS & DEFICIT AUDIT STATE ---
   const [isAnalysisModalOpen, setIsAnalysisModalOpen] = useState(false);
+  const [isAnalysisModal2Open, setIsAnalysisModal2Open] = useState(false);
   const [analysisResults, setAnalysisResults] = useState<BalanceAnalysisResult[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisSearchTerm, setAnalysisSearchTerm] = useState('');
@@ -1042,6 +1043,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
               waktu: log.waktu,
               jumlah: jumlah,
               user: log.user_name || (log as any).user || '',
+              gudang: (log.gudang || '').trim(),
               tgl_scan: rawTglScan,
               rak: (log.rak || '').trim(),
               sub_rak: (log.sub_rak || '').trim(),
@@ -2645,6 +2647,10 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     const targetSequence = 'DEVMODE';
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Abaikan jika fokus di dalam input atau textarea
+      const target = event.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+
       // Abaikan jika menekan tombol modifier (Ctrl, Alt, Meta/Cmd)
       if (event.ctrlKey || event.metaKey || event.altKey) return;
 
@@ -2666,11 +2672,9 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           setShowFixDates(prev => {
             const next = !prev;
             if (next) {
-              localStorage.setItem('devmode', 'true');
-              showToast('DevMode Aktif! Tombol Riwayat Mutasi Setelahnya & Fitur Audit ditampilkan.', 'success');
+              showToast('DevMode Aktif! Tombol Riwayat Mutasi, Hapus Tgl Scan Minus & Filter System ditampilkan.', 'success');
             } else {
-              localStorage.removeItem('devmode');
-              showToast('DevMode Nonaktif. Tombol Riwayat Mutasi Setelahnya disembunyikan.', 'warning');
+              showToast('DevMode Nonaktif. Fitur Dev disembunyikan.', 'warning');
             }
             return next;
           });
@@ -3723,6 +3727,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const [isRepairing, setIsRepairing] = useState(false);
   const [migrationProgress, setMigrationProgress] = useState({ current: 0, total: 0 });
 
+  // --- FIX SCAN DATE MODAL STATE ---
+  const [isFixScanModalOpen, setIsFixScanModalOpen] = useState(false);
+  const [fixScanScope, setFixScanScope] = useState<'specific' | 'all'>('specific');
+  const [fixScanSku, setFixScanSku] = useState('');
+
   const handleFixDates = async () => {
     if (!window.confirm('Apakah Anda yakin ingin menstandarisasi semua format tanggal (Tgl & Tgl Scan) menjadi YYYY-MM-DD? Proses ini akan mengubah data di database.')) {
       return;
@@ -3748,22 +3757,32 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
   };
 
-  const handleFixScanDates = async () => {
-    if (!window.confirm('Apakah Anda yakin ingin memperbaiki Tgl Scan pada barang MASUK? Fitur ini akan menyamakan Tgl Scan dengan Tgl Transaksi untuk data yang tidak konsisten akibat migrasi.')) {
+  const handleOpenFixScanModal = () => {
+    setIsDevToolsModalOpen(false);
+    setFixScanSku(filters.sku || '');
+    setFixScanScope(filters.sku ? 'specific' : 'all');
+    setIsFixScanModalOpen(true);
+  };
+
+  const handleExecuteFixScanDates = async () => {
+    const targetSku = fixScanScope === 'specific' ? fixScanSku.trim() : undefined;
+    if (fixScanScope === 'specific' && !targetSku) {
+      showToast('Silakan pilih atau ketik SKU terlebih dahulu.', 'warning');
       return;
     }
 
     try {
       setIsRepairing(true);
-      showToast('Memulai perbaikan Tgl Scan...', 'info');
+      showToast(`Memulai perbaikan Tgl Scan${targetSku ? ` untuk SKU: ${targetSku}` : ' untuk Semua SKU'}...`, 'info');
 
       const { runScanDateRepair } = await import('../lib/dateMigration');
 
       const repairedCount = await runScanDateRepair((current, total) => {
         setMigrationProgress({ current, total });
-      });
+      }, targetSku);
 
       showToast(`Sukses! ${repairedCount} Tgl Scan telah disinkronkan.`, 'success');
+      setIsFixScanModalOpen(false);
       handleLoadData();
     } catch (error) {
       console.error('Repair failed:', error);
@@ -6076,7 +6095,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
                   <button
                     type="button"
-                    onClick={handleFixScanDates}
+                    onClick={handleOpenFixScanModal}
                     disabled={isMigrating || isRepairing || isSyncingSubRak || isFixingTransferDates}
                     className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-indigo-500/15 border border-slate-700/80 hover:border-indigo-400/50 transition-all active:scale-[0.98] text-left flex items-start gap-3 group disabled:opacity-50 cursor-pointer"
                   >
@@ -6089,7 +6108,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                           ? (migrationProgress.total > 0 ? `Repair ${Math.round((migrationProgress.current / migrationProgress.total) * 100)}%` : 'Repairing...')
                           : 'Fix Scan'}
                       </div>
-                      <div className="text-xs text-slate-400 font-medium mt-0.5">Perbaiki tanggal scan barcode QR di database log</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Perbaiki tanggal scan barcode QR (Pilih SKU atau Semua)</div>
                     </div>
                   </button>
 
@@ -6163,6 +6182,25 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     <div>
                       <div className="text-sm font-black text-white group-hover:text-teal-200">Cek Saldo / Audit Minus</div>
                       <div className="text-xs text-slate-400 font-medium mt-0.5">Diagnosa saldo stok dan deteksi data minus</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDevToolsModalOpen(false);
+                      setIsAnalysisModal2Open(true);
+                    }}
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 hover:bg-purple-500/15 border border-slate-700/80 hover:border-purple-400/50 transition-all active:scale-[0.98] text-left flex flex-col gap-2.5 group cursor-pointer"
+                    title="Cek Saldo (Eksklusi Rak Tertentu)"
+                  >
+                    <div className="p-2.5 rounded-xl bg-purple-500/20 text-purple-400 border border-purple-400/30 group-hover:bg-purple-500 group-hover:text-white transition-colors w-fit flex items-center gap-1.5">
+                      <Calculator className="h-5 w-5" />
+                      <span className="text-[10px] font-black px-1.5 py-0.5 bg-purple-500/30 text-purple-300 rounded uppercase tracking-wider">Eksklusi Rak</span>
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white group-hover:text-purple-200">Cek Saldo (Eksklusi Rak)</div>
+                      <div className="text-xs text-slate-400 font-medium mt-0.5">Diagnosa saldo stok dengan opsi kecualikan rak tertentu (koma)</div>
                     </div>
                   </button>
 
@@ -6531,30 +6569,32 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   <Filter className="w-3.5 h-3.5 text-blue-600" /> Filter Cepat:
                 </span>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (filters.user === 'System (Cek Rak)') {
-                      setFilters(prev => ({ ...prev, user: '' }));
-                    } else {
-                      setFilters(prev => ({ ...prev, user: 'System (Cek Rak)' }));
-                    }
-                  }}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border ${
-                    filters.user === 'System (Cek Rak)'
-                      ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm ring-2 ring-emerald-300'
-                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
-                  }`}
-                  title="Filter khusus log dari user System (Cek Rak)"
-                >
-                  <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>User: System (Cek Rak)</span>
-                  {filters.user === 'System (Cek Rak)' && (
-                    <span className="ml-1 bg-white/25 text-white px-1.5 py-0.2 rounded text-[10px] font-black uppercase">
-                      AKTIF
-                    </span>
-                  )}
-                </button>
+                {showFixDates && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (filters.user === 'System (Cek Rak)') {
+                        setFilters(prev => ({ ...prev, user: '' }));
+                      } else {
+                        setFilters(prev => ({ ...prev, user: 'System (Cek Rak)' }));
+                      }
+                    }}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border ${
+                      filters.user === 'System (Cek Rak)'
+                        ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm ring-2 ring-emerald-300'
+                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
+                    }`}
+                    title="Filter khusus log dari user System (Cek Rak)"
+                  >
+                    <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>User: System (Cek Rak)</span>
+                    {filters.user === 'System (Cek Rak)' && (
+                      <span className="ml-1 bg-white/25 text-white px-1.5 py-0.2 rounded text-[10px] font-black uppercase">
+                        AKTIF
+                      </span>
+                    )}
+                  </button>
+                )}
 
                 {/* TOGGLE MODE GROUPING (SKU + RAK + TGL SCAN + IN/OUT) */}
                 <button
@@ -6724,7 +6764,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   </button>
                 )}
 
-                {batchSummaryStats.deficitGroups > 0 && (
+                {showFixDates && batchSummaryStats.deficitGroups > 0 && (
                   <button
                     type="button"
                     onClick={handleOpenClearDeficitModal}
@@ -6800,7 +6840,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     )}
                     <span>Cek Saldo Massal ({activeBulkSkuSearch.length} SKU)</span>
                   </button>
-                  {batchSummaryStats.deficitGroups > 0 && (
+                  {showFixDates && batchSummaryStats.deficitGroups > 0 && (
                     <button
                       type="button"
                       onClick={handleOpenClearDeficitModal}
@@ -7155,27 +7195,29 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     </button>
                   )}
                 </div>
-                <div className="mt-1 flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (filters.user === 'System (Cek Rak)') {
-                        setFilters({ ...filters, user: '' });
-                      } else {
-                        setFilters({ ...filters, user: 'System (Cek Rak)' });
-                      }
-                    }}
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
-                      filters.user === 'System (Cek Rak)'
-                        ? 'bg-emerald-600 text-white border-emerald-700'
-                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
-                    }`}
-                    title="Klik untuk filter System (Cek Rak)"
-                  >
-                    <UserCheck className="w-3 h-3" />
-                    <span>System (Cek Rak)</span>
-                  </button>
-                </div>
+                {showFixDates && (
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (filters.user === 'System (Cek Rak)') {
+                          setFilters({ ...filters, user: '' });
+                        } else {
+                          setFilters({ ...filters, user: 'System (Cek Rak)' });
+                        }
+                      }}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
+                        filters.user === 'System (Cek Rak)'
+                          ? 'bg-emerald-600 text-white border-emerald-700'
+                          : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                      }`}
+                      title="Klik untuk filter System (Cek Rak)"
+                    >
+                      <UserCheck className="w-3 h-3" />
+                      <span>System (Cek Rak)</span>
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -7193,7 +7235,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                 </select>
               </div>
 
-              <div className="flex items-end gap-2 col-span-1 sm:col-span-2 xl:col-span-2">
+              <div className="grid grid-cols-2 gap-2 col-span-1 sm:col-span-2 xl:col-span-2 items-end">
                 <button
                   type="button"
                   onClick={() => {
@@ -7205,7 +7247,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     setCurrentPage(1);
                   }}
                   disabled={!dataLoaded}
-                  className={`flex-1 min-w-0 px-3.5 h-[42px] font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2 border text-xs tracking-wider disabled:opacity-50 cursor-pointer ${
+                  className={`w-full min-w-0 px-2 sm:px-3 h-[42px] font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1.5 sm:gap-2 border text-xs tracking-wider disabled:opacity-50 cursor-pointer ${
                     filters.excludeTransfer
                       ? 'bg-amber-600 text-white border-amber-700 shadow-amber-600/30 ring-2 ring-amber-400'
                       : 'bg-amber-50 hover:bg-amber-100 active:bg-amber-200 text-amber-800 border-amber-300'
@@ -7213,19 +7255,20 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   title={filters.excludeTransfer ? "Filter 'Tanpa Transfer' Aktif (gudang != 'TRANSFER'). Klik untuk menonaktifkan" : "Filter data agar tidak menampilkan gudang TRANSFER (gudang != 'TRANSFER')"}
                 >
                   <ArrowRightLeft className={`w-3.5 h-3.5 shrink-0 ${filters.excludeTransfer ? 'text-white' : 'text-amber-600'}`} />
-                  <span className="whitespace-nowrap uppercase font-black text-[11px] sm:text-xs">
+                  <span className="truncate uppercase font-black text-[11px] sm:text-xs">
                     {filters.excludeTransfer ? 'Non-Transfer ✓' : 'Tanpa Transfer'}
                   </span>
                 </button>
 
                 <button
+                  type="button"
                   onClick={clearAllFilters}
                   disabled={!dataLoaded}
-                  className="px-4 h-[42px] bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1.5 border border-rose-300 disabled:opacity-50 cursor-pointer shrink-0"
+                  className="w-full min-w-0 px-2 sm:px-3 h-[42px] bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 font-black rounded-xl shadow-sm transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1.5 sm:gap-2 border border-rose-300 disabled:opacity-50 cursor-pointer"
                   title="Bersihkan Semua Filter"
                 >
                   <RotateCcw className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                  <span className="tracking-wider uppercase text-[11px] font-black whitespace-nowrap">Clear</span>
+                  <span className="truncate uppercase text-[11px] sm:text-xs font-black tracking-wider">Clear</span>
                 </button>
               </div>
             </div>
@@ -10279,6 +10322,146 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           loadLogEntries(currentPage, itemsPerPage);
         }}
       />
+
+      {/* MODAL CEK SALDO 2 / AUDIT MINUS 2 (ENGINE V2) */}
+      <CekSaldo2Modal
+        isOpen={isAnalysisModal2Open}
+        onClose={() => setIsAnalysisModal2Open(false)}
+        allSkus={allSkus}
+        initialSku={filters.sku || ''}
+        onDataUpdated={() => {
+          loadLogEntries(currentPage, itemsPerPage);
+        }}
+        showToast={showToast}
+      />
+
+      {/* MODAL FIX SCAN DATE (IN TRANSACTIONS) */}
+      <Modal
+        isOpen={isFixScanModalOpen}
+        onClose={() => !isRepairing && setIsFixScanModalOpen(false)}
+        title="Perbaiki Tanggal Scan Masuk (Fix Scan Date)"
+        size="md"
+      >
+        <div className="space-y-4">
+          <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3.5 flex items-start gap-3">
+            <Calendar className="w-5 h-5 text-indigo-600 mt-0.5 shrink-0" />
+            <div className="text-xs text-indigo-900 leading-relaxed">
+              <span className="font-bold block text-indigo-950 mb-0.5">Sinkronisasi Tgl Scan Transaksi MASUK (IN):</span>
+              Fitur ini menyamakan kolom <strong>Tgl Scan</strong> dengan <strong>Tgl Masuk</strong> untuk data transaksi IN yang tanggal scannya tidak sesuai atau kosong akibat migrasi data.
+            </div>
+          </div>
+
+          {/* Pilihan Cakupan (Scope) */}
+          <div className="space-y-2">
+            <label className="text-xs font-black text-slate-700 uppercase tracking-wider block">
+              Pilih Target Perbaikan:
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={isRepairing}
+                onClick={() => setFixScanScope('specific')}
+                className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
+                  fixScanScope === 'specific'
+                    ? 'bg-indigo-50 border-indigo-500 ring-2 ring-indigo-400 text-indigo-950 font-bold'
+                    : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-700'
+                }`}
+              >
+                <span className="text-xs font-black">SKU Tertentu</span>
+                <span className="text-[11px] text-slate-500 font-normal">Hanya perbaiki 1 SKU pilihan</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isRepairing}
+                onClick={() => setFixScanScope('all')}
+                className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
+                  fixScanScope === 'all'
+                    ? 'bg-indigo-50 border-indigo-500 ring-2 ring-indigo-400 text-indigo-950 font-bold'
+                    : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-700'
+                }`}
+              >
+                <span className="text-xs font-black">Semua SKU (All SKU)</span>
+                <span className="text-[11px] text-slate-500 font-normal">Perbaiki seluruh database IN</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Input SKU jika Scope === 'specific' */}
+          {fixScanScope === 'specific' && (
+            <div className="space-y-1.5 animate-in fade-in duration-200">
+              <label className="text-xs font-bold text-slate-700 block">
+                Pilih / Ketik SKU:
+              </label>
+              <FilterDropdown
+                value={fixScanSku}
+                onChange={(val) => setFixScanSku(val)}
+                options={allSkus}
+                placeholder="Ketik nama produk / SKU..."
+                loading={false}
+              />
+            </div>
+          )}
+
+          {/* Progress Bar saat proses berlangsung */}
+          {isRepairing && (
+            <div className="space-y-2 bg-slate-900 text-white p-3.5 rounded-xl border border-indigo-500/50 shadow-md">
+              <div className="flex items-center justify-between text-xs font-bold">
+                <span className="flex items-center gap-1.5">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                  Memperbaiki data transaksi IN...
+                </span>
+                <span className="font-mono text-indigo-300">
+                  {migrationProgress.total > 0
+                    ? `${migrationProgress.current} / ${migrationProgress.total} (${Math.round((migrationProgress.current / migrationProgress.total) * 100)}%)`
+                    : 'Menyiapkan...'}
+                </span>
+              </div>
+              <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                <div
+                  className="bg-indigo-500 h-full transition-all duration-300"
+                  style={{
+                    width: migrationProgress.total > 0
+                      ? `${(migrationProgress.current / migrationProgress.total) * 100}%`
+                      : '15%'
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Tombol Aksi */}
+          <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-200">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setIsFixScanModalOpen(false)}
+              disabled={isRepairing}
+              className="h-10 px-4 text-xs font-bold"
+            >
+              Batal
+            </Button>
+            <Button
+              type="button"
+              onClick={handleExecuteFixScanDates}
+              disabled={isRepairing || (fixScanScope === 'specific' && !fixScanSku.trim())}
+              className="h-10 px-5 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              {isRepairing ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Memproses...</span>
+                </>
+              ) : (
+                <>
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span>Mulai Perbaiki Tgl Scan</span>
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
 {/* MODAL PENCARIAN MASSAL SKU */}
       <Modal

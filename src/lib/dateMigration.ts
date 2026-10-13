@@ -113,15 +113,24 @@ export const runDateMigration = async (onProgress: (current: number, total: numb
  * Repairs tgl_scan for IN transactions where tgl_scan was incorrectly set by migration/bulk import.
  * It will sync tgl_scan with tgl for affected records.
  */
-export const runScanDateRepair = async (onProgress: (current: number, total: number) => void) => {
-    console.log('Starting Scan Date Repair (IN transactions)...');
+export const runScanDateRepair = async (
+    onProgress: (current: number, total: number) => void,
+    targetSku?: string
+) => {
+    const cleanSku = (targetSku || '').trim();
+    console.log(`Starting Scan Date Repair (IN transactions)${cleanSku ? ` for SKU: ${cleanSku}` : ' for ALL SKUs'}...`);
 
-    // 1. Fetch only problematic IN entries
-    // We target entries where tgl and tgl_scan differ, or tgl_scan format is legacy
-    const { count, error: countError } = await supabase
+    // 1. Fetch only problematic IN entries (filtered by SKU if specified)
+    let countQuery = supabase
         .from('database_log')
         .select('*', { count: 'exact', head: true })
         .eq('type', 'IN');
+
+    if (cleanSku) {
+        countQuery = countQuery.ilike('sku', cleanSku);
+    }
+
+    const { count, error: countError } = await countQuery;
 
     if (countError) throw countError;
     const total = count || 0;
@@ -132,11 +141,16 @@ export const runScanDateRepair = async (onProgress: (current: number, total: num
     let repairedCount = 0;
 
     for (let from = 0; from < total; from += pageSize) {
-        const { data: batch, error } = await supabase
+        let batchQuery = supabase
             .from('database_log')
             .select('id, tgl, tgl_scan')
-            .eq('type', 'IN')
-            .range(from, from + pageSize - 1);
+            .eq('type', 'IN');
+
+        if (cleanSku) {
+            batchQuery = batchQuery.ilike('sku', cleanSku);
+        }
+
+        const { data: batch, error } = await batchQuery.range(from, from + pageSize - 1);
 
         if (error) throw error;
         if (!batch) continue;

@@ -76,6 +76,14 @@ export function Layout({ children }: LayoutProps) {
       return Boolean(isDevMode);
     }
 
+    // Khusus Admin & Dev Tools: Hanya untuk Developer & Admin (bukan role staf gudang)
+    if (href === '/admin-dev-tools') {
+      const role = (userRole || '').trim().toLowerCase();
+      const isGudangStaff = role.includes('gudang') || role === 'staf_gudang';
+      const isAdminOrDev = role === 'developer' || role === 'admin' || role.includes('admin') || role.includes('developer') || isDevMode || userEmail === 'devmode';
+      return isAdminOrDev && !isGudangStaff;
+    }
+
     if (userRole === 'developer' || isDevMode || userEmail === 'devmode') return true;
     if (userPermissions.includes('*')) return true;
     // Fallback during initial load to prevent side menu from disappearing

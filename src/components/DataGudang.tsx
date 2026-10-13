@@ -14,6 +14,7 @@ import { verifyPin } from '../lib/pinValidator';
 import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { DatabaseService } from '../lib/DatabaseService';
 import { SyncSkuCasingModal } from './SyncSkuCasingModal';
+import { CekDataDuplikatGudangModal } from './CekDataDuplikatGudangModal';
 import { getMasterProductsMap, normalizeSkuSync } from '../services/skuNormalizationService';
 import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance, isOutDateEligibleForIn } from '../services/scanDateMatchService';
 import { parseMultipleSkus } from '../services/transferPurgeService';
@@ -338,6 +339,7 @@ export function DataGudang() {
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
   const [bulkEditItems, setBulkEditItems] = useState<StockReport[]>([]);
   const [isSkuCasingModalOpen, setIsSkuCasingModalOpen] = useState(false);
+  const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [rackSearchTerm, setRackSearchTerm] = useState('');
   const [showRackDropdown, setShowRackDropdown] = useState(false);
@@ -367,10 +369,8 @@ export function DataGudang() {
   });
   const [isDeactivating, setIsDeactivating] = useState(false);
 
-  // DevMode State
-  const [isDevMode, setIsDevMode] = useState(() => {
-    return typeof window !== 'undefined' && localStorage.getItem('devmode') === 'true';
-  });
+  // DevMode State (Default disembunyikan; muncul saat ketik devmode)
+  const [isDevMode, setIsDevMode] = useState(false);
   const [toast, setToast] = useState<{
     isOpen: boolean;
     message: string;
@@ -701,6 +701,10 @@ export function DataGudang() {
     const targetSequence = 'DEVMODE';
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Abaikan jika fokus di dalam input atau textarea
+      const target = event.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+
       // Abaikan jika menekan tombol modifier (Ctrl, Alt, Meta/Cmd)
       if (event.ctrlKey || event.metaKey || event.altKey) return;
 
@@ -723,10 +727,10 @@ export function DataGudang() {
             const next = !prev;
             if (next) {
               localStorage.setItem('devmode', 'true');
-              showToast('DevMode Aktif! Fitur Sinkron Huruf SKU & Cek Saldo ditampilkan.', 'success');
+              showToast('DevMode Aktif! Tombol Cek Data Duplikat & Fitur Dev ditampilkan.', 'success');
             } else {
               localStorage.removeItem('devmode');
-              showToast('DevMode Nonaktif.', 'warning');
+              showToast('DevMode Nonaktif. Tombol Cek Data Duplikat disembunyikan.', 'warning');
             }
             return next;
           });
@@ -740,19 +744,6 @@ export function DataGudang() {
     };
   }, [showToast]);
 
-  // Sync isDevMode with localStorage / storage events
-  useEffect(() => {
-    const syncDevMode = () => {
-      const isDev = localStorage.getItem('devmode') === 'true';
-      setIsDevMode(isDev);
-    };
-    const interval = setInterval(syncDevMode, 1000);
-    window.addEventListener('storage', syncDevMode);
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('storage', syncDevMode);
-    };
-  }, []);
 
   // Load data when filters or pagination change
   useEffect(() => {
@@ -3798,6 +3789,15 @@ export function DataGudang() {
                 {isDevMode && (
                   <>
                     <button
+                      onClick={() => setIsDuplicateModalOpen(true)}
+                      disabled={loading}
+                      className="h-11 px-4 lg:px-5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-amber-400/50 backdrop-blur-md disabled:opacity-50 cursor-pointer"
+                      title="Cek & Bersihkan Data Duplikat (SKU dan Lokasi Rak yang sama)"
+                    >
+                      <Copy className="h-4 w-4" />
+                      <span className="uppercase text-[10px] lg:text-xs font-black">Cek Data Duplikat</span>
+                    </button>
+                    <button
                       onClick={() => setIsSkuCasingModalOpen(true)}
                       disabled={loading}
                       className="h-11 px-4 lg:px-5 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2.5 border border-teal-400/50 backdrop-blur-md disabled:opacity-50"
@@ -6045,6 +6045,13 @@ export function DataGudang() {
         <SyncSkuCasingModal
           isOpen={isSkuCasingModalOpen}
           onClose={() => setIsSkuCasingModalOpen(false)}
+          onSuccess={refreshData}
+        />
+
+        {/* Modal Cek & Bersihkan Data Duplikat Gudang */}
+        <CekDataDuplikatGudangModal
+          isOpen={isDuplicateModalOpen}
+          onClose={() => setIsDuplicateModalOpen(false)}
           onSuccess={refreshData}
         />
 

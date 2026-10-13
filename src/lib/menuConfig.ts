@@ -23,11 +23,13 @@ import {
   Ban,
   Upload,
   Boxes,
-  Flame
+  Flame,
+  Wrench
 } from 'lucide-react';
 
 export const navigationItems = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Admin & Dev Tools', href: '/admin-dev-tools', icon: Wrench },
   { name: 'Stok Lantai 3', href: '/stok-lantai-3', icon: Building },
   { name: 'Monitoring Harian', href: '/monitoring-harian', icon: Activity },
   { name: 'Input Barang Masuk', href: '/input-masuk', icon: Package },
