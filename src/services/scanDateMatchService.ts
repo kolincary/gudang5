@@ -134,6 +134,18 @@ export const getChronologicalDistance = (outTs: number, inTs: number): number =>
   return Math.abs(diff) + 30 * 24 * 3600 * 1000;
 };
 
+/**
+ * Memastikan tanggal input transaksi OUT berada di tanggal yang sama atau setelah tanggal input IN.
+ * Contoh: Data IN diinput tanggal 2026-10-03 berarti cari tanggal OUT yang sama atau diatasnya (2026-10-03, 2026-10-04, 2026-10-05, dst).
+ * Transaksi OUT yang diinput sebelum tanggal IN (misal 2026-02-25 < 2026-10-03) TIDAK BOLEH dipasangkan.
+ */
+export const isOutDateEligibleForIn = (outDateStr?: string, inDateStr?: string): boolean => {
+  const normOut = normalizeDate(outDateStr);
+  const normIn = normalizeDate(inDateStr);
+  if (!normOut || !normIn) return true; // jika salah satu tidak memiliki tanggal, jangan diblokir
+  return normOut >= normIn;
+};
+
 const normalizeRak = (rak?: string): string => {
   return (rak || '').trim().toUpperCase().replace(/\./g, '');
 };
@@ -349,7 +361,9 @@ export function analyzeAndMatchScanDates(
   // Helper untuk memeriksa bucket terdekat di rak yang sama bagi seorang kandidat OUT
   const getClosestSameRakBucket = (cand: OutCandidate) => {
     const buckets = inBuckets.filter(
-      b => normalizeRak(b.rak) === normalizeRak(cand.rak) && b.remainingCapacity > 0
+      b => normalizeRak(b.rak) === normalizeRak(cand.rak) &&
+           b.remainingCapacity > 0 &&
+           isOutDateEligibleForIn(cand.tgl, b.tgl)
     );
     if (buckets.length === 0) return null;
     buckets.sort(
@@ -360,147 +374,72 @@ export function analyzeAndMatchScanDates(
     return buckets[0];
   };
 
-  // --- FASE 0: MATCHING IDENTIK SKU & QTY (PRIORITAS NOMOR 1 MUTLAK) ---
-  // Cari pasangan 1-ke-1 yang memiliki SKU dan QTY sama persis (misal IN 1 vs OUT 1, IN 24 vs OUT 24),
-  // mengutamakan kedekatan waktu nota (timestamp) bahkan jika rak / tgl_scan saat ini berbeda
-  // akibat salah input atau redistribusi sebelumnya.
+  // --- MATCHING FIFO KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
   for (const bucket of inBuckets) {
     if (bucket.remainingCapacity <= 0) continue;
 
-    // Ambil semua kandidat OUT belum teralokasi dengan Qty sama persis dengan kapasitas bucket IN
-    const exactQtyMatches = candidatesToMatch.filter(
-      c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
-    );
+    while (bucket.remainingCapacity > 0) {
+      const eligibleCandidates = candidatesToMatch.filter(
+        c =>
+          !c.isAssigned &&
+          c.jumlah <= bucket.remainingCapacity &&
+          (strictSameRak ? normalizeRak(c.rak) === normalizeRak(bucket.rak) : true) &&
+          isOutDateEligibleForIn(c.tgl, bucket.tgl)
+      );
 
-    if (exactQtyMatches.length > 0) {
-      exactQtyMatches.sort((a, b) => {
-        const aSameRak = normalizeRak(a.rak) === normalizeRak(bucket.rak) ? 0 : 1;
-        const bSameRak = normalizeRak(b.rak) === normalizeRak(bucket.rak) ? 0 : 1;
-        const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
-        const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
+      if (eligibleCandidates.length === 0) break;
 
-        // Jika salah satu raknya sama dan rentang waktunya dalam batas wajar (< 30 hari), utamakan yang sama rak
-        if (aSameRak !== bSameRak) {
-          const aDays = distA / (24 * 3600 * 1000);
-          const bDays = distB / (24 * 3600 * 1000);
-          if (aDays < 30 && bDays > 30) return -1;
-          if (bDays < 30 && aDays > 30) return 1;
+      eligibleCandidates.sort((a, b) => {
+        const distA = a.timestamp - bucket.timestamp;
+        const distB = b.timestamp - bucket.timestamp;
+        const daysA = distA / (24 * 3600 * 1000);
+        const daysB = distB / (24 * 3600 * 1000);
+
+        // 1. Proximity Window: Jika salah satu dekat (<= 35 hari) dan yang lain jauh (> 35 hari), dahulukan yang dekat
+        if (daysA <= 35 && daysB > 35) return -1;
+        if (daysB <= 35 && daysA > 35) return 1;
+
+        // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+        const aIsSame = normalizeRak(a.rak) === normalizeRak(bucket.rak) ? 0 : 1;
+        const bIsSame = normalizeRak(b.rak) === normalizeRak(bucket.rak) ? 0 : 1;
+        if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
+          return aIsSame - bIsSame;
         }
 
         return distA - distB;
       });
 
-      const bestMatch = exactQtyMatches[0];
-      const isDiffRak = normalizeRak(bestMatch.rak) !== normalizeRak(bucket.rak);
+      const bestCandidate = eligibleCandidates[0];
+      const isSameRak = normalizeRak(bestCandidate.rak) === normalizeRak(bucket.rak);
+      const isExact = bestCandidate.jumlah === bucket.remainingCapacity;
 
-      bestMatch.isAssigned = true;
-      bestMatch.newTglScan = bucket.targetTglScan;
-      bestMatch.newRak = bucket.rak;
-      bestMatch.newSubRak = bucket.sub_rak || bucket.rak;
-      bestMatch.status = isDiffRak ? 'EXACT_QTY_DIFF_RAK' : 'EXACT_MATCH';
-      bestMatch.statusLabel = isDiffRak ? '🎯 Klop Pas (Kembalikan ke Rak IN)' : '🎯 Klop Pas (Sama Rak)';
-      bestMatch.badgeBg = isDiffRak ? 'bg-teal-100' : 'bg-emerald-100';
-      bestMatch.badgeText = isDiffRak ? 'text-teal-800' : 'text-emerald-800';
-      bestMatch.badgeBorder = isDiffRak ? 'border-teal-300' : 'border-emerald-300';
-      bestMatch.matchReason = isDiffRak
-        ? `Klop Pas Qty ${bestMatch.jumlah} pcs (Dikembalikan ke Rak ${bucket.rak} sesuai nota IN ${bucket.tgl})`
-        : `Klop Pas Qty ${bestMatch.jumlah} pcs di rak ${bestMatch.rak} (Nota Terdekat vs IN ${bucket.tgl})`;
-      bestMatch.matchedInRef = {
-        id: bucket.id,
-        tgl: bucket.tgl,
-        waktu: bucket.waktu,
-        rak: bucket.rak,
-        tgl_scan: bucket.targetTglScan
-      };
-
-      bucket.remainingCapacity -= bestMatch.jumlah;
-      exactMatchCount++;
-    }
-  }
-
-  // --- FASE 1: MATCHING SAMA RAK (PRIORITAS SISA) ---
-  // Pass 1A: Exact Quantity & Sama Rak (Nota Terdekat)
-  for (const bucket of inBuckets) {
-    if (bucket.remainingCapacity <= 0) continue;
-
-    const exactMatches = candidatesToMatch.filter(
-      c =>
-        !c.isAssigned &&
-        c.jumlah === bucket.remainingCapacity &&
-        normalizeRak(c.rak) === normalizeRak(bucket.rak)
-    );
-
-    if (exactMatches.length > 0) {
-      exactMatches.sort((a, b) => {
-        // Prioritaskan kandidat yang bucket terdekatnya memang bucket ini
-        const aClosest = getClosestSameRakBucket(a);
-        const bClosest = getClosestSameRakBucket(b);
-        const aIsThis = aClosest?.id === bucket.id ? 0 : 1;
-        const bIsThis = bClosest?.id === bucket.id ? 0 : 1;
-        if (aIsThis !== bIsThis) return aIsThis - bIsThis;
-
-        return getChronologicalDistance(a.timestamp, bucket.timestamp) - getChronologicalDistance(b.timestamp, bucket.timestamp);
-      });
-
-      const bestMatch = exactMatches[0];
-      bestMatch.isAssigned = true;
-      bestMatch.newTglScan = bucket.targetTglScan;
-      bestMatch.newRak = bucket.rak;
-      bestMatch.newSubRak = bucket.sub_rak || bucket.rak;
-      bestMatch.status = 'EXACT_MATCH';
-      bestMatch.statusLabel = '🎯 Klop Pas (Sama Rak)';
-      bestMatch.badgeBg = 'bg-emerald-100';
-      bestMatch.badgeText = 'text-emerald-800';
-      bestMatch.badgeBorder = 'border-emerald-300';
-      bestMatch.matchReason = `Klop Pas Qty ${bestMatch.jumlah} pcs di rak ${bestMatch.rak} (Nota Terdekat vs IN ${bucket.tgl})`;
-      bestMatch.matchedInRef = {
-        id: bucket.id,
-        tgl: bucket.tgl,
-        waktu: bucket.waktu,
-        rak: bucket.rak,
-        tgl_scan: bucket.targetTglScan
-      };
-
-      bucket.remainingCapacity -= bestMatch.jumlah;
-      exactMatchCount++;
-    }
-  }
-
-  // Pass 1B: FIFO Partial Sama Rak (jika kuota IN belum habis dan masih ada OUT di rak yang sama)
-  for (const bucket of inBuckets) {
-    if (bucket.remainingCapacity <= 0) continue;
-
-    while (bucket.remainingCapacity > 0) {
-      const sameRakMatches = candidatesToMatch.filter(
-        c =>
-          !c.isAssigned &&
-          c.jumlah <= bucket.remainingCapacity &&
-          normalizeRak(c.rak) === normalizeRak(bucket.rak)
-      );
-
-      if (sameRakMatches.length === 0) break;
-
-      sameRakMatches.sort((a, b) => {
-        const aClosest = getClosestSameRakBucket(a);
-        const bClosest = getClosestSameRakBucket(b);
-        const aIsThis = aClosest?.id === bucket.id ? 0 : 1;
-        const bIsThis = bClosest?.id === bucket.id ? 0 : 1;
-        if (aIsThis !== bIsThis) return aIsThis - bIsThis;
-
-        return getChronologicalDistance(a.timestamp, bucket.timestamp) - getChronologicalDistance(b.timestamp, bucket.timestamp);
-      });
-
-      const bestCandidate = sameRakMatches[0];
       bestCandidate.isAssigned = true;
       bestCandidate.newTglScan = bucket.targetTglScan;
       bestCandidate.newRak = bucket.rak;
       bestCandidate.newSubRak = bucket.sub_rak || bucket.rak;
-      bestCandidate.status = 'FIFO_MATCH';
-      bestCandidate.statusLabel = '⚡ FIFO (Sama Rak)';
-      bestCandidate.badgeBg = 'bg-sky-100';
-      bestCandidate.badgeText = 'text-sky-800';
-      bestCandidate.badgeBorder = 'border-sky-300';
-      bestCandidate.matchReason = `Alokasi Kuota IN ${bucket.tgl} (${bestCandidate.jumlah} pcs di rak ${bestCandidate.rak}, sisa kuota IN: ${bucket.remainingCapacity - bestCandidate.jumlah})`;
+      bestCandidate.status = isSameRak
+        ? (isExact ? 'EXACT_MATCH' : 'FIFO_MATCH')
+        : (isExact ? 'EXACT_QTY_DIFF_RAK' : 'FIFO_MATCH');
+      bestCandidate.statusLabel = isSameRak
+        ? (isExact ? '🎯 Klop Pas (Sama Rak)' : '⚡ FIFO (Sama Rak)')
+        : (isExact ? '🎯 Klop Pas (Beda Rak)' : '⚡ FIFO (Beda Rak)');
+      bestCandidate.badgeBg = isSameRak
+        ? (isExact ? 'bg-emerald-100' : 'bg-sky-100')
+        : (isExact ? 'bg-teal-100' : 'bg-cyan-100');
+      bestCandidate.badgeText = isSameRak
+        ? (isExact ? 'text-emerald-800' : 'text-sky-800')
+        : (isExact ? 'text-teal-800' : 'text-cyan-800');
+      bestCandidate.badgeBorder = isSameRak
+        ? (isExact ? 'border-emerald-300' : 'border-sky-300')
+        : (isExact ? 'border-teal-300' : 'border-cyan-300');
+      bestCandidate.matchReason = isSameRak
+        ? (isExact
+            ? `Klop Pas Qty ${bestCandidate.jumlah} pcs di rak ${bestCandidate.rak} (Nota Terdekat vs IN ${bucket.tgl})`
+            : `Alokasi Kuota IN ${bucket.tgl} (${bestCandidate.jumlah} pcs di rak ${bestCandidate.rak}, sisa kuota IN: ${bucket.remainingCapacity - bestCandidate.jumlah})`)
+        : (isExact
+            ? `Klop Pas Qty ${bestCandidate.jumlah} pcs (Pindah Rak: ${bestCandidate.rak || '-'} ➔ ${bucket.rak}, vs IN ${bucket.tgl})`
+            : `Alokasi Kuota IN ${bucket.tgl} (${bestCandidate.jumlah} pcs, Pindah Rak: ${bestCandidate.rak || '-'} ➔ ${bucket.rak})`);
+
       bestCandidate.matchedInRef = {
         id: bucket.id,
         tgl: bucket.tgl,
@@ -510,85 +449,9 @@ export function analyzeAndMatchScanDates(
       };
 
       bucket.remainingCapacity -= bestCandidate.jumlah;
-      fifoMatchCount++;
-    }
-  }
-
-  // --- FASE 2: MATCHING BEDA RAK (CROSS-RAK ALOKASI) ---
-  // Hanya dijalankan jika strictSameRak dimatikan (false), setelah seluruh kandidat rak sama dipasangkan
-  if (!strictSameRak) {
-    // Pass 2A: Exact Quantity Beda Rak (Nota Terdekat)
-    for (const bucket of inBuckets) {
-      if (bucket.remainingCapacity <= 0) continue;
-
-      const exactQtyMatches = candidatesToMatch.filter(
-        c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
-      );
-
-      if (exactQtyMatches.length > 0) {
-        exactQtyMatches.sort((a, b) => {
-          return getChronologicalDistance(a.timestamp, bucket.timestamp) - getChronologicalDistance(b.timestamp, bucket.timestamp);
-        });
-
-        const bestMatch = exactQtyMatches[0];
-        bestMatch.isAssigned = true;
-        bestMatch.newTglScan = bucket.targetTglScan;
-        bestMatch.newRak = bucket.rak;
-        bestMatch.newSubRak = bucket.sub_rak || bucket.rak;
-        bestMatch.status = 'EXACT_QTY_DIFF_RAK';
-        bestMatch.statusLabel = '🎯 Klop Pas (Beda Rak)';
-        bestMatch.badgeBg = 'bg-teal-100';
-        bestMatch.badgeText = 'text-teal-800';
-        bestMatch.badgeBorder = 'border-teal-300';
-        bestMatch.matchReason = `Klop Pas Qty ${bestMatch.jumlah} pcs (Pindah Rak: ${bestMatch.rak || '-'} ➔ ${bucket.rak}, vs IN ${bucket.tgl})`;
-        bestMatch.matchedInRef = {
-          id: bucket.id,
-          tgl: bucket.tgl,
-          waktu: bucket.waktu,
-          rak: bucket.rak,
-          tgl_scan: bucket.targetTglScan
-        };
-
-        bucket.remainingCapacity -= bestMatch.jumlah;
+      if (isExact) {
         exactMatchCount++;
-      }
-    }
-
-    // Pass 2B: FIFO Partial Beda Rak (Nota Terdekat)
-    for (const bucket of inBuckets) {
-      if (bucket.remainingCapacity <= 0) continue;
-
-      while (bucket.remainingCapacity > 0) {
-        const availableCandidates = candidatesToMatch.filter(
-          c => !c.isAssigned && c.jumlah <= bucket.remainingCapacity
-        );
-
-        if (availableCandidates.length === 0) break;
-
-        availableCandidates.sort((a, b) => {
-          return getChronologicalDistance(a.timestamp, bucket.timestamp) - getChronologicalDistance(b.timestamp, bucket.timestamp);
-        });
-
-        const bestCandidate = availableCandidates[0];
-        bestCandidate.isAssigned = true;
-        bestCandidate.newTglScan = bucket.targetTglScan;
-        bestCandidate.newRak = bucket.rak;
-        bestCandidate.newSubRak = bucket.sub_rak || bucket.rak;
-        bestCandidate.status = 'FIFO_MATCH';
-        bestCandidate.statusLabel = '⚡ FIFO (Beda Rak)';
-        bestCandidate.badgeBg = 'bg-cyan-100';
-        bestCandidate.badgeText = 'text-cyan-800';
-        bestCandidate.badgeBorder = 'border-cyan-300';
-        bestCandidate.matchReason = `Alokasi Kuota IN ${bucket.tgl} (${bestCandidate.jumlah} pcs, Pindah Rak: ${bestCandidate.rak || '-'} ➔ ${bucket.rak})`;
-        bestCandidate.matchedInRef = {
-          id: bucket.id,
-          tgl: bucket.tgl,
-          waktu: bucket.waktu,
-          rak: bucket.rak,
-          tgl_scan: bucket.targetTglScan
-        };
-
-        bucket.remainingCapacity -= bestCandidate.jumlah;
+      } else {
         fifoMatchCount++;
       }
     }

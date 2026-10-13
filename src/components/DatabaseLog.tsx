@@ -20,7 +20,7 @@ import { AdjustmentStockOutModal } from './AdjustmentStockOutModal';
 import { SubsequentLogsModal } from './SubsequentLogsModal';
 import { ScanDateAutoMatchModal } from './ScanDateAutoMatchModal';
 import { SyncTransferOutScanDateModal } from './SyncTransferOutScanDateModal';
-import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance } from '../services/scanDateMatchService';
+import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance, isOutDateEligibleForIn } from '../services/scanDateMatchService';
 
 const normRak = (r?: string) => (r || '').trim().toUpperCase().replace(/\./g, '');
 
@@ -37,6 +37,7 @@ export interface DatabaseLogEntry {
   user: string;
   sub_rak: string;
   log_update_user: string;
+  log_audit_saldo?: string;
   is_adjustment?: boolean;
   created_at?: string;
   tgl_normalized?: string;
@@ -60,6 +61,9 @@ export interface OutTransactionDetail {
   tgl_scan: string;
   rak: string;
   sub_rak?: string;
+  tgl?: string;
+  log_audit_saldo?: string;
+  isTimeAnomaly?: boolean;
 }
 
 export interface SurplusOption {
@@ -79,10 +83,15 @@ export interface BalanceAnalysisResult {
   totalOut: number;
   balance: number;
   outTransactions: OutTransactionDetail[];
-  diagnosticType: 'SURPLUS' | 'BALANCED' | 'DEFICIT_FIXABLE_SAME_RAK' | 'DEFICIT_FIXABLE_OTHER_RAK' | 'DEFICIT_PURE_OVERCUT';
+  diagnosticType: 'SURPLUS' | 'BALANCED' | 'DEFICIT_FIXABLE_SAME_RAK' | 'DEFICIT_FIXABLE_OTHER_RAK' | 'DEFICIT_PURE_OVERCUT' | 'TIME_ANOMALY';
   recommendedAction: string;
   availableSurplusesSameRak: SurplusOption[];
   availableSurplusesOtherRak: SurplusOption[];
+  earliestInTgl?: string;
+  hasTimeAnomaly?: boolean;
+  timeAnomalyCount?: number;
+  timeAnomalyQty?: number;
+  timeAnomalyOuts?: OutTransactionDetail[];
 }
 
 export type TransferAnomalyType = 'DUPLICATE' | 'INITIAL_MISMATCH' | 'ORPHAN' | 'SAME_RAK' | 'DEFICIT';
@@ -282,7 +291,7 @@ export interface BatchGroupItem {
   rawTglScan: string;
   inEntries: DatabaseLogEntry[];
   outEntries: DatabaseLogEntry[];
-  sortedEntries: (DatabaseLogEntry & { isRakMismatch?: boolean; mismatchInitialRaks?: string[] })[];
+  sortedEntries: (DatabaseLogEntry & { isRakMismatch?: boolean; mismatchInitialRaks?: string[]; isTimeAnomaly?: boolean })[];
   initialInRaks: Set<string>;
   initialInRaksList: string[];
   totalIn: number;
@@ -290,6 +299,9 @@ export interface BatchGroupItem {
   balance: number;
   hasRakMismatch: boolean;
   mismatchCount: number;
+  hasTimeAnomaly?: boolean;
+  timeAnomalyCount?: number;
+  timeAnomalyOuts?: DatabaseLogEntry[];
   rakBreakdown?: { rak: string; inQty: number; outQty: number; balance: number }[];
 }
 
@@ -543,7 +555,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   // --- GROUPING (SKU + TGL SCAN + IN/OUT) & OUT RAK MISMATCH AUDIT STATE ---
   const [isGroupedMode, setIsGroupedMode] = useState(false);
   const [groupIncludeRak, setGroupIncludeRak] = useState(true);
-  const [groupedSubFilter, setGroupedSubFilter] = useState<'ALL' | 'MISMATCH' | 'DEFICIT'>('ALL');
+  const [groupedSubFilter, setGroupedSubFilter] = useState<'ALL' | 'MISMATCH' | 'DEFICIT' | 'ANOMALY'>('ALL');
 
   // --- HAPUS TGL SCAN BATCH MINUS (DEFISIT) STATE ---
   const [isClearDeficitModalOpen, setIsClearDeficitModalOpen] = useState(false);
@@ -638,8 +650,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
       const initialInRaksList = Array.from(initialInRaks);
       let mismatchCount = 0;
+      let timeAnomalyCount = 0;
+      const timeAnomalyOuts: DatabaseLogEntry[] = [];
+      const batchRefDate = normalizeDate(group.rawTglScan) || (inEntries.length > 0 ? normalizeDate(inEntries[0].tgl) : '');
 
-      // Sort OUT entries chronologically and detect mismatch against IN racks
+      // Sort OUT entries chronologically and detect mismatch against IN racks and date anomalies
       const enrichedOutEntries = outEntries
         .sort((a, b) => {
           const dtA = `${a.tgl} ${a.waktu}`;
@@ -652,17 +667,27 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           if (isRakMismatch) {
             mismatchCount++;
           }
+
+          const outDate = normalizeDate(entry.tgl);
+          const isTimeAnomaly = Boolean(batchRefDate && outDate && outDate < batchRefDate);
+          if (isTimeAnomaly) {
+            timeAnomalyCount++;
+            timeAnomalyOuts.push(entry);
+          }
+
           return {
             ...entry,
             isRakMismatch,
-            mismatchInitialRaks: initialInRaksList
+            mismatchInitialRaks: initialInRaksList,
+            isTimeAnomaly
           };
         });
 
       const enrichedInEntries = inEntries.map(entry => ({
         ...entry,
         isRakMismatch: false,
-        mismatchInitialRaks: initialInRaksList
+        mismatchInitialRaks: initialInRaksList,
+        isTimeAnomaly: false
       }));
 
       const sortedEntries = [...enrichedInEntries, ...enrichedOutEntries];
@@ -704,6 +729,9 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         balance,
         hasRakMismatch,
         mismatchCount,
+        hasTimeAnomaly: timeAnomalyCount > 0,
+        timeAnomalyCount,
+        timeAnomalyOuts,
         rakBreakdown
       });
     });
@@ -718,6 +746,9 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     if (groupedSubFilter === 'DEFICIT') {
       return batchGroupData.filter(g => g.balance < 0);
     }
+    if (groupedSubFilter === 'ANOMALY') {
+      return batchGroupData.filter(g => g.hasTimeAnomaly);
+    }
     return batchGroupData;
   }, [batchGroupData, groupedSubFilter]);
 
@@ -725,8 +756,10 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     const totalGroups = batchGroupData.length;
     const mismatchGroups = batchGroupData.filter(g => g.hasRakMismatch).length;
     const deficitGroups = batchGroupData.filter(g => g.balance < 0).length;
+    const anomalyGroups = batchGroupData.filter(g => g.hasTimeAnomaly).length;
     const totalMismatchRows = batchGroupData.reduce((sum, g) => sum + g.mismatchCount, 0);
-    return { totalGroups, mismatchGroups, deficitGroups, totalMismatchRows };
+    const totalAnomalyRows = batchGroupData.reduce((sum, g) => sum + g.timeAnomalyCount, 0);
+    return { totalGroups, mismatchGroups, deficitGroups, anomalyGroups, totalMismatchRows, totalAnomalyRows };
   }, [batchGroupData]);
 
   // --- STOCK BALANCE ANALYSIS & DEFICIT AUDIT STATE ---
@@ -738,7 +771,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const [analysisSkuInputMode, setAnalysisSkuInputMode] = useState<'single' | 'bulk'>('single');
   const [bulkAnalysisSkuInput, setBulkAnalysisSkuInput] = useState('');
   const [analyzedSkusList, setAnalyzedSkusList] = useState<string[]>([]);
-  const [analysisFilterTab, setAnalysisFilterTab] = useState<'ALL' | 'DEFICIT' | 'SURPLUS'>('ALL');
+  const [analysisFilterTab, setAnalysisFilterTab] = useState<'ALL' | 'DEFICIT' | 'SURPLUS' | 'ANOMALY'>('ALL');
   const [expandedDeficitKeys, setExpandedDeficitKeys] = useState<Set<string>>(new Set());
   const [singleTargetSelections, setSingleTargetSelections] = useState<Record<string, { targetRak: string; targetRawTglScan: string }>>({});
   const [isProcessingRemediation, setIsProcessingRemediation] = useState(false);
@@ -909,7 +942,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           while (hasMore) {
             let query = supabase
               .from('database_log')
-              .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu, user_name')
+              .select('*')
               .in('sku', chunk)
               .or('type.ilike.%IN%,type.ilike.%OUT%')
               .order('id', { ascending: true });
@@ -978,7 +1011,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
               diagnosticType: 'BALANCED',
               recommendedAction: '',
               availableSurplusesSameRak: [],
-              availableSurplusesOtherRak: []
+              availableSurplusesOtherRak: [],
+              hasTimeAnomaly: false,
+              timeAnomalyCount: 0,
+              timeAnomalyQty: 0,
+              timeAnomalyOuts: []
             });
           }
 
@@ -989,19 +1026,48 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
           if (finalType === 'IN') {
             result.totalIn += jumlah;
+            const inD = normalizeDate(log.tgl);
+            if (inD && (!result.earliestInTgl || inD < result.earliestInTgl)) {
+              result.earliestInTgl = inD;
+            }
           } else {
             result.totalOut += jumlah;
-            result.outTransactions.push({
+            const outDetail: OutTransactionDetail = {
               id: log.id,
               waktu: log.waktu,
               jumlah: jumlah,
               user: log.user_name || (log as any).user || '',
               tgl_scan: rawTglScan,
               rak: (log.rak || '').trim(),
-              sub_rak: (log.sub_rak || '').trim()
-            });
+              sub_rak: (log.sub_rak || '').trim(),
+              tgl: normalizeDate(log.tgl),
+              log_audit_saldo: log.log_audit_saldo,
+              isTimeAnomaly: false
+            };
+            result.outTransactions.push(outDetail);
           }
           result.balance = result.totalIn - result.totalOut;
+        });
+
+        // Evaluasi akurat anomali OUT < IN setelah semua baris IN dan OUT teragregasi
+        balanceMap.forEach(result => {
+          const refDate = normalizeDate(result.rawTglScan) || result.earliestInTgl || '';
+          if (refDate) {
+            result.timeAnomalyCount = 0;
+            result.timeAnomalyQty = 0;
+            result.timeAnomalyOuts = [];
+            result.outTransactions.forEach(outDetail => {
+              const outD = normalizeDate(outDetail.tgl);
+              const isAnomaly = Boolean(outD && outD < refDate);
+              outDetail.isTimeAnomaly = isAnomaly;
+              if (isAnomaly) {
+                result.hasTimeAnomaly = true;
+                result.timeAnomalyCount = (result.timeAnomalyCount || 0) + 1;
+                result.timeAnomalyQty = (result.timeAnomalyQty || 0) + outDetail.jumlah;
+                result.timeAnomalyOuts!.push(outDetail);
+              }
+            });
+          }
         });
 
         // 3. Smart Diagnostics for this SKU: identify surplus pools, run Tahap 0 (Exact Qty Matching), and match deficits
@@ -1067,34 +1133,44 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         inBuckets.sort((a, b) => a.timestamp - b.timestamp);
         outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-        // --- TAHAP 0: PRIORITAS NOMOR 1 MUTLAK — MATCHING IDENTIK SKU & QTY (1-ke-1) ---
+        // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
         for (const bucket of inBuckets) {
           if (bucket.remainingCapacity <= 0) continue;
-          const exactQtyMatches = outCandidates.filter(
-            c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
-          );
 
-          if (exactQtyMatches.length > 0) {
-            exactQtyMatches.sort((a, b) => {
+          while (bucket.remainingCapacity > 0) {
+            const eligibleOuts = outCandidates.filter(
+              c => !c.isAssigned &&
+                   c.jumlah <= bucket.remainingCapacity &&
+                   isOutDateEligibleForIn(c.tgl, bucket.tgl) &&
+                   !isForbiddenTransferRack(c.rak)
+            );
+
+            if (eligibleOuts.length === 0) break;
+
+            eligibleOuts.sort((a, b) => {
+              const distA = a.timestamp - bucket.timestamp;
+              const distB = b.timestamp - bucket.timestamp;
+              const daysA = distA / (24 * 3600 * 1000);
+              const daysB = distB / (24 * 3600 * 1000);
+
+              // 1. Proximity Window: Jika salah satu dekat (<= 35 hari) dan yang lain jauh (> 35 hari), dahulukan yang dekat
+              if (daysA <= 35 && daysB > 35) return -1;
+              if (daysB <= 35 && daysA > 35) return 1;
+
+              // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
               const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
               const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
-              const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
-              const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
-
-              if (aSameRak !== bSameRak) {
-                const aDays = distA / (24 * 3600 * 1000);
-                const bDays = distB / (24 * 3600 * 1000);
-                if (aDays < 30 && bDays > 30) return -1;
-                if (bDays < 30 && aDays > 30) return 1;
+              if (aSameRak !== bSameRak && Math.abs(daysA - daysB) < 14) {
+                return aSameRak - bSameRak;
               }
 
               return distA - distB;
             });
 
-            const bestMatch = exactQtyMatches[0];
-            bestMatch.isAssigned = true;
-            bestMatch.matchedIn = bucket;
-            bucket.remainingCapacity -= bestMatch.jumlah;
+            const best = eligibleOuts[0];
+            best.isAssigned = true;
+            best.matchedIn = bucket;
+            bucket.remainingCapacity -= best.jumlah;
           }
         }
 
@@ -1110,14 +1186,25 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
             g.diagnosticType = 'SURPLUS';
             g.recommendedAction = `Tersedia sisa stok (+${g.balance.toLocaleString()} pcs)`;
           } else if (g.balance === 0) {
-            g.diagnosticType = 'BALANCED';
-            g.recommendedAction = 'Stok seimbang (Habis potong pas)';
+            if (g.hasTimeAnomaly) {
+              g.diagnosticType = 'TIME_ANOMALY';
+              g.recommendedAction = `⚠️ Anomali Waktu: ${g.timeAnomalyCount} transaksi OUT (${g.timeAnomalyQty} pcs) memotong batch masuk (${g.tglScan}) yang tanggalnya lebih baru dari tanggal keluar!`;
+            } else {
+              g.diagnosticType = 'BALANCED';
+              g.recommendedAction = 'Stok seimbang (Habis potong pas)';
+            }
           } else {
             // Deficit / Minus
             const matchedCand = outCandidates.find(c => g.outTransactions.some(tx => tx.id === c.id) && c.matchedIn);
 
+            // Pastikan kandidat surplus hanya yang tanggal IN-nya <= tanggal transaksi OUT (tanggal OUT >= tanggal IN)
+            const isSurplusEligibleForOut = (surplusRawTgl: string) => {
+              if (!g.outTransactions || g.outTransactions.length === 0) return true;
+              return g.outTransactions.every(tx => !tx.tgl || isOutDateEligibleForIn(tx.tgl, surplusRawTgl));
+            };
+
             const sameRakSurpluses = surplusGroups
-              .filter(s => s.rak.toUpperCase() === g.rak.toUpperCase())
+              .filter(s => s.rak.toUpperCase() === g.rak.toUpperCase() && isSurplusEligibleForOut(s.rawTglScan))
               .map(s => ({
                 rak: s.rak,
                 tglScan: s.tglScan,
@@ -1127,7 +1214,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
             const otherRakSurpluses = !isForbiddenTransferRack(g.rak)
               ? surplusGroups
-                  .filter(s => s.rak.toUpperCase() !== g.rak.toUpperCase() && !isForbiddenTransferRack(s.rak))
+                  .filter(s => s.rak.toUpperCase() !== g.rak.toUpperCase() && !isForbiddenTransferRack(s.rak) && isSurplusEligibleForOut(s.rawTglScan))
                   .map(s => ({
                     rak: s.rak,
                     tglScan: s.tglScan,
@@ -1233,11 +1320,13 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
       setSingleTargetSelections(initialSelections);
 
-      // 4. Sort: Deficits first (worst negative first), then Surpluses, then Balanced
+      // 4. Sort: Deficits first (worst negative first), then Anomalies, then Surpluses, then Balanced
       allCombinedGroups.sort((a, b) => {
         if (a.balance < 0 && b.balance >= 0) return -1;
         if (b.balance < 0 && a.balance >= 0) return 1;
         if (a.balance < 0 && b.balance < 0) return a.balance - b.balance;
+        if (a.hasTimeAnomaly && !b.hasTimeAnomaly) return -1;
+        if (!a.hasTimeAnomaly && b.hasTimeAnomaly) return 1;
         if (a.balance > 0 && b.balance === 0) return -1;
         if (b.balance > 0 && a.balance === 0) return 1;
         const skuCmp = (a.sku || '').localeCompare(b.sku || '');
@@ -1248,12 +1337,17 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       setAnalysisResults(allCombinedGroups);
 
       const deficitCount = allCombinedGroups.filter(r => r.balance < 0).length;
+      const anomalyCount = allCombinedGroups.filter(r => r.hasTimeAnomaly).length;
+
       if (deficitCount > 0) {
         setAnalysisFilterTab('DEFICIT'); // Automatically focus on deficits
-        showToast(`Analisis selesai! Ditemukan ${deficitCount} kombinasi yang MINUS (Lebih Potong) pada ${targetSkus.length} SKU.`, 'warning');
+        showToast(`Analisis selesai! Ditemukan ${deficitCount} kombinasi MINUS (Lebih Potong) pada ${targetSkus.length} SKU.`, 'warning');
+      } else if (anomalyCount > 0) {
+        setAnalysisFilterTab('ANOMALY'); // Automatically focus on time anomalies
+        showToast(`Analisis selesai! Ditemukan ${anomalyCount} kombinasi dengan Anomali Tanggal (OUT < Tgl Scan IN) pada ${targetSkus.length} SKU.`, 'warning');
       } else {
         setAnalysisFilterTab('ALL');
-        showToast(`Analisis selesai! Seluruh stok dari ${targetSkus.length} SKU aman & tidak ada defisit.`, 'success');
+        showToast(`Analisis selesai! Seluruh stok dari ${targetSkus.length} SKU aman & klop secara kuantitas dan tanggal.`, 'success');
       }
 
     } catch (error) {
@@ -1274,13 +1368,24 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       return;
     }
 
+    // Validasi ketat: data OUT tidak boleh berada di bawah tanggal IN
+    if (targetRawTglScan) {
+      const invalidOut = item.outTransactions.find(t => t.tgl && !isOutDateEligibleForIn(t.tgl, targetRawTglScan));
+      if (invalidOut) {
+        showToast(`Ditolak: Tanggal OUT (${invalidOut.tgl}) lebih kecil dari tanggal IN (${targetRawTglScan}). Data OUT tidak boleh mendahului IN!`, 'error');
+        return;
+      }
+    }
+
     try {
       setIsProcessingRemediation(true);
       const outIds = item.outTransactions.map(t => t.id);
+      const todayStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
       const updatePayload: any = {
         tgl_scan: targetRawTglScan,
-        log_update_user: `DEVMODE: Fix Deficit ${item.rak !== targetRak ? `Move ${item.rak}->${targetRak}` : `Change Date->${targetRawTglScan}`}`
+        log_update_user: `DEVMODE: Fix Deficit ${item.rak !== targetRak ? `Move ${item.rak}->${targetRak}` : `Change Date->${targetRawTglScan}`}`,
+        log_audit_saldo: `LOCKED: Penyesuaian Cek Saldo (${todayStr})`
       };
 
       if (targetRak) {
@@ -1288,10 +1393,20 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         updatePayload.sub_rak = targetRak;
       }
 
-      const { error } = await supabase
+      let { error } = await supabase
         .from('database_log')
         .update(updatePayload)
         .in('id', outIds);
+
+      if (error && error.message && error.message.includes('log_audit_saldo')) {
+        const fallbackPayload = { ...updatePayload };
+        delete fallbackPayload.log_audit_saldo;
+        const res = await supabase
+          .from('database_log')
+          .update(fallbackPayload)
+          .in('id', outIds);
+        error = res.error;
+      }
 
       if (error) throw error;
 
@@ -1303,6 +1418,120 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     } catch (err: any) {
       console.error('Error applying single remediation:', err);
       showToast(`Gagal memindahkan data: ${err.message || 'unknown error'}`, 'error');
+    } finally {
+      setIsProcessingRemediation(false);
+    }
+  };
+
+  const handleResetBatchAnomalyScanDates = async (item: BalanceAnalysisResult) => {
+    const anomalyOuts = (item.timeAnomalyOuts || []).filter(e => Boolean(e.tgl_scan));
+    if (anomalyOuts.length === 0) {
+      showToast('Tidak ada transaksi OUT anomali yang memiliki Tgl Scan pada batch ini.', 'warning');
+      return;
+    }
+
+    const outIds = anomalyOuts.map(e => e.id);
+    const totalQty = anomalyOuts.reduce((sum, e) => sum + (e.jumlah || 0), 0);
+
+    if (!confirm(`Lepas Tgl Scan untuk ${outIds.length} transaksi OUT anomali (${totalQty} pcs) pada ${item.sku} (Rak ${item.rak}, Tgl Scan ${item.tglScan})?\n\nTransaksi OUT ini memiliki tanggal transaksi lebih lampau daripada batch kedatangan IN, sehingga tidak sah memotong batch ini.\n\nSetelah dilepas (Tgl Scan menjadi kosong), transaksi OUT ini tidak akan lagi memotong batch ini dan saldo batch akan kembali seimbang.`)) {
+      return;
+    }
+
+    try {
+      setIsProcessingRemediation(true);
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const chunkSize = 25;
+      for (let i = 0; i < outIds.length; i += chunkSize) {
+        const chunk = outIds.slice(i, i + chunkSize);
+        const { error } = await supabase
+          .from('database_log')
+          .update({
+            tgl_scan: null,
+            log_update_user: `DEVMODE: Lepas Tgl Scan Anomali OUT < IN (${todayStr})`
+          })
+          .in('id', chunk);
+        if (error) throw error;
+      }
+
+      showToast(`Sukses melepas Tgl Scan untuk ${outIds.length} transaksi OUT anomali!`, 'success');
+      await handleAnalyzeStockBalance();
+      loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
+    } catch (err: any) {
+      console.error('Error resetting anomaly scan dates:', err);
+      showToast(`Gagal melepas Tgl Scan anomali: ${err.message || 'unknown error'}`, 'error');
+    } finally {
+      setIsProcessingRemediation(false);
+    }
+  };
+
+  const handleResetAllAnomalyScanDates = async () => {
+    const allAnomalyOuts: OutTransactionDetail[] = [];
+    analysisResults.forEach(r => {
+      if (r.hasTimeAnomaly && r.timeAnomalyOuts) {
+        r.timeAnomalyOuts.forEach(o => {
+          if (o.tgl_scan) allAnomalyOuts.push(o);
+        });
+      }
+    });
+
+    if (allAnomalyOuts.length === 0) {
+      showToast('Tidak ada transaksi OUT anomali bertanggal lampau yang memiliki Tgl Scan.', 'info');
+      return;
+    }
+
+    const uniqueIds = Array.from(new Set(allAnomalyOuts.map(o => o.id)));
+    const totalQty = allAnomalyOuts.reduce((sum, o) => sum + (o.jumlah || 0), 0);
+
+    if (!confirm(`Lepas Tgl Scan untuk SEMUA ${uniqueIds.length} transaksi OUT anomali (${totalQty} pcs) di seluruh data analisis?\n\nTransaksi-transaksi ini terjadi pada tanggal transaksi lebih lampau daripada tanggal kedatangan batch IN (OUT < IN) yang telah disesuaikan sebelumnya.\n\nSetelah dilepas, Tgl Scan akan dikosongkan agar saldo batch kembali seimbang secara akurat.`)) {
+      return;
+    }
+
+    try {
+      setIsProcessingRemediation(true);
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const chunkSize = 25;
+      for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+        const chunk = uniqueIds.slice(i, i + chunkSize);
+        const { error } = await supabase
+          .from('database_log')
+          .update({
+            tgl_scan: null,
+            log_update_user: `DEVMODE: Lepas Semua Tgl Scan Anomali OUT < IN (${todayStr})`
+          })
+          .in('id', chunk);
+        if (error) throw error;
+      }
+
+      showToast(`Sukses melepas Tgl Scan untuk ${uniqueIds.length} transaksi OUT anomali!`, 'success');
+      await handleAnalyzeStockBalance();
+      loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
+    } catch (err: any) {
+      console.error('Error resetting all anomaly scan dates:', err);
+      showToast(`Gagal melepas semua Tgl Scan anomali: ${err.message || 'unknown error'}`, 'error');
+    } finally {
+      setIsProcessingRemediation(false);
+    }
+  };
+
+  const handleResetSingleAnomalyOut = async (txId: string, skuName: string) => {
+    try {
+      setIsProcessingRemediation(true);
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const { error } = await supabase
+        .from('database_log')
+        .update({
+          tgl_scan: null,
+          log_update_user: `DEVMODE: Lepas Tgl Scan Anomali OUT < IN (${todayStr})`
+        })
+        .eq('id', txId);
+
+      if (error) throw error;
+      showToast(`Tgl Scan untuk transaksi ${skuName} berhasil dilepas!`, 'success');
+      await handleAnalyzeStockBalance();
+      loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
+    } catch (err: any) {
+      console.error('Error resetting single anomaly out:', err);
+      showToast(`Gagal melepas Tgl Scan: ${err.message || 'unknown error'}`, 'error');
     } finally {
       setIsProcessingRemediation(false);
     }
@@ -1442,89 +1671,42 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         inBuckets.sort((a, b) => a.timestamp - b.timestamp);
         outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-        // --- TAHAP 0: PRIORITAS NOMOR 1 MUTLAK — MATCHING IDENTIK SKU & QTY (1-ke-1) ---
-        // Cari pasangan 1-ke-1 yang memiliki QTY sama persis (misal IN 1 vs OUT 1, IN 24 vs OUT 24),
-        // mengutamakan kedekatan waktu nota (timestamp) bahkan jika saat ini berada di rak atau tgl_scan lain.
+
+        // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
         for (const bucket of inBuckets) {
           if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
 
-          const exactQtyMatches = outCandidates.filter(
-            c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
-          );
+          while (bucket.remainingCapacity > 0) {
+            const eligibleOuts = outCandidates.filter(
+              c => !c.isAssigned &&
+                   c.jumlah <= bucket.remainingCapacity &&
+                   isOutDateEligibleForIn(c.tgl, bucket.tgl) &&
+                   !isForbiddenTransferRack(c.rak)
+            );
 
-          if (exactQtyMatches.length > 0) {
-            exactQtyMatches.sort((a, b) => {
-              const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
-              const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
-              const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
-              const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
+            if (eligibleOuts.length === 0) break;
 
-              if (aSameRak !== bSameRak) {
-                const aDays = distA / (24 * 3600 * 1000);
-                const bDays = distB / (24 * 3600 * 1000);
-                if (aDays < 30 && bDays > 30) return -1;
-                if (bDays < 30 && aDays > 30) return 1;
+            eligibleOuts.sort((a, b) => {
+              const distA = a.timestamp - bucket.timestamp;
+              const distB = b.timestamp - bucket.timestamp;
+              const daysA = distA / (24 * 3600 * 1000);
+              const daysB = distB / (24 * 3600 * 1000);
+
+              // 1. Proximity Window: Jika salah satu dekat (<= 35 hari) dan yang lain jauh (> 35 hari), dahulukan yang dekat
+              if (daysA <= 35 && daysB > 35) return -1;
+              if (daysB <= 35 && daysA > 35) return 1;
+
+              // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+              const aIsSame = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
+              const bIsSame = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
+              if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
+                return aIsSame - bIsSame;
               }
 
               return distA - distB;
             });
 
-            const bestMatch = exactQtyMatches[0];
-            bestMatch.isAssigned = true;
-            bestMatch.newRak = bucket.rak;
-            bestMatch.newSubRak = bucket.sub_rak || bucket.rak;
-            bestMatch.newTglScan = bucket.targetTglScan;
-            bucket.remainingCapacity -= bestMatch.jumlah;
-          }
-        }
-
-        // --- TAHAP 1: MATCHING DALAM RAK YANG SAMA (SAME RAK FIFO / CHRONOLOGICAL) ---
-        for (const bucket of inBuckets) {
-          if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
-
-          while (bucket.remainingCapacity > 0) {
-            const sameRakMatches = outCandidates.filter(
-              c => !c.isAssigned &&
-                   c.jumlah <= bucket.remainingCapacity &&
-                   normRak(c.rak) === normRak(bucket.rak)
-            );
-
-            if (sameRakMatches.length === 0) break;
-
-            sameRakMatches.sort((a, b) =>
-              getChronologicalDistance(a.timestamp, bucket.timestamp) -
-              getChronologicalDistance(b.timestamp, bucket.timestamp)
-            );
-
-            const best = sameRakMatches[0];
-            best.isAssigned = true;
-            best.newRak = bucket.rak;
-            best.newSubRak = bucket.sub_rak || bucket.rak;
-            best.newTglScan = bucket.targetTglScan;
-            bucket.remainingCapacity -= best.jumlah;
-          }
-        }
-
-        // --- TAHAP 2: CROSS RAK NEAREST DATE (BEDA RAK, TANGGAL TERDEKAT) ---
-        for (const bucket of inBuckets) {
-          if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
-          if (isForbiddenTransferRack(bucket.rak)) continue;
-
-          while (bucket.remainingCapacity > 0) {
-            const crossMatches = outCandidates.filter(
-              c => !c.isAssigned &&
-                   c.jumlah <= bucket.remainingCapacity &&
-                   !isForbiddenTransferRack(c.rak)
-            );
-
-            if (crossMatches.length === 0) break;
-
-            crossMatches.sort((a, b) =>
-              getChronologicalDistance(a.timestamp, bucket.timestamp) -
-              getChronologicalDistance(b.timestamp, bucket.timestamp)
-            );
-
-            const best = crossMatches[0];
+            const best = eligibleOuts[0];
             best.isAssigned = true;
             best.newRak = bucket.rak;
             best.newSubRak = bucket.sub_rak || bucket.rak;
@@ -1535,7 +1717,23 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
         // 3. Kumpulkan rekomendasi pemindahan (HANYA untuk transaksi OUT yang berubah rak atau tgl_scan)
         outCandidates.forEach(c => {
-          if (!c.isAssigned) return;
+          if (!c.isAssigned) {
+            // Lepas tgl_scan jika transaksi OUT ini bertanggal lampau (anomali OUT < IN)
+            const isAnomaly = c.oldTglScan && !isOutDateEligibleForIn(c.tgl, c.oldTglScan);
+            if (isAnomaly) {
+              moves.push({
+                id: c.id,
+                sku: currentSku,
+                rak: c.rak,
+                toRak: c.rak,
+                fromTgl: c.oldTglScan,
+                toTgl: null,
+                jumlah: c.jumlah,
+                type: 'CLEAR_ANOMALY'
+              });
+            }
+            return;
+          }
           const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
           const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
 
@@ -1579,17 +1777,20 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       // Group moves by identical payload to avoid statement timeouts (500 Internal Server Error)
       const payloadGroups = new Map<string, { payload: Record<string, any>; ids: string[] }>();
 
+      const todayStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
       redistributeMoves.forEach(move => {
         const isRakChanged = move.toRak && move.toRak !== move.rak;
         const isTglChanged = move.toTgl !== move.fromTgl;
 
         const payload: Record<string, any> = {
-          log_update_user: isRakChanged
-            ? `DEVMODE: Auto-Fix Move ${move.rak}->${move.toRak}`
-            : 'DEVMODE: Auto-Fix Tgl Scan'
+          log_audit_saldo: `LOCKED: Penyesuaian Cek Saldo (${todayStr})`
         };
 
-        if (isTglChanged && move.toTgl) {
+        if (move.toTgl === null) {
+          payload.tgl_scan = null;
+          payload.log_audit_saldo = `LOCKED: Lepas Anomali Cek Saldo (${todayStr})`;
+          payload.log_update_user = `DEVMODE: Lepas Tgl Scan Anomali OUT < IN (${todayStr.slice(0, 10)})`;
+        } else if (isTglChanged && move.toTgl) {
           payload.tgl_scan = move.toTgl;
         }
         if (isRakChanged && move.toRak) {
@@ -1619,10 +1820,21 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
           while (!success && attempts < 3) {
             attempts++;
-            const { error } = await supabase
+            let { error } = await supabase
               .from('database_log')
               .update(payload)
               .in('id', chunkIds);
+
+            if (error && error.message && error.message.includes('log_audit_saldo')) {
+              // Kolom log_audit_saldo belum dibuat di Supabase, fallback tanpa kolom ini
+              const fallbackPayload = { ...payload };
+              delete fallbackPayload.log_audit_saldo;
+              const res = await supabase
+                .from('database_log')
+                .update(fallbackPayload)
+                .in('id', chunkIds);
+              error = res.error;
+            }
 
             if (!error) {
               success = true;
@@ -1690,7 +1902,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       if (stopBatchAutoFixRef.current) break;
       const { data, error } = await supabase
         .from('database_log')
-        .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu')
+        .select('*')
         .ilike('sku', targetSku)
         .or('type.ilike.%IN%,type.ilike.%OUT%')
         .order('id', { ascending: true })
@@ -1740,9 +1952,21 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       }
     });
 
+    // Check if balance has deficit or time anomalies
+    let hasTimeAnomaly = false;
+    allLogs.forEach(log => {
+      const normType = (log.type || '').trim().toUpperCase();
+      if (normType.includes('OUT')) {
+        const rawTglScan = (log.tgl_scan || '').trim();
+        if (rawTglScan && !isOutDateEligibleForIn(log.tgl, rawTglScan)) {
+          hasTimeAnomaly = true;
+        }
+      }
+    });
+
     const hasDeficit = Array.from(balanceMap.values()).some(b => b.balance < 0);
-    if (!hasDeficit) {
-      return { movesFixed: 0, isKlop: true, message: 'Saldo sudah seimbang / klop (0 defisit).' };
+    if (!hasDeficit && !hasTimeAnomaly) {
+      return { movesFixed: 0, isKlop: true, message: 'Saldo sudah seimbang & klop (0 defisit, 0 anomali tanggal).' };
     }
 
     // 3. Prepare buckets for redistribution matching
@@ -1802,6 +2026,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           timestamp: toTimestamp(log.tgl, log.waktu)
         });
       } else if (normType.includes('OUT')) {
+        const rawTglScan = (log.tgl_scan || '').trim();
+        const isAnomaly = rawTglScan ? !isOutDateEligibleForIn(log.tgl, rawTglScan) : false;
+        // Jika sudah pernah disesuaikan (log_audit_saldo ada) dan tidak anomali tanggal, kunci posisinya
+        const isLocked = Boolean(log.log_audit_saldo) && !isAnomaly;
+
         outCandidates.push({
           id: log.id,
           tgl: normalizeDate(log.tgl),
@@ -1822,87 +2051,41 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     inBuckets.sort((a, b) => a.timestamp - b.timestamp);
     outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-    // --- TAHAP 0: Matching Identik Qty 1-ke-1 ---
+    // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
     for (const bucket of inBuckets) {
       if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
 
-      const exactQtyMatches = outCandidates.filter(
-        c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
-      );
+      while (bucket.remainingCapacity > 0) {
+        const eligibleOuts = outCandidates.filter(
+          c => !c.isAssigned &&
+               c.jumlah <= bucket.remainingCapacity &&
+               isOutDateEligibleForIn(c.tgl, bucket.tgl) &&
+               !isForbiddenTransferRack(c.rak)
+        );
 
-      if (exactQtyMatches.length > 0) {
-        exactQtyMatches.sort((a, b) => {
-          const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
-          const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
-          const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
-          const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
+        if (eligibleOuts.length === 0) break;
 
-          if (aSameRak !== bSameRak) {
-            const aDays = distA / (24 * 3600 * 1000);
-            const bDays = distB / (24 * 3600 * 1000);
-            if (aDays < 30 && bDays > 30) return -1;
-            if (bDays < 30 && aDays > 30) return 1;
+        eligibleOuts.sort((a, b) => {
+          const distA = a.timestamp - bucket.timestamp;
+          const distB = b.timestamp - bucket.timestamp;
+          const daysA = distA / (24 * 3600 * 1000);
+          const daysB = distB / (24 * 3600 * 1000);
+
+          // 1. Proximity Window: Jika salah satu dekat (<= 35 hari) dan yang lain jauh (> 35 hari), dahulukan yang dekat
+          if (daysA <= 35 && daysB > 35) return -1;
+          if (daysB <= 35 && daysA > 35) return 1;
+
+          // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+          const aIsSame = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
+          const bIsSame = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
+          if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
+            return aIsSame - bIsSame;
           }
 
           return distA - distB;
         });
 
-        const best = exactQtyMatches[0];
-        best.isAssigned = true;
-        best.newRak = bucket.rak;
-        best.newSubRak = bucket.sub_rak || bucket.rak;
-        best.newTglScan = bucket.targetTglScan;
-        bucket.remainingCapacity -= best.jumlah;
-      }
-    }
-
-    // --- TAHAP 1: Same Rak Chronological FIFO ---
-    for (const bucket of inBuckets) {
-      if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
-
-      while (bucket.remainingCapacity > 0) {
-        const sameRakMatches = outCandidates.filter(
-          c => !c.isAssigned &&
-               c.jumlah <= bucket.remainingCapacity &&
-               normRak(c.rak) === normRak(bucket.rak)
-        );
-
-        if (sameRakMatches.length === 0) break;
-
-        sameRakMatches.sort((a, b) =>
-          getChronologicalDistance(a.timestamp, bucket.timestamp) -
-          getChronologicalDistance(b.timestamp, bucket.timestamp)
-        );
-
-        const best = sameRakMatches[0];
-        best.isAssigned = true;
-        best.newRak = bucket.rak;
-        best.newSubRak = bucket.sub_rak || bucket.rak;
-        best.newTglScan = bucket.targetTglScan;
-        bucket.remainingCapacity -= best.jumlah;
-      }
-    }
-
-    // --- TAHAP 2: Cross Rak Nearest Date (kecuali rak terlarang) ---
-    for (const bucket of inBuckets) {
-      if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
-      if (isForbiddenTransferRack(bucket.rak)) continue;
-
-      while (bucket.remainingCapacity > 0) {
-        const crossMatches = outCandidates.filter(
-          c => !c.isAssigned &&
-               c.jumlah <= bucket.remainingCapacity &&
-               !isForbiddenTransferRack(c.rak)
-        );
-
-        if (crossMatches.length === 0) break;
-
-        crossMatches.sort((a, b) =>
-          getChronologicalDistance(a.timestamp, bucket.timestamp) -
-          getChronologicalDistance(b.timestamp, bucket.timestamp)
-        );
-
-        const best = crossMatches[0];
+        const best = eligibleOuts[0];
         best.isAssigned = true;
         best.newRak = bucket.rak;
         best.newSubRak = bucket.sub_rak || bucket.rak;
@@ -1914,19 +2097,35 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     // 4. Kumpulkan moves
     const moves: any[] = [];
     outCandidates.forEach(c => {
-      if (!c.isAssigned) return;
-      const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
-      const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
+      if (c.isAssigned) {
+        const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
+        const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
 
-      if (isRakChanged || isTglChanged) {
-        moves.push({
-          id: c.id,
-          rak: c.rak,
-          toRak: c.newRak,
-          fromTgl: c.oldTglScan,
-          toTgl: c.newTglScan,
-          jumlah: c.jumlah
-        });
+        if (isRakChanged || isTglChanged) {
+          moves.push({
+            id: c.id,
+            rak: c.rak,
+            toRak: c.newRak,
+            fromTgl: c.oldTglScan,
+            toTgl: c.newTglScan,
+            jumlah: c.jumlah
+          });
+        }
+      } else {
+        // Jika transaksi OUT tidak berhasil dipasangkan ke batch masuk manapun:
+        // Cek apakah sebelumnya ia menempel pada batch tgl_scan yang ANOMALI (tgl keluar < tgl scan masuk):
+        // Jika ya, kita HARUS MELEPAS tgl_scan-nya (set null) agar tidak memotong batch masa depan secara tidak sah!
+        const isAnomaly = c.oldTglScan && !isOutDateEligibleForIn(c.tgl, c.oldTglScan);
+        if (isAnomaly) {
+          moves.push({
+            id: c.id,
+            rak: c.rak,
+            toRak: c.rak,
+            fromTgl: c.oldTglScan,
+            toTgl: null,
+            jumlah: c.jumlah
+          });
+        }
       }
     });
 
@@ -1935,23 +2134,27 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
 
     // 5. Eksekusi moves ke Supabase secara grouped batch
+    const todayStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
     const payloadGroups = new Map<string, { payload: Record<string, any>; ids: string[] }>();
     moves.forEach(move => {
       const isRakChanged = move.toRak && move.toRak !== move.rak;
       const isTglChanged = move.toTgl !== move.fromTgl;
 
       const payload: Record<string, any> = {
-        log_update_user: isRakChanged
-          ? `DEVMODE: Auto-Fix Move ${move.rak}->${move.toRak}`
-          : 'DEVMODE: Auto-Fix Tgl Scan'
+        log_audit_saldo: `LOCKED: Penyesuaian Cek Saldo (${todayStr})`
       };
 
-      if (isTglChanged && move.toTgl) {
-        payload.tgl_scan = move.toTgl;
-      }
-      if (isRakChanged && move.toRak) {
-        payload.rak = move.toRak;
-        payload.sub_rak = move.toRak;
+      if (move.toTgl === null) {
+        payload.tgl_scan = null;
+        payload.log_update_user = `DEVMODE: Lepas Tgl Scan Anomali (${todayStr.slice(0, 10)})`;
+      } else {
+        if (isTglChanged && move.toTgl) {
+          payload.tgl_scan = move.toTgl;
+        }
+        if (isRakChanged && move.toRak) {
+          payload.rak = move.toRak;
+          payload.sub_rak = move.toRak;
+        }
       }
 
       const key = JSON.stringify(payload);
@@ -1976,10 +2179,21 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         while (!success && attempts < 3) {
           if (stopBatchAutoFixRef.current) break;
           attempts++;
-          const { error } = await supabase
+          let { error } = await supabase
             .from('database_log')
             .update(payload)
             .in('id', chunkIds);
+
+          if (error && error.message && error.message.includes('log_audit_saldo')) {
+            // Kolom log_audit_saldo belum dibuat di Supabase, fallback tanpa kolom ini
+            const fallbackPayload = { ...payload };
+            delete fallbackPayload.log_audit_saldo;
+            const res = await supabase
+              .from('database_log')
+              .update(fallbackPayload)
+              .in('id', chunkIds);
+            error = res.error;
+          }
 
           if (!error) {
             success = true;
@@ -2039,7 +2253,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       let isSkuKlop = false;
       let lastMessage = '';
 
-      while (skuIteration < 3) {
+      const maxIterationsPerSku = 6;
+      while (skuIteration < maxIterationsPerSku) {
         if (stopBatchAutoFixRef.current) break;
         skuIteration++;
 
@@ -2048,7 +2263,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           currentIndex: i + 1,
           currentSku: currentSku,
           iteration: skuIteration,
-          statusMessage: `[SKU ${i + 1}/${uniqueSkus.length}] Iterasi ${skuIteration}/3: Memeriksa dan memperbaiki saldo...`,
+          statusMessage: `[SKU ${i + 1}/${uniqueSkus.length}] Iterasi ${skuIteration}: Memeriksa dan menyeimbangkan saldo sampai klop...`,
           completedList: [...completedList]
         }));
 
@@ -4454,6 +4669,109 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     }
   };
 
+  const handleResetBatchAnomaly = async (group: BatchGroupItem) => {
+    const anomalyOuts = (group.timeAnomalyOuts || group.sortedEntries.filter(e => e.isTimeAnomaly && e.type === 'OUT'))
+      .filter(e => Boolean(e.tgl_scan));
+
+    if (anomalyOuts.length === 0) {
+      showToast('Tidak ada transaksi OUT anomali bertanggal lampau dengan Tgl Scan di batch ini.', 'warning');
+      return;
+    }
+
+    const outIdsToClear = anomalyOuts.map(e => e.id);
+    const totalPcs = anomalyOuts.reduce((sum, e) => sum + (Number(e.jumlah) || 0), 0);
+    const rakText = group.rak ? `Rak: ${group.rak}, ` : '';
+
+    if (!confirm(`Lepas Tgl Scan untuk ${outIdsToClear.length} transaksi OUT ANOMALI (${totalPcs} pcs) pada Batch ${group.sku} (${rakText}Tgl Scan: ${group.tglScan})?\n\nTransaksi-transaksi ini memiliki tanggal transaksi OUT yang LEBIH LAMPAU daripada tanggal IN Batch (${group.tglScan}), yang menyebabkan saldo batch ini minus semu.\n\nSetelah dilepas (tgl_scan menjadi kosong), transaksi OUT ini tidak akan lagi memotong batch ini.`)) {
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const { error: updateError } = await supabase
+        .from('database_log')
+        .update({
+          tgl_scan: null,
+          log_update_user: `DEVMODE: Lepas Tgl Scan Anomali OUT < IN (${todayStr})`
+        })
+        .in('id', outIdsToClear);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      showToast(`Berhasil melepas Tgl Scan untuk ${outIdsToClear.length} transaksi OUT anomali pada batch ${group.sku}!`, 'success');
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (error: any) {
+      console.error('Error clearing batch anomaly tgl_scan:', error);
+      showToast(`Gagal melepas Tgl Scan transaksi anomali: ${error?.message || error}`, 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
+  const handleClearAllAnomalyOuts = async () => {
+    const anomalyGroups = batchGroupData.filter(g => g.hasTimeAnomaly);
+    const allAnomalyOuts: DatabaseLogEntry[] = [];
+    anomalyGroups.forEach(g => {
+      const outs = (g.timeAnomalyOuts || g.sortedEntries.filter(e => e.isTimeAnomaly && e.type === 'OUT'))
+        .filter(e => Boolean(e.tgl_scan));
+      allAnomalyOuts.push(...outs);
+    });
+
+    if (allAnomalyOuts.length === 0) {
+      showToast('Tidak ada transaksi OUT anomali bertanggal lampau yang memiliki Tgl Scan.', 'warning');
+      return;
+    }
+
+    const uniqueIds = Array.from(new Set(allAnomalyOuts.map(e => e.id)));
+    const totalPcs = allAnomalyOuts.reduce((sum, e) => sum + (Number(e.jumlah) || 0), 0);
+
+    if (!confirm(`Lepas Tgl Scan untuk SEMUA ${uniqueIds.length} transaksi OUT ANOMALI (${totalPcs} pcs) pada ${anomalyGroups.length} batch?\n\nTransaksi-transaksi ini terjadi pada tanggal transaksi OUT yang LEBIH LAMPAU daripada kedatangan Batch IN, sehingga menyebabkan saldo batch minus semu.\n\nSetelah dilepas (tgl_scan menjadi kosong), transaksi OUT ini akan kembali normal dan tidak lagi memotong batch yang salah.`)) {
+      return;
+    }
+
+    try {
+      setIsBulkOperationLoading(true);
+      const batchSize = 100;
+      let totalSuccess = 0;
+      let totalError = 0;
+      const todayStr = new Date().toISOString().slice(0, 10);
+
+      for (let i = 0; i < uniqueIds.length; i += batchSize) {
+        const chunkIds = uniqueIds.slice(i, i + batchSize);
+        const { error: updateError } = await supabase
+          .from('database_log')
+          .update({
+            tgl_scan: null,
+            log_update_user: `DEVMODE: Lepas Massal Tgl Scan Anomali OUT < IN (${todayStr})`
+          })
+          .in('id', chunkIds);
+
+        if (updateError) {
+          console.error('Error clearing bulk anomaly tgl_scan:', updateError);
+          totalError += chunkIds.length;
+        } else {
+          totalSuccess += chunkIds.length;
+        }
+      }
+
+      if (totalError === 0) {
+        showToast(`Berhasil melepas Tgl Scan untuk seluruh ${totalSuccess} transaksi OUT anomali!`, 'success');
+      } else {
+        showToast(`Berhasil melepas Tgl Scan untuk ${totalSuccess} transaksi, ${totalError} gagal.`, 'warning');
+      }
+
+      loadLogEntries(currentPage, itemsPerPage);
+    } catch (error: any) {
+      console.error('Error clearing bulk anomaly tgl_scan:', error);
+      showToast(`Gagal melepas Tgl Scan transaksi anomali: ${error?.message || error}`, 'error');
+    } finally {
+      setIsBulkOperationLoading(false);
+    }
+  };
+
   const handleClearSingleEntryTglScan = async (entry: DatabaseLogEntry) => {
     if (!entry.tgl_scan) return;
 
@@ -6102,6 +6420,18 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     >
                       Defisit ({batchSummaryStats.deficitGroups})
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setGroupedSubFilter('ANOMALY')}
+                      className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 ${
+                        groupedSubFilter === 'ANOMALY'
+                          ? 'bg-rose-700 text-white shadow-xs'
+                          : 'text-rose-700 hover:text-rose-900'
+                      }`}
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      Anomali Tgl ({batchSummaryStats.anomalyGroups})
+                    </button>
                   </div>
                 )}
 
@@ -6161,6 +6491,18 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                   >
                     <CalendarX className="w-3.5 h-3.5" />
                     <span>Hapus Tgl Scan Batch Minus ({batchSummaryStats.deficitGroups})</span>
+                  </button>
+                )}
+
+                {batchSummaryStats.anomalyGroups > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAllAnomalyOuts}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer border bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-700 hover:to-rose-700 text-white border-amber-700 shadow-md"
+                    title="Lepas Tgl Scan untuk seluruh transaksi OUT yang memiliki tanggal lampau (mendahului batch IN)"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Lepas Tgl Scan Anomali ({batchSummaryStats.anomalyGroups})</span>
                   </button>
                 )}
               </div>
@@ -7072,6 +7414,23 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                             Rak Sesuai
                                           </span>
                                         )}
+                                        {group.hasTimeAnomaly && (
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="bg-red-500/25 text-red-300 border border-red-500/40 px-2.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-2xs">
+                                              <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+                                              {group.timeAnomalyCount} OUT &lt; IN
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleResetBatchAnomaly(group)}
+                                              className="px-2 py-0.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded border border-red-500/40 transition-all flex items-center gap-1 text-[10px] font-bold cursor-pointer"
+                                              title="Lepas Tgl Scan transaksi OUT anomali yang mendahului batch ini"
+                                            >
+                                              <Trash2 className="w-3 h-3" />
+                                              <span>Lepas Anomali</span>
+                                            </button>
+                                          </div>
+                                        )}
                                         <span className="text-slate-400 font-mono text-[11px]">
                                           ({group.sortedEntries.length} Transaksi: {group.inEntries.length} IN, {group.outEntries.length} OUT)
                                         </span>
@@ -7109,7 +7468,18 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                         />
                                       </td>
                                       <td className="px-4 py-2 text-sm text-center border-r border-gray-200 font-medium">
-                                        {formatDateDisplay(entry.tgl)}
+                                        <div className="flex flex-col items-center gap-0.5">
+                                          <span>{formatDateDisplay(entry.tgl)}</span>
+                                          {entry.isTimeAnomaly && (
+                                            <span
+                                              className="inline-flex items-center gap-1 bg-red-100 text-red-700 border border-red-300 text-[10px] font-bold px-1.5 py-0.2 rounded shadow-2xs"
+                                              title={`Anomali Tanggal: Transaksi OUT ini terjadi pada ${entry.tgl}, mendahului kedatangan barang batch IN (${group.tglScan})`}
+                                            >
+                                              <AlertTriangle className="w-2.5 h-2.5 text-red-600" />
+                                              OUT &lt; IN
+                                            </span>
+                                          )}
+                                        </div>
                                       </td>
                                       <td className="px-4 py-2 text-sm text-center border-r border-gray-200 font-mono">
                                         {entry.waktu}
@@ -7309,17 +7679,36 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                                     )}
                                   </td>
                                   <td colSpan={7} className="px-4 py-2.5 text-left text-slate-600">
-                                    {group.hasRakMismatch ? (
-                                      <span className="text-amber-900 font-bold flex items-center gap-1">
-                                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                                        Ditemukan {group.mismatchCount} transaksi OUT pada rak berbeda dari nota masuk awal ({group.initialInRaksList.join(', ')})
-                                      </span>
-                                    ) : (
-                                      <span className="text-emerald-800 font-medium flex items-center gap-1">
-                                        <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-                                        Seluruh transaksi OUT sesuai dengan rak nota masuk awal ({group.initialInRaksList.join(', ') || group.rak || '-'})
-                                      </span>
-                                    )}
+                                    <div className="flex flex-col gap-1.5">
+                                      {group.hasRakMismatch ? (
+                                        <span className="text-amber-900 font-bold flex items-center gap-1">
+                                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                                          Ditemukan {group.mismatchCount} transaksi OUT pada rak berbeda dari nota masuk awal ({group.initialInRaksList.join(', ')})
+                                        </span>
+                                      ) : (
+                                        <span className="text-emerald-800 font-medium flex items-center gap-1">
+                                          <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                                          Seluruh transaksi OUT sesuai dengan rak nota masuk awal ({group.initialInRaksList.join(', ') || group.rak || '-'})
+                                        </span>
+                                      )}
+                                      {group.hasTimeAnomaly && (
+                                        <div className="flex items-center justify-between bg-red-50 border border-red-200 rounded px-2.5 py-1 text-red-900 text-xs font-semibold">
+                                          <span className="flex items-center gap-1.5">
+                                            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                                            Ditemukan {group.timeAnomalyCount} transaksi OUT bertanggal lampau (&lt; {group.tglScan}). Mengakibatkan defisit semu pada batch ini.
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleResetBatchAnomaly(group)}
+                                            className="ml-2 px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-bold transition-all shrink-0 cursor-pointer shadow-sm flex items-center gap-1"
+                                            title="Lepas Tgl Scan transaksi OUT anomali yang mendahului batch ini"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                            <span>Lepas Tgl Scan Anomali</span>
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
                                   </td>
                                 </tr>
                               </React.Fragment>
@@ -8485,7 +8874,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                         SKU {batchAutoFixProgress.currentIndex} dari {batchAutoFixProgress.total}
                       </span>
                       <span className="px-2 py-0.5 bg-amber-500/30 text-amber-200 border border-amber-400/30 rounded-full text-[10px] font-bold">
-                        Iterasi {batchAutoFixProgress.iteration}/3
+                        Iterasi {batchAutoFixProgress.iteration}/6
                       </span>
                     </div>
                     <h4 className="text-base font-black text-white tracking-wide mt-0.5 font-mono">
@@ -9783,15 +10172,16 @@ function RedistributionPreviewModal({ isOpen, onClose, moves, isProcessing, onCo
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {moves.map((m, i) => {
-                  const isCrossRak = m.toRak && m.toRak !== m.rak;
+                  const isClearAnomaly = m.type === 'CLEAR_ANOMALY' || m.toTgl === null;
+                  const isCrossRak = !isClearAnomaly && m.toRak && m.toRak !== m.rak;
                   return (
                     <tr key={i} className="hover:bg-gray-50">
                       <td className="px-4 py-2.5">
                         <div className="font-bold text-slate-900">{m.sku}</div>
                         <span className={`inline-block mt-0.5 text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${
-                          isCrossRak ? 'bg-indigo-100 text-indigo-800' : 'bg-amber-100 text-amber-800'
+                          isClearAnomaly ? 'bg-rose-100 text-rose-800' : isCrossRak ? 'bg-indigo-100 text-indigo-800' : 'bg-amber-100 text-amber-800'
                         }`}>
-                          {isCrossRak ? 'PINDAH RAK & TGL' : 'GANTI TGL SCAN'}
+                          {isClearAnomaly ? 'LEPAS TGL ANOMALI' : isCrossRak ? 'PINDAH RAK & TGL' : 'GANTI TGL SCAN'}
                         </span>
                       </td>
                       <td className="px-4 py-2.5 text-slate-700">
@@ -9800,7 +10190,9 @@ function RedistributionPreviewModal({ isOpen, onClose, moves, isProcessing, onCo
                       </td>
                       <td className="px-4 py-2.5 text-slate-700">
                         <div className="font-bold text-emerald-700">Rak: {m.toRak || m.rak}</div>
-                        <div className="text-xs text-emerald-600 font-mono font-bold">Tgl: {m.toTgl || '(KOSONG)'}</div>
+                        <div className={`text-xs font-mono font-bold ${isClearAnomaly ? 'text-amber-600' : 'text-emerald-600'}`}>
+                          Tgl: {m.toTgl ? m.toTgl : '(DIKOSONGKAN)'}
+                        </div>
                       </td>
                       <td className="px-4 py-2.5 text-center font-black text-blue-700">{m.jumlah} pcs</td>
                       <td className="px-3 py-2.5 text-center">

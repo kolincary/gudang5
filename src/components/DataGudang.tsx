@@ -15,7 +15,7 @@ import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { DatabaseService } from '../lib/DatabaseService';
 import { SyncSkuCasingModal } from './SyncSkuCasingModal';
 import { getMasterProductsMap, normalizeSkuSync } from '../services/skuNormalizationService';
-import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance } from '../services/scanDateMatchService';
+import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance, isOutDateEligibleForIn } from '../services/scanDateMatchService';
 
 export interface RedistributionMove {
   id: string;
@@ -1258,87 +1258,41 @@ export function DataGudang() {
         inBuckets.sort((a, b) => a.timestamp - b.timestamp);
         outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-        // --- TAHAP 0: PRIORITAS NOMOR 1 MUTLAK — MATCHING IDENTIK SKU & QTY (1-ke-1) ---
+        // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
         for (const bucket of inBuckets) {
           if (bucket.remainingCapacity <= 0) continue;
 
-          const exactQtyMatches = outCandidates.filter(
-            c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
-          );
+          while (bucket.remainingCapacity > 0) {
+            const eligibleOuts = outCandidates.filter(
+              c => !c.isAssigned &&
+                   c.jumlah <= bucket.remainingCapacity &&
+                   isOutDateEligibleForIn(c.tgl, bucket.tgl) &&
+                   !isForbiddenTransferRack(c.rak)
+            );
 
-          if (exactQtyMatches.length > 0) {
-            exactQtyMatches.sort((a, b) => {
-              const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
-              const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
-              const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
-              const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
+            if (eligibleOuts.length === 0) break;
 
-              if (aSameRak !== bSameRak) {
-                const aDays = distA / (24 * 3600 * 1000);
-                const bDays = distB / (24 * 3600 * 1000);
-                if (aDays < 30 && bDays > 30) return -1;
-                if (bDays < 30 && aDays > 30) return 1;
+            eligibleOuts.sort((a, b) => {
+              const distA = a.timestamp - bucket.timestamp;
+              const distB = b.timestamp - bucket.timestamp;
+              const daysA = distA / (24 * 3600 * 1000);
+              const daysB = distB / (24 * 3600 * 1000);
+
+              // 1. Proximity Window: Jika salah satu dekat (<= 35 hari) dan yang lain jauh (> 35 hari), dahulukan yang dekat
+              if (daysA <= 35 && daysB > 35) return -1;
+              if (daysB <= 35 && daysA > 35) return 1;
+
+              // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+              const aIsSame = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
+              const bIsSame = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
+              if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
+                return aIsSame - bIsSame;
               }
 
               return distA - distB;
             });
 
-            const bestMatch = exactQtyMatches[0];
-            bestMatch.isAssigned = true;
-            bestMatch.newRak = bucket.rak;
-            bestMatch.newSubRak = bucket.sub_rak || bucket.rak;
-            bestMatch.newTglScan = bucket.targetTglScan;
-            bucket.remainingCapacity -= bestMatch.jumlah;
-          }
-        }
-
-        // --- TAHAP 1: MATCHING DALAM RAK YANG SAMA (SAME RAK FIFO) ---
-        for (const bucket of inBuckets) {
-          if (bucket.remainingCapacity <= 0) continue;
-
-          while (bucket.remainingCapacity > 0) {
-            const sameRakMatches = outCandidates.filter(
-              c => !c.isAssigned &&
-                   c.jumlah <= bucket.remainingCapacity &&
-                   normRak(c.rak) === normRak(bucket.rak)
-            );
-
-            if (sameRakMatches.length === 0) break;
-
-            sameRakMatches.sort((a, b) =>
-              getChronologicalDistance(a.timestamp, bucket.timestamp) -
-              getChronologicalDistance(b.timestamp, bucket.timestamp)
-            );
-
-            const best = sameRakMatches[0];
-            best.isAssigned = true;
-            best.newRak = bucket.rak;
-            best.newSubRak = bucket.sub_rak || bucket.rak;
-            best.newTglScan = bucket.targetTglScan;
-            bucket.remainingCapacity -= best.jumlah;
-          }
-        }
-
-        // --- TAHAP 2: CROSS RAK NEAREST DATE (BEDA RAK, TANGGAL TERDEKAT) ---
-        for (const bucket of inBuckets) {
-          if (bucket.remainingCapacity <= 0) continue;
-          if (isForbiddenTransferRack(bucket.rak)) continue;
-
-          while (bucket.remainingCapacity > 0) {
-            const crossMatches = outCandidates.filter(
-              c => !c.isAssigned &&
-                   c.jumlah <= bucket.remainingCapacity &&
-                   !isForbiddenTransferRack(c.rak)
-            );
-
-            if (crossMatches.length === 0) break;
-
-            crossMatches.sort((a, b) =>
-              getChronologicalDistance(a.timestamp, bucket.timestamp) -
-              getChronologicalDistance(b.timestamp, bucket.timestamp)
-            );
-
-            const best = crossMatches[0];
+            const best = eligibleOuts[0];
             best.isAssigned = true;
             best.newRak = bucket.rak;
             best.newSubRak = bucket.sub_rak || bucket.rak;
@@ -1349,7 +1303,23 @@ export function DataGudang() {
 
         // Kumpulkan moves untuk SKU ini
         outCandidates.forEach(c => {
-          if (!c.isAssigned) return;
+          if (!c.isAssigned) {
+            const isAnomaly = c.oldTglScan && !isOutDateEligibleForIn(c.tgl, c.oldTglScan);
+            if (isAnomaly) {
+              moves.push({
+                id: c.id,
+                sku: normSku,
+                actionType: 'CLEAR_ANOMALY',
+                fromRak: c.rak,
+                toRak: c.rak,
+                fromTgl: c.oldTglScan,
+                toTgl: null,
+                jumlah: c.jumlah,
+                keterangan: `Lepas Tgl Scan Anomali OUT < IN (${c.tgl} < ${c.oldTglScan})`
+              });
+            }
+            return;
+          }
           const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
           const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
 
@@ -1422,23 +1392,31 @@ export function DataGudang() {
 
       // Group moves by identical payload to avoid overwhelming PostgreSQL with 50 concurrent single-row PATCH requests
       const payloadGroups = new Map<string, { payload: Record<string, any>; ids: string[] }>();
+      const todayStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
       movesToExecute.forEach(move => {
         const isRakChanged = move.toRak && move.toRak !== move.fromRak;
         const isTglChanged = move.toTgl !== move.fromTgl;
 
         const payload: Record<string, any> = {
-          log_update_user: isRakChanged
-            ? `DEVMODE: Auto-Fix Move ${move.fromRak}->${move.toRak}`
-            : 'DEVMODE: Auto-Fix Tgl Scan'
+          log_audit_saldo: `LOCKED: Penyesuaian Cek Saldo (${todayStr})`
         };
 
-        if (isTglChanged && move.toTgl) {
-          payload.tgl_scan = move.toTgl;
-        }
-        if (isRakChanged && move.toRak) {
-          payload.rak = move.toRak;
-          payload.sub_rak = move.toRak;
+        if (move.toTgl === null) {
+          payload.tgl_scan = null;
+          payload.log_audit_saldo = `LOCKED: Lepas Anomali Cek Saldo (${todayStr})`;
+          payload.log_update_user = `DEVMODE: Lepas Tgl Scan Anomali (${todayStr.slice(0, 10)})`;
+        } else {
+          payload.log_update_user = isRakChanged
+            ? `DEVMODE: Auto-Fix Move ${move.fromRak}->${move.toRak}`
+            : 'DEVMODE: Auto-Fix Tgl Scan';
+          if (isTglChanged && move.toTgl) {
+            payload.tgl_scan = move.toTgl;
+          }
+          if (isRakChanged && move.toRak) {
+            payload.rak = move.toRak;
+            payload.sub_rak = move.toRak;
+          }
         }
 
         const key = JSON.stringify(payload);
@@ -1463,10 +1441,20 @@ export function DataGudang() {
 
           while (!success && attempts < 3) {
             attempts++;
-            const { error } = await supabase
+            let { error } = await supabase
               .from('database_log')
               .update(payload)
               .in('id', chunkIds);
+
+            if (error && error.message && error.message.includes('log_audit_saldo')) {
+              const fallbackPayload = { ...payload };
+              delete fallbackPayload.log_audit_saldo;
+              const res = await supabase
+                .from('database_log')
+                .update(fallbackPayload)
+                .in('id', chunkIds);
+              error = res.error;
+            }
 
             if (!error) {
               success = true;
@@ -1533,7 +1521,7 @@ export function DataGudang() {
       if (stopBatchAutoFixRef.current) break;
       const { data, error } = await supabase
         .from('database_log')
-        .select('id, sku, rak, sub_rak, tgl_scan, type, jumlah, tgl, waktu')
+        .select('*')
         .ilike('sku', targetSku)
         .or('type.ilike.%IN%,type.ilike.%OUT%')
         .order('id', { ascending: true })
@@ -1585,9 +1573,21 @@ export function DataGudang() {
       }
     });
 
+    // Check if balance has deficit or time anomalies
+    let hasTimeAnomaly = false;
+    allLogs.forEach(log => {
+      const normType = (log.type || '').trim().toUpperCase();
+      if (normType.includes('OUT')) {
+        const rawTglScan = (log.tgl_scan || '').trim();
+        if (rawTglScan && !isOutDateEligibleForIn(log.tgl, rawTglScan)) {
+          hasTimeAnomaly = true;
+        }
+      }
+    });
+
     const hasDeficit = Array.from(balanceMap.values()).some(b => b.balance < 0);
-    if (!hasDeficit) {
-      return { movesFixed: 0, isKlop: true, message: 'Saldo sudah seimbang / klop (0 defisit).' };
+    if (!hasDeficit && !hasTimeAnomaly) {
+      return { movesFixed: 0, isKlop: true, message: 'Saldo sudah seimbang & klop (0 defisit, 0 anomali tanggal).' };
     }
 
     // 3. Prepare buckets for redistribution matching
@@ -1638,6 +1638,11 @@ export function DataGudang() {
           timestamp: toTimestamp(log.tgl, log.waktu)
         });
       } else if (normType.includes('OUT')) {
+        const rawTglScan = (log.tgl_scan || '').trim();
+        const isAnomaly = rawTglScan ? !isOutDateEligibleForIn(log.tgl, rawTglScan) : false;
+        // Jika sudah pernah disesuaikan (log_audit_saldo ada) dan tidak anomali tanggal, kunci posisinya
+        const isLocked = Boolean(log.log_audit_saldo) && !isAnomaly;
+
         outCandidates.push({
           id: log.id,
           tgl: normalizeDate(log.tgl),
@@ -1658,87 +1663,41 @@ export function DataGudang() {
     inBuckets.sort((a, b) => a.timestamp - b.timestamp);
     outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-    // --- TAHAP 0: Matching Identik Qty 1-ke-1 ---
+    // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
     for (const bucket of inBuckets) {
       if (bucket.remainingCapacity <= 0) continue;
 
-      const exactQtyMatches = outCandidates.filter(
-        c => !c.isAssigned && c.jumlah === bucket.remainingCapacity
-      );
+      while (bucket.remainingCapacity > 0) {
+        const eligibleOuts = outCandidates.filter(
+          c => !c.isAssigned &&
+               c.jumlah <= bucket.remainingCapacity &&
+               isOutDateEligibleForIn(c.tgl, bucket.tgl) &&
+               !isForbiddenTransferRack(c.rak)
+        );
 
-      if (exactQtyMatches.length > 0) {
-        exactQtyMatches.sort((a, b) => {
-          const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
-          const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
-          const distA = getChronologicalDistance(a.timestamp, bucket.timestamp);
-          const distB = getChronologicalDistance(b.timestamp, bucket.timestamp);
+        if (eligibleOuts.length === 0) break;
 
-          if (aSameRak !== bSameRak) {
-            const aDays = distA / (24 * 3600 * 1000);
-            const bDays = distB / (24 * 3600 * 1000);
-            if (aDays < 30 && bDays > 30) return -1;
-            if (bDays < 30 && aDays > 30) return 1;
+        eligibleOuts.sort((a, b) => {
+          const distA = a.timestamp - bucket.timestamp;
+          const distB = b.timestamp - bucket.timestamp;
+          const daysA = distA / (24 * 3600 * 1000);
+          const daysB = distB / (24 * 3600 * 1000);
+
+          // 1. Proximity Window: Jika salah satu dekat (<= 35 hari) dan yang lain jauh (> 35 hari), dahulukan yang dekat
+          if (daysA <= 35 && daysB > 35) return -1;
+          if (daysB <= 35 && daysA > 35) return 1;
+
+          // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+          const aIsSame = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
+          const bIsSame = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
+          if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
+            return aIsSame - bIsSame;
           }
 
           return distA - distB;
         });
 
-        const best = exactQtyMatches[0];
-        best.isAssigned = true;
-        best.newRak = bucket.rak;
-        best.newSubRak = bucket.sub_rak || bucket.rak;
-        best.newTglScan = bucket.targetTglScan;
-        bucket.remainingCapacity -= best.jumlah;
-      }
-    }
-
-    // --- TAHAP 1: Same Rak Chronological FIFO ---
-    for (const bucket of inBuckets) {
-      if (bucket.remainingCapacity <= 0) continue;
-
-      while (bucket.remainingCapacity > 0) {
-        const sameRakMatches = outCandidates.filter(
-          c => !c.isAssigned &&
-               c.jumlah <= bucket.remainingCapacity &&
-               normRak(c.rak) === normRak(bucket.rak)
-        );
-
-        if (sameRakMatches.length === 0) break;
-
-        sameRakMatches.sort((a, b) =>
-          getChronologicalDistance(a.timestamp, bucket.timestamp) -
-          getChronologicalDistance(b.timestamp, bucket.timestamp)
-        );
-
-        const best = sameRakMatches[0];
-        best.isAssigned = true;
-        best.newRak = bucket.rak;
-        best.newSubRak = bucket.sub_rak || bucket.rak;
-        best.newTglScan = bucket.targetTglScan;
-        bucket.remainingCapacity -= best.jumlah;
-      }
-    }
-
-    // --- TAHAP 2: Cross Rak Nearest Date (kecuali rak terlarang) ---
-    for (const bucket of inBuckets) {
-      if (bucket.remainingCapacity <= 0) continue;
-      if (isForbiddenTransferRack(bucket.rak)) continue;
-
-      while (bucket.remainingCapacity > 0) {
-        const crossMatches = outCandidates.filter(
-          c => !c.isAssigned &&
-               c.jumlah <= bucket.remainingCapacity &&
-               !isForbiddenTransferRack(c.rak)
-        );
-
-        if (crossMatches.length === 0) break;
-
-        crossMatches.sort((a, b) =>
-          getChronologicalDistance(a.timestamp, bucket.timestamp) -
-          getChronologicalDistance(b.timestamp, bucket.timestamp)
-        );
-
-        const best = crossMatches[0];
+        const best = eligibleOuts[0];
         best.isAssigned = true;
         best.newRak = bucket.rak;
         best.newSubRak = bucket.sub_rak || bucket.rak;
@@ -1750,19 +1709,35 @@ export function DataGudang() {
     // 4. Kumpulkan moves
     const moves: any[] = [];
     outCandidates.forEach(c => {
-      if (!c.isAssigned) return;
-      const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
-      const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
+      if (c.isAssigned) {
+        const isRakChanged = normRak(c.rak) !== normRak(c.newRak);
+        const isTglChanged = normalizeDate(c.oldTglScan) !== normalizeDate(c.newTglScan);
 
-      if (isRakChanged || isTglChanged) {
-        moves.push({
-          id: c.id,
-          rak: c.rak,
-          toRak: c.newRak,
-          fromTgl: c.oldTglScan,
-          toTgl: c.newTglScan,
-          jumlah: c.jumlah
-        });
+        if (isRakChanged || isTglChanged) {
+          moves.push({
+            id: c.id,
+            rak: c.rak,
+            toRak: c.newRak,
+            fromTgl: c.oldTglScan,
+            toTgl: c.newTglScan,
+            jumlah: c.jumlah
+          });
+        }
+      } else {
+        // Jika transaksi OUT tidak berhasil dipasangkan ke batch masuk manapun:
+        // Cek apakah sebelumnya ia menempel pada batch tgl_scan yang ANOMALI (tgl keluar < tgl scan masuk):
+        // Jika ya, kita HARUS MELEPAS tgl_scan-nya (set null) agar tidak memotong batch masa depan secara tidak sah!
+        const isAnomaly = c.oldTglScan && !isOutDateEligibleForIn(c.tgl, c.oldTglScan);
+        if (isAnomaly) {
+          moves.push({
+            id: c.id,
+            rak: c.rak,
+            toRak: c.rak,
+            fromTgl: c.oldTglScan,
+            toTgl: null,
+            jumlah: c.jumlah
+          });
+        }
       }
     });
 
@@ -1771,23 +1746,27 @@ export function DataGudang() {
     }
 
     // 5. Eksekusi moves ke Supabase secara grouped batch
+    const todayStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
     const payloadGroups = new Map<string, { payload: Record<string, any>; ids: string[] }>();
     moves.forEach(move => {
       const isRakChanged = move.toRak && move.toRak !== move.rak;
       const isTglChanged = move.toTgl !== move.fromTgl;
 
       const payload: Record<string, any> = {
-        log_update_user: isRakChanged
-          ? `DEVMODE: Auto-Fix Move ${move.rak}->${move.toRak}`
-          : 'DEVMODE: Auto-Fix Tgl Scan'
+        log_audit_saldo: `LOCKED: Penyesuaian Cek Saldo (${todayStr})`
       };
 
-      if (isTglChanged && move.toTgl) {
-        payload.tgl_scan = move.toTgl;
-      }
-      if (isRakChanged && move.toRak) {
-        payload.rak = move.toRak;
-        payload.sub_rak = move.toRak;
+      if (move.toTgl === null) {
+        payload.tgl_scan = null;
+        payload.log_update_user = `DEVMODE: Lepas Tgl Scan Anomali (${todayStr.slice(0, 10)})`;
+      } else {
+        if (isTglChanged && move.toTgl) {
+          payload.tgl_scan = move.toTgl;
+        }
+        if (isRakChanged && move.toRak) {
+          payload.rak = move.toRak;
+          payload.sub_rak = move.toRak;
+        }
       }
 
       const key = JSON.stringify(payload);
@@ -1812,10 +1791,21 @@ export function DataGudang() {
         while (!success && attempts < 3) {
           if (stopBatchAutoFixRef.current) break;
           attempts++;
-          const { error } = await supabase
+          let { error } = await supabase
             .from('database_log')
             .update(payload)
             .in('id', chunkIds);
+
+          if (error && error.message && error.message.includes('log_audit_saldo')) {
+            // Kolom log_audit_saldo belum dibuat di Supabase, fallback tanpa kolom ini
+            const fallbackPayload = { ...payload };
+            delete fallbackPayload.log_audit_saldo;
+            const res = await supabase
+              .from('database_log')
+              .update(fallbackPayload)
+              .in('id', chunkIds);
+            error = res.error;
+          }
 
           if (!error) {
             success = true;
@@ -1875,7 +1865,8 @@ export function DataGudang() {
       let isSkuKlop = false;
       let lastMessage = '';
 
-      while (skuIteration < 3) {
+      const maxIterationsPerSku = 6;
+      while (skuIteration < maxIterationsPerSku) {
         if (stopBatchAutoFixRef.current) break;
         skuIteration++;
 
@@ -1884,7 +1875,7 @@ export function DataGudang() {
           currentIndex: i + 1,
           currentSku: currentSku,
           iteration: skuIteration,
-          statusMessage: `[SKU ${i + 1}/${uniqueSkus.length}] Iterasi ${skuIteration}/3: Memeriksa dan memperbaiki saldo...`,
+          statusMessage: `[SKU ${i + 1}/${uniqueSkus.length}] Iterasi ${skuIteration}/6: Memeriksa dan menyeimbangkan saldo sampai klop...`,
           completedList: [...completedList]
         }));
 
@@ -5053,6 +5044,11 @@ export function DataGudang() {
                           {move.actionType === 'FIX_RAK_DAN_TGL' && (
                             <span className="inline-block px-2.5 py-1 bg-purple-50 text-purple-700 border border-purple-200 font-bold rounded-lg text-[10px] tracking-wide uppercase">
                               Pindah Rak & Tgl
+                            </span>
+                          )}
+                          {move.actionType === 'CLEAR_ANOMALY' && (
+                            <span className="inline-block px-2.5 py-1 bg-rose-50 text-rose-700 border border-rose-200 font-bold rounded-lg text-[10px] tracking-wide uppercase">
+                              Lepas Tgl Anomali
                             </span>
                           )}
                         </td>
