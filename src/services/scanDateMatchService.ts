@@ -150,6 +150,44 @@ const normalizeRak = (rak?: string): string => {
   return (rak || '').trim().toUpperCase().replace(/\./g, '');
 };
 
+/**
+ * Rak yang dilarang untuk dilakukan penyesuaian/perpindahan rak:
+ * ECER-O, ECER-M, ECER-N, LANTAI 4, LANTAI 2, BLOK-I, TRANSFER
+ */
+export const isForbiddenRackAdjustment = (rak?: string): boolean => {
+  if (!rak) return false;
+  const clean = (rak || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  const compact = clean.replace(/[\s\-_\.]+/g, '');
+
+  if (
+    compact === 'ECERM' || compact.startsWith('ECERM') || compact === 'CERM' || compact.startsWith('CERM') ||
+    compact === 'ECERN' || compact.startsWith('ECERN') || compact === 'CERN' || compact.startsWith('CERN') ||
+    compact === 'ECERO' || compact.startsWith('ECERO') || compact === 'CERO' || compact.startsWith('CERO')
+  ) {
+    return true;
+  }
+
+  if (
+    compact === 'LANTAI2' || compact.startsWith('LANTAI2') || compact === 'LT2' || compact.startsWith('LT2') ||
+    compact === 'LANTAI4' || compact.startsWith('LANTAI4') || compact === 'LT4' || compact.startsWith('LT4')
+  ) {
+    return true;
+  }
+
+  if (
+    compact === 'BLOKI' || compact.startsWith('BLOKI') || compact === 'BLOK1' || compact.startsWith('BLOK1')
+  ) {
+    return true;
+  }
+
+  if (compact.includes('TRANSFER')) {
+    return true;
+  }
+
+  const forbidden = ['ECER-O', 'ECER-M', 'ECER-N', 'LANTAI 4', 'LT4', 'LANTAI 2', 'LT2', 'BLOK-I', 'TRANSFER'];
+  return forbidden.some(f => clean === f || clean.includes(f));
+};
+
 // --- CORE ANALYSIS & MATCHING ENGINE ---
 export function analyzeAndMatchScanDates(
   logs: DatabaseLogEntry[],
@@ -374,7 +412,52 @@ export function analyzeAndMatchScanDates(
     return buckets[0];
   };
 
-  // --- MATCHING FIFO KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
+  // --- TAHAP 1: SAME-DAY EXACT QTY MATCH (Tgl Input Sama, SKU Sama, Qty Sama) ---
+  // Contoh: IN 2026-06-24 (1 pc, Rak UTAMA) & OUT 2026-06-24 (1 pc, Rak G14)
+  // Pasangan ini harus dipasangkan terlebih dahulu agar tidak diserobot oleh batch IN lama!
+  for (const bucket of inBuckets) {
+    if (bucket.remainingCapacity <= 0) continue;
+
+    const exactSameDayCandidates = candidatesToMatch.filter(
+      c => !c.isAssigned &&
+           normalizeDate(c.tgl) === normalizeDate(bucket.tgl) &&
+           c.jumlah === bucket.remainingCapacity &&
+           !isForbiddenRackAdjustment(c.rak)
+    );
+
+    if (exactSameDayCandidates.length > 0) {
+      exactSameDayCandidates.sort((a, b) => Math.abs(a.timestamp - bucket.timestamp) - Math.abs(b.timestamp - bucket.timestamp));
+      const bestCandidate = exactSameDayCandidates[0];
+      const isSameRak = normalizeRak(bestCandidate.rak) === normalizeRak(bucket.rak);
+
+      bestCandidate.isAssigned = true;
+      bestCandidate.newTglScan = bucket.targetTglScan;
+      if (!isForbiddenRackAdjustment(bucket.rak) && !isForbiddenRackAdjustment(bestCandidate.rak)) {
+        bestCandidate.newRak = bucket.rak;
+        bestCandidate.newSubRak = bucket.sub_rak || bucket.rak;
+      } else {
+        bestCandidate.newRak = bestCandidate.rak;
+        bestCandidate.newSubRak = bestCandidate.sub_rak || bestCandidate.rak;
+      }
+      bestCandidate.status = isSameRak ? 'EXACT_MATCH' : 'EXACT_QTY_DIFF_RAK';
+      bestCandidate.statusLabel = isSameRak ? '🎯 Klop Pas (Sama Rak & Hari)' : '⚡ Klop Pas (Hari Sama, Sesuaikan Rak)';
+      bestCandidate.badgeBg = isSameRak ? 'bg-emerald-100' : 'bg-teal-100';
+      bestCandidate.badgeText = isSameRak ? 'text-emerald-800' : 'text-teal-800';
+      bestCandidate.badgeBorder = isSameRak ? 'border-emerald-300' : 'border-teal-300';
+      bestCandidate.matchReason = `Tanggal input sama (${bucket.tgl}) dan Qty pas ${bestCandidate.jumlah} pcs dengan nota masuk ${bucket.rak}`;
+      bestCandidate.matchedInRef = {
+        id: bucket.id,
+        tgl: bucket.tgl,
+        waktu: bucket.waktu,
+        rak: bucket.rak,
+        tgl_scan: bucket.targetTglScan
+      };
+      bucket.remainingCapacity -= bestCandidate.jumlah;
+      exactMatchCount++;
+    }
+  }
+
+  // --- TAHAP 2: MATCHING FIFO KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
   for (const bucket of inBuckets) {
     if (bucket.remainingCapacity <= 0) continue;
 
@@ -399,7 +482,12 @@ export function analyzeAndMatchScanDates(
         if (daysA <= 35 && daysB > 35) return -1;
         if (daysB <= 35 && daysA > 35) return 1;
 
-        // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+        // 2. Same Input Date preference: jika tanggal input sama persis, dahulukan
+        const aSameDate = normalizeDate(a.tgl) === normalizeDate(bucket.tgl) ? 0 : 1;
+        const bSameDate = normalizeDate(b.tgl) === normalizeDate(bucket.tgl) ? 0 : 1;
+        if (aSameDate !== bSameDate) return aSameDate - bSameDate;
+
+        // 3. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
         const aIsSame = normalizeRak(a.rak) === normalizeRak(bucket.rak) ? 0 : 1;
         const bIsSame = normalizeRak(b.rak) === normalizeRak(bucket.rak) ? 0 : 1;
         if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
@@ -415,8 +503,13 @@ export function analyzeAndMatchScanDates(
 
       bestCandidate.isAssigned = true;
       bestCandidate.newTglScan = bucket.targetTglScan;
-      bestCandidate.newRak = bucket.rak;
-      bestCandidate.newSubRak = bucket.sub_rak || bucket.rak;
+      if (!isForbiddenRackAdjustment(bucket.rak) && !isForbiddenRackAdjustment(bestCandidate.rak)) {
+        bestCandidate.newRak = bucket.rak;
+        bestCandidate.newSubRak = bucket.sub_rak || bucket.rak;
+      } else {
+        bestCandidate.newRak = bestCandidate.rak;
+        bestCandidate.newSubRak = bestCandidate.sub_rak || bestCandidate.rak;
+      }
       bestCandidate.status = isSameRak
         ? (isExact ? 'EXACT_MATCH' : 'FIFO_MATCH')
         : (isExact ? 'EXACT_QTY_DIFF_RAK' : 'FIFO_MATCH');

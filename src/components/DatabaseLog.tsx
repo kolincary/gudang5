@@ -12,7 +12,7 @@ import { skuConversionService } from '../services/skuConversionService';
 import { TransferChainAuditModal } from './TransferChainAuditModal';
 import { auditTransferChains, fixTransferChainLinks, ChainAuditSummary, BrokenChainLink } from '../services/transferChainService';
 import { TransferPurgeModal } from './TransferPurgeModal';
-import { TransferPurgeItem, TransferPurgeScanResult, scanTransferLogs, deleteTransferLogs } from '../services/transferPurgeService';
+import { TransferPurgeItem, TransferPurgeScanResult, scanTransferLogs, deleteTransferLogs, parseMultipleSkus } from '../services/transferPurgeService';
 import { SyncOutRakModal } from './SyncOutRakModal';
 import { MismatchedOutRakItem, SyncOutRakScanResult, scanMismatchedOutLogs, restoreOutRakLogs } from '../services/syncOutRakService';
 import { SyncLt4Lt2Modal } from './SyncLt4Lt2Modal';
@@ -251,6 +251,7 @@ export const isForbiddenTransferRack = (rak: string): boolean => {
 
 export const FORBIDDEN_DESTINATION_RACKS = FORBIDDEN_TRANSFER_RACKS;
 export const isForbiddenDestinationRack = isForbiddenTransferRack;
+export const isForbiddenRackAdjustment = isForbiddenTransferRack;
 
 // Helper to extract redistribute info from log_update_user
 export const getRedistributeMoveInfo = (logUpdateUser?: string) => {
@@ -838,6 +839,13 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
   const [isScanningPurge, setIsScanningPurge] = useState(false);
   const [isDeletingPurge, setIsDeletingPurge] = useState(false);
   const [selectedPurgeIds, setSelectedPurgeIds] = useState<Set<string>>(new Set());
+  // --- DELETE TRANSFER FOR CEK SALDO STATE ---
+  const [isDeleteTransferCekSaldoModalOpen, setIsDeleteTransferCekSaldoModalOpen] = useState(false);
+  const [transferLogsForCekSaldo, setTransferLogsForCekSaldo] = useState<any[]>([]);
+  const [selectedTransferIdsForCekSaldo, setSelectedTransferIdsForCekSaldo] = useState<Set<string>>(new Set());
+  const [isLoadingTransferLogsForCekSaldo, setIsLoadingTransferLogsForCekSaldo] = useState(false);
+  const [isDeletingTransferLogsForCekSaldo, setIsDeletingTransferLogsForCekSaldo] = useState(false);
+  const [targetSkusForDeleteTransfer, setTargetSkusForDeleteTransfer] = useState<string[]>([]);
 
   // --- SINKRON RAK OUT NOTA MASUK (J & H) STATE ---
   const [isSyncOutRakModalOpen, setIsSyncOutRakModalOpen] = useState(false);
@@ -898,7 +906,6 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           .order('id', { ascending: true });
 
         query = query.ilike('sku', targetSkus[0].trim());
-        if (filters.rak) query = query.ilike('rak', `%${filters.rak.trim()}%`);
 
         const batchSize = 1000;
         let from = 0;
@@ -946,8 +953,6 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
               .in('sku', chunk)
               .or('type.ilike.%IN%,type.ilike.%OUT%')
               .order('id', { ascending: true });
-
-            if (filters.rak) query = query.ilike('rak', `%${filters.rak.trim()}%`);
 
             const { data, error } = await query.range(from, from + 999);
             if (error) throw error;
@@ -1133,7 +1138,29 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         inBuckets.sort((a, b) => a.timestamp - b.timestamp);
         outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-        // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
+        // --- TAHAP 1: SAME-DAY EXACT QTY MATCH (Tgl Input Sama, SKU Sama, Qty Sama) ---
+        // Contoh: IN 2026-06-24 (1 pc, Rak UTAMA) & OUT 2026-06-24 (1 pc, Rak G14)
+        // Pasangan ini harus dipasangkan terlebih dahulu agar tidak diserobot oleh batch IN lama!
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0) continue;
+
+          const exactSameDayCandidates = outCandidates.filter(
+            c => !c.isAssigned &&
+                 c.tgl === bucket.tgl &&
+                 c.jumlah === bucket.remainingCapacity &&
+                 !isForbiddenRackAdjustment(c.rak)
+          );
+
+          if (exactSameDayCandidates.length > 0) {
+            exactSameDayCandidates.sort((a, b) => Math.abs(a.timestamp - bucket.timestamp) - Math.abs(b.timestamp - bucket.timestamp));
+            const best = exactSameDayCandidates[0];
+            best.isAssigned = true;
+            best.matchedIn = bucket;
+            bucket.remainingCapacity -= best.jumlah;
+          }
+        }
+
+        // --- TAHAP 2: MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
         for (const bucket of inBuckets) {
           if (bucket.remainingCapacity <= 0) continue;
 
@@ -1142,7 +1169,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
               c => !c.isAssigned &&
                    c.jumlah <= bucket.remainingCapacity &&
                    isOutDateEligibleForIn(c.tgl, bucket.tgl) &&
-                   !isForbiddenTransferRack(c.rak)
+                   !isForbiddenRackAdjustment(c.rak)
             );
 
             if (eligibleOuts.length === 0) break;
@@ -1157,7 +1184,12 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
               if (daysA <= 35 && daysB > 35) return -1;
               if (daysB <= 35 && daysA > 35) return 1;
 
-              // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+              // 2. Same Input Date preference: jika tanggal input sama persis, dahulukan
+              const aSameDate = a.tgl === bucket.tgl ? 0 : 1;
+              const bSameDate = b.tgl === bucket.tgl ? 0 : 1;
+              if (aSameDate !== bSameDate) return aSameDate - bSameDate;
+
+              // 3. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
               const aSameRak = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
               const bSameRak = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
               if (aSameRak !== bSameRak && Math.abs(daysA - daysB) < 14) {
@@ -1671,8 +1703,34 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         inBuckets.sort((a, b) => a.timestamp - b.timestamp);
         outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
+        // --- TAHAP 1: SAME-DAY EXACT QTY MATCH (Tgl Input Sama, SKU Sama, Qty Sama) ---
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
 
-        // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
+          const exactSameDayCandidates = outCandidates.filter(
+            c => !c.isAssigned &&
+                 c.tgl === bucket.tgl &&
+                 c.jumlah === bucket.remainingCapacity &&
+                 !isForbiddenRackAdjustment(c.rak)
+          );
+
+          if (exactSameDayCandidates.length > 0) {
+            exactSameDayCandidates.sort((a, b) => Math.abs(a.timestamp - bucket.timestamp) - Math.abs(b.timestamp - bucket.timestamp));
+            const best = exactSameDayCandidates[0];
+            best.isAssigned = true;
+            best.newTglScan = bucket.targetTglScan;
+            if (!isForbiddenRackAdjustment(bucket.rak) && !isForbiddenRackAdjustment(best.rak)) {
+              best.newRak = bucket.rak;
+              best.newSubRak = bucket.sub_rak || bucket.rak;
+            } else {
+              best.newRak = best.rak;
+              best.newSubRak = best.sub_rak || best.rak;
+            }
+            bucket.remainingCapacity -= best.jumlah;
+          }
+        }
+
+        // --- TAHAP 2: MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
         for (const bucket of inBuckets) {
           if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
 
@@ -1681,7 +1739,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
               c => !c.isAssigned &&
                    c.jumlah <= bucket.remainingCapacity &&
                    isOutDateEligibleForIn(c.tgl, bucket.tgl) &&
-                   !isForbiddenTransferRack(c.rak)
+                   !isForbiddenRackAdjustment(c.rak)
             );
 
             if (eligibleOuts.length === 0) break;
@@ -1696,7 +1754,12 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
               if (daysA <= 35 && daysB > 35) return -1;
               if (daysB <= 35 && daysA > 35) return 1;
 
-              // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+              // 2. Same Input Date preference: jika tanggal input sama persis, dahulukan
+              const aSameDate = a.tgl === bucket.tgl ? 0 : 1;
+              const bSameDate = b.tgl === bucket.tgl ? 0 : 1;
+              if (aSameDate !== bSameDate) return aSameDate - bSameDate;
+
+              // 3. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
               const aIsSame = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
               const bIsSame = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
               if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
@@ -1708,8 +1771,13 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
             const best = eligibleOuts[0];
             best.isAssigned = true;
-            best.newRak = bucket.rak;
-            best.newSubRak = bucket.sub_rak || bucket.rak;
+            if (!isForbiddenRackAdjustment(bucket.rak) && !isForbiddenRackAdjustment(best.rak)) {
+              best.newRak = bucket.rak;
+              best.newSubRak = bucket.sub_rak || bucket.rak;
+            } else {
+              best.newRak = best.rak;
+              best.newSubRak = best.sub_rak || best.rak;
+            }
             best.newTglScan = bucket.targetTglScan;
             bucket.remainingCapacity -= best.jumlah;
           }
@@ -1964,11 +2032,6 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       }
     });
 
-    const hasDeficit = Array.from(balanceMap.values()).some(b => b.balance < 0);
-    if (!hasDeficit && !hasTimeAnomaly) {
-      return { movesFixed: 0, isKlop: true, message: 'Saldo sudah seimbang & klop (0 defisit, 0 anomali tanggal).' };
-    }
-
     // 3. Prepare buckets for redistribution matching
     const excludedList = excludedDatesStr.split(',').map(d => d.trim().toUpperCase()).filter(Boolean);
     const checkIfExcluded = (targetTgl: string) => {
@@ -2051,7 +2114,34 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     inBuckets.sort((a, b) => a.timestamp - b.timestamp);
     outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-    // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
+    // --- TAHAP 1: SAME-DAY EXACT QTY MATCH (Tgl Input Sama, SKU Sama, Qty Sama) ---
+    for (const bucket of inBuckets) {
+      if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
+
+      const exactSameDayCandidates = outCandidates.filter(
+        c => !c.isAssigned &&
+             c.tgl === bucket.tgl &&
+             c.jumlah === bucket.remainingCapacity &&
+             !isForbiddenRackAdjustment(c.rak)
+      );
+
+      if (exactSameDayCandidates.length > 0) {
+        exactSameDayCandidates.sort((a, b) => Math.abs(a.timestamp - bucket.timestamp) - Math.abs(b.timestamp - bucket.timestamp));
+        const best = exactSameDayCandidates[0];
+        best.isAssigned = true;
+        best.newTglScan = bucket.targetTglScan;
+        if (!isForbiddenRackAdjustment(bucket.rak) && !isForbiddenRackAdjustment(best.rak)) {
+          best.newRak = bucket.rak;
+          best.newSubRak = bucket.sub_rak || bucket.rak;
+        } else {
+          best.newRak = best.rak;
+          best.newSubRak = best.sub_rak || best.rak;
+        }
+        bucket.remainingCapacity -= best.jumlah;
+      }
+    }
+
+    // --- TAHAP 2: MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
     for (const bucket of inBuckets) {
       if (bucket.remainingCapacity <= 0 || checkIfExcluded(bucket.targetTglScan)) continue;
 
@@ -2060,7 +2150,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           c => !c.isAssigned &&
                c.jumlah <= bucket.remainingCapacity &&
                isOutDateEligibleForIn(c.tgl, bucket.tgl) &&
-               !isForbiddenTransferRack(c.rak)
+               !isForbiddenRackAdjustment(c.rak)
         );
 
         if (eligibleOuts.length === 0) break;
@@ -2075,7 +2165,12 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
           if (daysA <= 35 && daysB > 35) return -1;
           if (daysB <= 35 && daysA > 35) return 1;
 
-          // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+          // 2. Same Input Date preference: jika tanggal input sama persis, dahulukan
+          const aSameDate = a.tgl === bucket.tgl ? 0 : 1;
+          const bSameDate = b.tgl === bucket.tgl ? 0 : 1;
+          if (aSameDate !== bSameDate) return aSameDate - bSameDate;
+
+          // 3. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
           const aIsSame = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
           const bIsSame = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
           if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
@@ -2087,8 +2182,13 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
 
         const best = eligibleOuts[0];
         best.isAssigned = true;
-        best.newRak = bucket.rak;
-        best.newSubRak = bucket.sub_rak || bucket.rak;
+        if (!isForbiddenRackAdjustment(bucket.rak) && !isForbiddenRackAdjustment(best.rak)) {
+          best.newRak = bucket.rak;
+          best.newSubRak = bucket.sub_rak || bucket.rak;
+        } else {
+          best.newRak = best.rak;
+          best.newSubRak = best.sub_rak || best.rak;
+        }
         best.newTglScan = bucket.targetTglScan;
         bucket.remainingCapacity -= best.jumlah;
       }
@@ -2130,7 +2230,14 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
     });
 
     if (moves.length === 0) {
-      return { movesFixed: 0, isKlop: false, message: 'Tidak ada kapasitas surplus untuk pemindahan lebih lanjut.' };
+      const isDeficitLeft = Array.from(balanceMap.values()).some(b => b.balance < 0);
+      return {
+        movesFixed: 0,
+        isKlop: !isDeficitLeft,
+        message: isDeficitLeft
+          ? 'Tidak ada kapasitas surplus untuk pemindahan lebih lanjut.'
+          : 'Saldo sudah seimbang & klop (seluruh transaksi OUT sudah sesuai batch masuk).'
+      };
     }
 
     // 5. Eksekusi moves ke Supabase secara grouped batch
@@ -2332,6 +2439,141 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
       handleAnalyzeStockBalance(analyzedSkusList);
     }
     loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
+  };
+
+  // --- HANDLER HAPUS DATA GUDANG: TRANSFER UNTUK CEK SALDO ---
+  const handleOpenDeleteTransferForCekSaldo = async () => {
+    let skus: string[] = [];
+    if (analysisSkuInputMode === 'single') {
+      if (analysisSku) skus = [analysisSku.trim().toUpperCase()];
+    } else {
+      if (analyzedSkusList.length > 0) {
+        skus = analyzedSkusList;
+      } else if (bulkAnalysisSkuInput.trim()) {
+        skus = parseMultipleSkus(bulkAnalysisSkuInput);
+      }
+    }
+
+    if (skus.length === 0 && analysisResults.length > 0) {
+      skus = Array.from(new Set(analysisResults.map(r => r.sku).filter(Boolean)));
+    }
+
+    if (skus.length === 0) {
+      showToast('Silakan pilih atau masukkan SKU terlebih dahulu.', 'warning');
+      return;
+    }
+
+    setTargetSkusForDeleteTransfer(skus);
+    setIsDeleteTransferCekSaldoModalOpen(true);
+    setIsLoadingTransferLogsForCekSaldo(true);
+    setSelectedTransferIdsForCekSaldo(new Set());
+    setTransferLogsForCekSaldo([]);
+
+    try {
+      const pageSize = 1000;
+      let allLogs: any[] = [];
+      const chunkSize = 50;
+
+      for (let i = 0; i < skus.length; i += chunkSize) {
+        const chunk = skus.slice(i, i + chunkSize);
+        let page = 0;
+        while (true) {
+          let query = supabase
+            .from('database_log')
+            .select('id, tgl, waktu, sku, jumlah, type, gudang, rak, sub_rak, tgl_scan, user_name, log_update_user')
+            .or('gudang.ilike.%TRANSFER%,rak.ilike.%TRANSFER%');
+
+          if (chunk.length === 1) {
+            query = query.eq('sku', chunk[0]);
+          } else {
+            query = query.in('sku', chunk);
+          }
+
+          const { data, error } = await query
+            .order('tgl', { ascending: false })
+            .order('waktu', { ascending: false })
+            .range(page * pageSize, (page + 1) * pageSize - 1);
+
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+          allLogs.push(...data);
+          if (data.length < pageSize) break;
+          page++;
+          if (page > 20) break;
+        }
+      }
+
+      setTransferLogsForCekSaldo(allLogs);
+      setSelectedTransferIdsForCekSaldo(new Set(allLogs.map(l => l.id)));
+
+      if (allLogs.length === 0) {
+        showToast(`Tidak ditemukan data gudang: TRANSFER untuk ${skus.length} SKU yang dipilih.`, 'info');
+      } else {
+        const inCount = allLogs.filter(l => (l.type || '').toUpperCase().includes('IN')).length;
+        const outCount = allLogs.filter(l => (l.type || '').toUpperCase().includes('OUT')).length;
+        showToast(`Ditemukan ${allLogs.length} data transfer (${inCount} IN, ${outCount} OUT).`, 'info');
+      }
+    } catch (err: any) {
+      console.error('Error fetching transfer logs for Cek Saldo:', err);
+      showToast('Gagal memuat data transfer: ' + (err?.message || err), 'error');
+    } finally {
+      setIsLoadingTransferLogsForCekSaldo(false);
+    }
+  };
+
+  const handleExecuteDeleteTransferForCekSaldo = async () => {
+    const idsToDelete = Array.from(selectedTransferIdsForCekSaldo);
+    if (idsToDelete.length === 0) {
+      showToast('Silakan pilih setidaknya satu data transfer untuk dihapus.', 'warning');
+      return;
+    }
+
+    try {
+      setIsDeletingTransferLogsForCekSaldo(true);
+      const batchSize = 50;
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (let i = 0; i < idsToDelete.length; i += batchSize) {
+        const batch = idsToDelete.slice(i, i + batchSize);
+        const { error } = await supabase
+          .from('database_log')
+          .delete()
+          .in('id', batch);
+
+        if (error) {
+          console.error('Error deleting transfer logs:', error);
+          errorCount += batch.length;
+        } else {
+          successCount += batch.length;
+        }
+      }
+
+      if (errorCount === 0) {
+        showToast(`Berhasil menghapus ${successCount} data log transfer!`, 'success');
+      } else {
+        showToast(`Berhasil menghapus ${successCount} data, ${errorCount} data gagal dihapus.`, 'warning');
+      }
+
+      setIsDeleteTransferCekSaldoModalOpen(false);
+      setTransferLogsForCekSaldo([]);
+      setSelectedTransferIdsForCekSaldo(new Set());
+
+      // Otomatis refresh Cek Saldo dan tabel log utama
+      if (analysisSkuInputMode === 'single' && analysisSku) {
+        await handleAnalyzeStockBalance(analysisSku);
+      } else if (targetSkusForDeleteTransfer.length > 0) {
+        await handleAnalyzeStockBalance(targetSkusForDeleteTransfer);
+      } else {
+        await handleAnalyzeStockBalance();
+      }
+      loadLogEntries(currentPage, itemsPerPage, debouncedFilters);
+    } catch (err: any) {
+      console.error('Error executing delete transfer logs:', err);
+      showToast('Gagal menghapus data transfer: ' + (err?.message || err), 'error');
+    } finally {
+      setIsDeletingTransferLogsForCekSaldo(false);
+    }
   };
 
 
@@ -8842,7 +9084,8 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
         isOpen={isAnalysisModalOpen}
         onClose={() => setIsAnalysisModalOpen(false)}
         title="Audit & Analisis Saldo Stok (Deteksi Selisih & Lebih Potong)"
-        size="5xl"
+        size="8xl"
+        className="w-[96vw] max-w-[1580px]"
       >
         <div className="space-y-6">
           {/* Information Banner */}
@@ -9040,26 +9283,57 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
             </div>
 
             {analysisSkuInputMode === 'single' ? (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 uppercase mb-2 ml-1">Cari / Pilih SKU</label>
-                  <FilterDropdown
-                    value={analysisSku}
-                    onChange={(val) => setAnalysisSku(val)}
-                    options={allSkus}
-                    placeholder="Ketik nama produk..."
-                    loading={dropdownsLoading}
-                  />
+              <div className="space-y-3.5">
+                <div className="flex flex-col md:flex-row items-stretch md:items-end gap-3.5">
+                  <div className="flex-1 min-w-[260px]">
+                    <label className="block text-xs font-bold text-slate-700 uppercase mb-1.5 ml-1">
+                      Cari / Pilih SKU
+                    </label>
+                    <FilterDropdown
+                      value={analysisSku}
+                      onChange={(val) => setAnalysisSku(val)}
+                      options={allSkus}
+                      placeholder="Ketik nama produk..."
+                      loading={dropdownsLoading}
+                    />
+                  </div>
+
+                  <div className="w-full md:w-80 flex-shrink-0">
+                    <label className="block text-xs font-bold text-slate-700 uppercase mb-1.5 ml-1">
+                      Kecualikan Tgl Scan (Koma)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={excludedScanDates}
+                        onChange={(e) => setExcludedScanDates(e.target.value)}
+                        placeholder="Contoh: No Date, 2025-12-06"
+                        className="w-full h-11 px-4 pr-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-sm bg-white text-sm"
+                      />
+                      {excludedScanDates && (
+                        <button
+                          onClick={() => setExcludedScanDates('')}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500"
+                          title="Bersihkan"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div className="flex gap-2">
+
+                {/* Baris Tombol Aksi Single SKU - Luas, Terorganisir & Responsif */}
+                <div className="flex flex-wrap items-center gap-2.5 pt-2.5 border-t border-slate-200">
                   <Button
                     onClick={() => handleAnalyzeStockBalance()}
                     disabled={isAnalyzing}
-                    className="flex-1 h-11 bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95"
+                    className="h-11 px-5 bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-black rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 active:scale-95 cursor-pointer"
                   >
                     {isAnalyzing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />}
                     <span>{isAnalyzing ? 'Menganalisis...' : 'Mulai Analisis'}</span>
                   </Button>
+
                   {analysisResults.some(r => r.balance < 0) && (
                     <>
                       <Button
@@ -9071,7 +9345,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                           }
                         }}
                         disabled={isAnalyzing || batchAutoFixProgress.isRunning || isProcessingRemediation}
-                        className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50"
+                        className="h-11 px-5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50 cursor-pointer"
                         title="Perbaiki semua selisih secara otomatis dan berulang sampai klop"
                       >
                         <RefreshCw className="h-4 w-4" />
@@ -9088,7 +9362,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                           navigator.clipboard.writeText(text);
                           showToast(`${lines.length} baris Laporan Lebih Potong disalin!`, 'success');
                         }}
-                        className="h-11 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-300 shadow-sm transition-all flex items-center justify-center space-x-1.5 active:scale-95"
+                        className="h-11 px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-300 shadow-sm transition-all flex items-center justify-center space-x-1.5 active:scale-95 cursor-pointer"
                         title="Salin seluruh baris laporan lebih potong untuk tim"
                       >
                         <Copy className="h-4 w-4" />
@@ -9096,34 +9370,23 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                       </Button>
                     </>
                   )}
-                </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 uppercase mb-2 ml-1">Kecualikan Tgl Scan (Koma)</label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={excludedScanDates}
-                      onChange={(e) => setExcludedScanDates(e.target.value)}
-                      placeholder="Contoh: No Date, 2025-12-06"
-                      className="w-full h-11 px-4 pr-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-sm bg-white text-sm"
-                    />
-                    {excludedScanDates && (
-                      <button
-                        onClick={() => setExcludedScanDates('')}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500"
-                        title="Bersihkan"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    )}
-                  </div>
+                  <Button
+                    type="button"
+                    onClick={handleOpenDeleteTransferForCekSaldo}
+                    disabled={isAnalyzing || batchAutoFixProgress.isRunning || !analysisSku}
+                    className="h-11 px-4 bg-rose-600 hover:bg-rose-700 text-white font-black rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50 cursor-pointer"
+                    title="Hapus data log gudang TRANSFER (type IN & OUT) untuk SKU ini jika bermasalah"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    <span>Hapus Data Gudang: TRANSFER</span>
+                  </Button>
                 </div>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3.5">
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 uppercase mb-1 ml-1">
+                  <label className="block text-xs font-bold text-slate-700 uppercase mb-1.5 ml-1">
                     Daftar SKU / Nama Produk (Format Vertikal per Baris dari Hasil Salin Data Gudang / Excel):
                   </label>
                   <textarea
@@ -9134,14 +9397,17 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     className="w-full p-3 border border-slate-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-teal-500 bg-white"
                   />
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 flex-1 min-w-[280px]">
-                    <div className="relative flex-1">
+                <div className="flex flex-col lg:flex-row items-stretch lg:items-end justify-between gap-3 pt-1">
+                  <div className="w-full lg:w-80 flex-shrink-0">
+                    <label className="block text-xs font-bold text-slate-700 uppercase mb-1.5 ml-1">
+                      Kecualikan Tgl Scan (Koma)
+                    </label>
+                    <div className="relative">
                       <input
                         type="text"
                         value={excludedScanDates}
                         onChange={(e) => setExcludedScanDates(e.target.value)}
-                        placeholder="Kecualikan Tgl Scan (Koma): No Date, 2025-12-06"
+                        placeholder="Contoh: No Date, 2025-12-06"
                         className="w-full h-11 px-4 pr-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 shadow-sm bg-white text-xs"
                       />
                       {excludedScanDates && (
@@ -9156,11 +9422,11 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex flex-wrap items-center gap-2.5">
                     <Button
                       onClick={() => handleAnalyzeStockBalance()}
                       disabled={isAnalyzing || batchAutoFixProgress.isRunning || !bulkAnalysisSkuInput.trim()}
-                      className="h-11 px-5 bg-gradient-to-r from-teal-600 to-emerald-700 hover:from-teal-700 hover:to-emerald-800 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50"
+                      className="h-11 px-5 bg-gradient-to-r from-teal-600 to-emerald-700 hover:from-teal-700 hover:to-emerald-800 text-white font-black rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50 cursor-pointer"
                     >
                       {isAnalyzing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />}
                       <span>{isAnalyzing ? 'Menganalisis...' : 'Mulai Analisis Massal'}</span>
@@ -9176,11 +9442,21 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                         runBatchAutoFixPerSku(skus);
                       }}
                       disabled={isAnalyzing || batchAutoFixProgress.isRunning || !bulkAnalysisSkuInput.trim()}
-                      className="h-11 px-5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50 cursor-pointer"
+                      className="h-11 px-5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50 cursor-pointer"
                       title="Jalankan auto-fix berurutan per batch SKU satu per satu secara iteratif sampai klop"
                     >
                       <RefreshCw className="h-4 w-4" />
                       <span>Mulai Auto-Fix Massal (Per SKU)</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={handleOpenDeleteTransferForCekSaldo}
+                      disabled={isAnalyzing || batchAutoFixProgress.isRunning || (!bulkAnalysisSkuInput.trim() && analyzedSkusList.length === 0)}
+                      className="h-11 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center space-x-1.5 active:scale-95 disabled:opacity-50 cursor-pointer"
+                      title="Hapus data log gudang TRANSFER (type IN & OUT) untuk daftar SKU yang dianalisis"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      <span>Hapus Data Gudang: TRANSFER (Massal)</span>
                     </Button>
                     {analysisResults.some(r => r.balance < 0) && (
                       <>
@@ -9194,7 +9470,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                             }
                           }}
                           disabled={isAnalyzing || batchAutoFixProgress.isRunning || isProcessingRemediation}
-                          className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50"
+                          className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50 cursor-pointer"
                           title="Perbaiki semua selisih secara bertahap satu per satu per batch SKU sampai klop"
                         >
                           <RefreshCw className="h-4 w-4" />
@@ -9211,7 +9487,7 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
                             navigator.clipboard.writeText(text);
                             showToast(`${lines.length} baris Laporan Lebih Potong disalin!`, 'success');
                           }}
-                          className="h-11 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-300 shadow-sm transition-all flex items-center justify-center space-x-1.5 active:scale-95"
+                          className="h-11 px-4 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-300 shadow-sm transition-all flex items-center justify-center space-x-1.5 active:scale-95 cursor-pointer"
                           title="Salin seluruh baris laporan lebih potong untuk tim"
                         >
                           <Copy className="h-4 w-4" />
@@ -9611,6 +9887,229 @@ export function DatabaseLog({ initialGudangFilter = '', bypassPin = false }: Dat
             >
               Tutup
             </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL HAPUS DATA GUDANG TRANSFER UNTUK CEK SALDO */}
+      <Modal
+        isOpen={isDeleteTransferCekSaldoModalOpen}
+        onClose={() => {
+          if (!isDeletingTransferLogsForCekSaldo) {
+            setIsDeleteTransferCekSaldoModalOpen(false);
+          }
+        }}
+        title="Hapus Data Log Gudang: TRANSFER (Type IN & OUT)"
+        size="5xl"
+        className="w-[96vw] max-w-[1280px]"
+      >
+        <div className="space-y-4">
+          {/* Banner Info */}
+          <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-start space-x-3">
+            <AlertTriangle className="h-5 w-5 text-rose-600 mt-0.5 flex-shrink-0" />
+            <div className="text-xs text-rose-900 leading-relaxed">
+              <p className="font-bold text-rose-950 mb-1">
+                Pembersihan Data Log Mutasi/Transfer Gudang Bermasalah:
+              </p>
+              <p>
+                Fitur ini menghapus baris transaksi dengan <strong>Gudang: TRANSFER</strong> (baik type <strong>IN</strong> maupun <strong>OUT</strong>) untuk SKU yang dipilih.
+                Gunakan ini jika data transfer tersebut salah/anomali sehingga merusak perhitungan saldo stok.
+                Setelah dihapus, sistem akan <strong>otomatis menganalisis ulang saldo stok</strong> agar Anda dapat mencocokkan tgl scan yang bersih.
+              </p>
+              {targetSkusForDeleteTransfer.length > 0 && (
+                <div className="mt-2 font-mono text-[11px] bg-white/70 px-2 py-1 rounded border border-rose-200 text-rose-800">
+                  Target SKU ({targetSkusForDeleteTransfer.length}): {targetSkusForDeleteTransfer.slice(0, 5).join(', ')}{targetSkusForDeleteTransfer.length > 5 ? '...' : ''}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {isLoadingTransferLogsForCekSaldo ? (
+            <div className="py-12 flex flex-col items-center justify-center space-y-3">
+              <RefreshCw className="h-8 w-8 text-rose-600 animate-spin" />
+              <p className="text-sm font-bold text-slate-600">Memuat data log gudang TRANSFER...</p>
+            </div>
+          ) : transferLogsForCekSaldo.length === 0 ? (
+            <div className="py-10 text-center space-y-3 bg-slate-50 rounded-2xl border border-slate-200 p-6">
+              <CheckCircle className="h-10 w-10 text-emerald-500 mx-auto" />
+              <p className="text-sm font-bold text-slate-800">
+                Tidak ada data log gudang TRANSFER ditemukan untuk SKU ini.
+              </p>
+              <p className="text-xs text-slate-500">
+                Semua log saat ini sudah bersih dari data transfer.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Summary Badges */}
+              {(() => {
+                const inLogs = transferLogsForCekSaldo.filter(l => (l.type || '').toUpperCase().includes('IN'));
+                const outLogs = transferLogsForCekSaldo.filter(l => (l.type || '').toUpperCase().includes('OUT'));
+                const inQty = inLogs.reduce((s, l) => s + Number(l.jumlah || 0), 0);
+                const outQty = outLogs.reduce((s, l) => s + Number(l.jumlah || 0), 0);
+                const allSelected = transferLogsForCekSaldo.length > 0 && transferLogsForCekSaldo.every(l => selectedTransferIdsForCekSaldo.has(l.id));
+
+                return (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      <div className="bg-slate-100 rounded-xl p-2.5 border border-slate-200 text-center">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase block">Total Data</span>
+                        <span className="text-base font-black text-slate-800">{transferLogsForCekSaldo.length} baris</span>
+                      </div>
+                      <div className="bg-emerald-50 rounded-xl p-2.5 border border-emerald-200 text-center">
+                        <span className="text-[10px] font-bold text-emerald-600 uppercase block">Transfer IN</span>
+                        <span className="text-base font-black text-emerald-700">{inLogs.length} baris ({inQty} pcs)</span>
+                      </div>
+                      <div className="bg-rose-50 rounded-xl p-2.5 border border-rose-200 text-center">
+                        <span className="text-[10px] font-bold text-rose-600 uppercase block">Transfer OUT</span>
+                        <span className="text-base font-black text-rose-700">{outLogs.length} baris ({outQty} pcs)</span>
+                      </div>
+                      <div className="bg-indigo-50 rounded-xl p-2.5 border border-indigo-200 text-center">
+                        <span className="text-[10px] font-bold text-indigo-600 uppercase block">Dipilih Hapus</span>
+                        <span className="text-base font-black text-indigo-700">{selectedTransferIdsForCekSaldo.size} baris</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between px-1">
+                      <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedTransferIdsForCekSaldo(new Set(transferLogsForCekSaldo.map(l => l.id)));
+                            } else {
+                              setSelectedTransferIdsForCekSaldo(new Set());
+                            }
+                          }}
+                          className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer"
+                        />
+                        <span>Pilih Semua ({transferLogsForCekSaldo.length} baris)</span>
+                      </label>
+                      <span className="text-[11px] text-slate-400">
+                        Klik baris atau centang kotak untuk memilih data yang akan dihapus
+                      </span>
+                    </div>
+
+                    {/* Table Preview */}
+                    <div className="max-h-72 overflow-y-auto border border-slate-200 rounded-xl shadow-inner bg-white">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="bg-slate-100 text-slate-700 sticky top-0 z-10 border-b border-slate-200">
+                          <tr>
+                            <th className="p-2 w-10 text-center">#</th>
+                            <th className="p-2">Tgl / Waktu</th>
+                            <th className="p-2">SKU</th>
+                            <th className="p-2 text-center">Type</th>
+                            <th className="p-2 text-center">Gudang</th>
+                            <th className="p-2">Rak</th>
+                            <th className="p-2 text-right">Qty</th>
+                            <th className="p-2">Tgl Scan</th>
+                            <th className="p-2">User / Info</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                          {transferLogsForCekSaldo.map((row) => {
+                            const isSelected = selectedTransferIdsForCekSaldo.has(row.id);
+                            const isOut = (row.type || '').toUpperCase().includes('OUT');
+                            return (
+                              <tr
+                                key={row.id}
+                                onClick={() => {
+                                  setSelectedTransferIdsForCekSaldo(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(row.id)) next.delete(row.id);
+                                    else next.add(row.id);
+                                    return next;
+                                  });
+                                }}
+                                className={`cursor-pointer transition-colors ${isSelected ? 'bg-rose-50/70 hover:bg-rose-100/60' : 'hover:bg-slate-50'}`}
+                              >
+                                <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => {
+                                      setSelectedTransferIdsForCekSaldo(prev => {
+                                        const next = new Set(prev);
+                                        if (next.has(row.id)) next.delete(row.id);
+                                        else next.add(row.id);
+                                        return next;
+                                      });
+                                    }}
+                                    className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-3.5 h-3.5 cursor-pointer"
+                                  />
+                                </td>
+                                <td className="p-2 text-slate-800 font-medium">
+                                  {row.tgl} <span className="text-slate-400">{row.waktu}</span>
+                                </td>
+                                <td className="p-2 text-slate-900 font-bold max-w-[150px] truncate" title={row.sku}>
+                                  {row.sku}
+                                </td>
+                                <td className="p-2 text-center">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-black ${isOut ? 'bg-rose-100 text-rose-700 border border-rose-300' : 'bg-emerald-100 text-emerald-700 border border-emerald-300'}`}>
+                                    {row.type}
+                                  </span>
+                                </td>
+                                <td className="p-2 text-center">
+                                  <span className="px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded text-[10px] font-bold">
+                                    {row.gudang}
+                                  </span>
+                                </td>
+                                <td className="p-2 font-bold text-slate-700">
+                                  {row.rak}
+                                </td>
+                                <td className="p-2 text-right font-black text-slate-900">
+                                  {row.jumlah}
+                                </td>
+                                <td className="p-2 text-slate-600">
+                                  {row.tgl_scan || <span className="text-slate-400 italic">(Kosong)</span>}
+                                </td>
+                                <td className="p-2 text-slate-500 max-w-[140px] truncate" title={row.user_name || row.log_update_user || ''}>
+                                  {row.user_name || row.log_update_user || '-'}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
+          )}
+
+          {/* Footer Actions */}
+          <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+            <Button
+              type="button"
+              onClick={() => setIsDeleteTransferCekSaldoModalOpen(false)}
+              disabled={isDeletingTransferLogsForCekSaldo}
+              className="h-10 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-all"
+            >
+              Batal
+            </Button>
+
+            {transferLogsForCekSaldo.length > 0 && (
+              <Button
+                type="button"
+                onClick={handleExecuteDeleteTransferForCekSaldo}
+                disabled={isDeletingTransferLogsForCekSaldo || selectedTransferIdsForCekSaldo.size === 0}
+                className="h-10 px-5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+              >
+                {isDeletingTransferLogsForCekSaldo ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    <span>Menghapus Data...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    <span>Hapus {selectedTransferIdsForCekSaldo.size} Data Transfer Sekarang</span>
+                  </>
+                )}
+              </Button>
+            )}
           </div>
         </div>
       </Modal>

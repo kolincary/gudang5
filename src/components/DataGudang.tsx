@@ -16,6 +16,7 @@ import { DatabaseService } from '../lib/DatabaseService';
 import { SyncSkuCasingModal } from './SyncSkuCasingModal';
 import { getMasterProductsMap, normalizeSkuSync } from '../services/skuNormalizationService';
 import { normalizeDate, normalizeTime, toTimestamp, getChronologicalDistance, isOutDateEligibleForIn } from '../services/scanDateMatchService';
+import { parseMultipleSkus } from '../services/transferPurgeService';
 
 export interface RedistributionMove {
   id: string;
@@ -455,6 +456,14 @@ export function DataGudang() {
     completedList: []
   });
   const stopBatchAutoFixRef = useRef<boolean>(false);
+
+  // --- DELETE TRANSFER FOR CEK SALDO STATE ---
+  const [isDeleteTransferCekSaldoModalOpen, setIsDeleteTransferCekSaldoModalOpen] = useState(false);
+  const [transferLogsForCekSaldo, setTransferLogsForCekSaldo] = useState<any[]>([]);
+  const [selectedTransferIdsForCekSaldo, setSelectedTransferIdsForCekSaldo] = useState<Set<string>>(new Set());
+  const [isLoadingTransferLogsForCekSaldo, setIsLoadingTransferLogsForCekSaldo] = useState(false);
+  const [isDeletingTransferLogsForCekSaldo, setIsDeletingTransferLogsForCekSaldo] = useState(false);
+  const [targetSkusForDeleteTransfer, setTargetSkusForDeleteTransfer] = useState<string[]>([]);
 
   // --- BULK PRODUCT SEARCH STATE ---
   const [isBulkSearchModalOpen, setIsBulkSearchModalOpen] = useState(false);
@@ -1258,7 +1267,36 @@ export function DataGudang() {
         inBuckets.sort((a, b) => a.timestamp - b.timestamp);
         outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-        // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
+        // --- TAHAP 1: SAME-DAY EXACT QTY MATCH (Tgl Input Sama, SKU Sama, Qty Sama) ---
+        // Contoh: IN 2026-06-24 (1 pc, Rak UTAMA) & OUT 2026-06-24 (1 pc, Rak G14)
+        // Pasangan ini harus dipasangkan terlebih dahulu agar tidak diserobot oleh batch IN lama!
+        for (const bucket of inBuckets) {
+          if (bucket.remainingCapacity <= 0) continue;
+
+          const exactSameDayCandidates = outCandidates.filter(
+            c => !c.isAssigned &&
+                 c.tgl === bucket.tgl &&
+                 c.jumlah === bucket.remainingCapacity &&
+                 !isForbiddenTransferRack(c.rak)
+          );
+
+          if (exactSameDayCandidates.length > 0) {
+            exactSameDayCandidates.sort((a, b) => Math.abs(a.timestamp - bucket.timestamp) - Math.abs(b.timestamp - bucket.timestamp));
+            const best = exactSameDayCandidates[0];
+            best.isAssigned = true;
+            best.newTglScan = bucket.targetTglScan;
+            if (!isForbiddenTransferRack(bucket.rak) && !isForbiddenTransferRack(best.rak)) {
+              best.newRak = bucket.rak;
+              best.newSubRak = bucket.sub_rak || bucket.rak;
+            } else {
+              best.newRak = best.rak;
+              best.newSubRak = best.sub_rak || best.rak;
+            }
+            bucket.remainingCapacity -= best.jumlah;
+          }
+        }
+
+        // --- TAHAP 2: MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
         for (const bucket of inBuckets) {
           if (bucket.remainingCapacity <= 0) continue;
 
@@ -1282,7 +1320,12 @@ export function DataGudang() {
               if (daysA <= 35 && daysB > 35) return -1;
               if (daysB <= 35 && daysA > 35) return 1;
 
-              // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+              // 2. Same Input Date preference: jika tanggal input sama persis, dahulukan
+              const aSameDate = a.tgl === bucket.tgl ? 0 : 1;
+              const bSameDate = b.tgl === bucket.tgl ? 0 : 1;
+              if (aSameDate !== bSameDate) return aSameDate - bSameDate;
+
+              // 3. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
               const aIsSame = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
               const bIsSame = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
               if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
@@ -1294,8 +1337,13 @@ export function DataGudang() {
 
             const best = eligibleOuts[0];
             best.isAssigned = true;
-            best.newRak = bucket.rak;
-            best.newSubRak = bucket.sub_rak || bucket.rak;
+            if (!isForbiddenTransferRack(bucket.rak) && !isForbiddenTransferRack(best.rak)) {
+              best.newRak = bucket.rak;
+              best.newSubRak = bucket.sub_rak || bucket.rak;
+            } else {
+              best.newRak = best.rak;
+              best.newSubRak = best.sub_rak || best.rak;
+            }
             best.newTglScan = bucket.targetTglScan;
             bucket.remainingCapacity -= best.jumlah;
           }
@@ -1585,11 +1633,6 @@ export function DataGudang() {
       }
     });
 
-    const hasDeficit = Array.from(balanceMap.values()).some(b => b.balance < 0);
-    if (!hasDeficit && !hasTimeAnomaly) {
-      return { movesFixed: 0, isKlop: true, message: 'Saldo sudah seimbang & klop (0 defisit, 0 anomali tanggal).' };
-    }
-
     // 3. Prepare buckets for redistribution matching
     interface InflowBucket {
       id: string;
@@ -1663,7 +1706,36 @@ export function DataGudang() {
     inBuckets.sort((a, b) => a.timestamp - b.timestamp);
     outCandidates.sort((a, b) => a.timestamp - b.timestamp);
 
-    // --- MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
+    // --- TAHAP 1: SAME-DAY EXACT QTY MATCH (Tgl Input Sama, SKU Sama, Qty Sama) ---
+    // Contoh: IN 2026-06-24 (1 pc, Rak UTAMA) & OUT 2026-06-24 (1 pc, Rak G14)
+    // Pasangan ini harus dipasangkan terlebih dahulu agar tidak diserobot oleh batch IN lama!
+    for (const bucket of inBuckets) {
+      if (bucket.remainingCapacity <= 0) continue;
+
+      const exactSameDayCandidates = outCandidates.filter(
+        c => !c.isAssigned &&
+             c.tgl === bucket.tgl &&
+             c.jumlah === bucket.remainingCapacity &&
+             !isForbiddenTransferRack(c.rak)
+      );
+
+      if (exactSameDayCandidates.length > 0) {
+        exactSameDayCandidates.sort((a, b) => Math.abs(a.timestamp - bucket.timestamp) - Math.abs(b.timestamp - bucket.timestamp));
+        const best = exactSameDayCandidates[0];
+        best.isAssigned = true;
+        best.newTglScan = bucket.targetTglScan;
+        if (!isForbiddenTransferRack(bucket.rak) && !isForbiddenTransferRack(best.rak)) {
+          best.newRak = bucket.rak;
+          best.newSubRak = bucket.sub_rak || bucket.rak;
+        } else {
+          best.newRak = best.rak;
+          best.newSubRak = best.sub_rak || best.rak;
+        }
+        bucket.remainingCapacity -= best.jumlah;
+      }
+    }
+
+    // --- TAHAP 2: MATCHING KRONOLOGIS TERDEKAT (FIFO PROXIMITY) ---
     for (const bucket of inBuckets) {
       if (bucket.remainingCapacity <= 0) continue;
 
@@ -1687,7 +1759,12 @@ export function DataGudang() {
           if (daysA <= 35 && daysB > 35) return -1;
           if (daysB <= 35 && daysA > 35) return 1;
 
-          // 2. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
+          // 2. Same Input Date preference: jika tanggal input sama persis, dahulukan
+          const aSameDate = a.tgl === bucket.tgl ? 0 : 1;
+          const bSameDate = b.tgl === bucket.tgl ? 0 : 1;
+          if (aSameDate !== bSameDate) return aSameDate - bSameDate;
+
+          // 3. Jika rentang waktu mirip (selisih < 14 hari), dahulukan rak yang sama
           const aIsSame = normRak(a.rak) === normRak(bucket.rak) ? 0 : 1;
           const bIsSame = normRak(b.rak) === normRak(bucket.rak) ? 0 : 1;
           if (aIsSame !== bIsSame && Math.abs(daysA - daysB) < 14) {
@@ -1699,8 +1776,13 @@ export function DataGudang() {
 
         const best = eligibleOuts[0];
         best.isAssigned = true;
-        best.newRak = bucket.rak;
-        best.newSubRak = bucket.sub_rak || bucket.rak;
+        if (!isForbiddenTransferRack(bucket.rak) && !isForbiddenTransferRack(best.rak)) {
+          best.newRak = bucket.rak;
+          best.newSubRak = bucket.sub_rak || bucket.rak;
+        } else {
+          best.newRak = best.rak;
+          best.newSubRak = best.sub_rak || best.rak;
+        }
         best.newTglScan = bucket.targetTglScan;
         bucket.remainingCapacity -= best.jumlah;
       }
@@ -1742,7 +1824,14 @@ export function DataGudang() {
     });
 
     if (moves.length === 0) {
-      return { movesFixed: 0, isKlop: false, message: 'Tidak ada kapasitas surplus untuk pemindahan lebih lanjut.' };
+      const isDeficitLeft = Array.from(balanceMap.values()).some(b => b.balance < 0);
+      return {
+        movesFixed: 0,
+        isKlop: !isDeficitLeft,
+        message: isDeficitLeft
+          ? 'Tidak ada kapasitas surplus untuk pemindahan lebih lanjut.'
+          : 'Saldo sudah seimbang & klop (seluruh transaksi OUT sudah sesuai batch masuk).'
+      };
     }
 
     // 5. Eksekusi moves ke Supabase secara grouped batch
@@ -1937,6 +2026,120 @@ export function DataGudang() {
     }
 
     loadStockData(true);
+  };
+
+  // --- HANDLER HAPUS DATA GUDANG: TRANSFER UNTUK CEK SALDO ---
+  const handleOpenDeleteTransferForCekSaldo = async () => {
+    const skus = Array.from(new Set(bulkCheckBalanceInput.split(/[\r\n,]+/).map(s => s.trim().toUpperCase()).filter(Boolean)));
+    if (skus.length === 0) {
+      showToast('Silakan tempel atau masukkan setidaknya 1 nama produk / SKU terlebih dahulu.', 'warning');
+      return;
+    }
+
+    setTargetSkusForDeleteTransfer(skus);
+    setIsDeleteTransferCekSaldoModalOpen(true);
+    setIsLoadingTransferLogsForCekSaldo(true);
+    setSelectedTransferIdsForCekSaldo(new Set());
+    setTransferLogsForCekSaldo([]);
+
+    try {
+      const pageSize = 1000;
+      let allLogs: any[] = [];
+      const chunkSize = 50;
+
+      for (let i = 0; i < skus.length; i += chunkSize) {
+        const chunk = skus.slice(i, i + chunkSize);
+        let page = 0;
+        while (true) {
+          let query = supabase
+            .from('database_log')
+            .select('id, tgl, waktu, sku, jumlah, type, gudang, rak, sub_rak, tgl_scan, user_name, log_update_user')
+            .or('gudang.ilike.%TRANSFER%,rak.ilike.%TRANSFER%');
+
+          if (chunk.length === 1) {
+            query = query.eq('sku', chunk[0]);
+          } else {
+            query = query.in('sku', chunk);
+          }
+
+          const { data, error } = await query
+            .order('tgl', { ascending: false })
+            .order('waktu', { ascending: false })
+            .range(page * pageSize, (page + 1) * pageSize - 1);
+
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+          allLogs.push(...data);
+          if (data.length < pageSize) break;
+          page++;
+          if (page > 20) break;
+        }
+      }
+
+      setTransferLogsForCekSaldo(allLogs);
+      setSelectedTransferIdsForCekSaldo(new Set(allLogs.map(l => l.id)));
+
+      if (allLogs.length === 0) {
+        showToast(`Tidak ditemukan data gudang: TRANSFER untuk ${skus.length} SKU yang dipilih.`, 'info');
+      } else {
+        const inCount = allLogs.filter(l => (l.type || '').toUpperCase().includes('IN')).length;
+        const outCount = allLogs.filter(l => (l.type || '').toUpperCase().includes('OUT')).length;
+        showToast(`Ditemukan ${allLogs.length} data transfer (${inCount} IN, ${outCount} OUT).`, 'info');
+      }
+    } catch (err: any) {
+      console.error('Error fetching transfer logs for Cek Saldo:', err);
+      showToast('Gagal memuat data transfer: ' + (err?.message || err), 'error');
+    } finally {
+      setIsLoadingTransferLogsForCekSaldo(false);
+    }
+  };
+
+  const handleExecuteDeleteTransferForCekSaldo = async () => {
+    const idsToDelete = Array.from(selectedTransferIdsForCekSaldo);
+    if (idsToDelete.length === 0) {
+      showToast('Silakan pilih setidaknya satu data transfer untuk dihapus.', 'warning');
+      return;
+    }
+
+    try {
+      setIsDeletingTransferLogsForCekSaldo(true);
+      const batchSize = 50;
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (let i = 0; i < idsToDelete.length; i += batchSize) {
+        const batch = idsToDelete.slice(i, i + batchSize);
+        const { error } = await supabase
+          .from('database_log')
+          .delete()
+          .in('id', batch);
+
+        if (error) {
+          console.error('Error deleting transfer logs:', error);
+          errorCount += batch.length;
+        } else {
+          successCount += batch.length;
+        }
+      }
+
+      if (errorCount === 0) {
+        showToast(`Berhasil menghapus ${successCount} data log transfer!`, 'success');
+      } else {
+        showToast(`Berhasil menghapus ${successCount} data, ${errorCount} data gagal dihapus.`, 'warning');
+      }
+
+      setIsDeleteTransferCekSaldoModalOpen(false);
+      setTransferLogsForCekSaldo([]);
+      setSelectedTransferIdsForCekSaldo(new Set());
+
+      // Refresh data gudang
+      loadStockData(true);
+    } catch (err: any) {
+      console.error('Error executing delete transfer logs:', err);
+      showToast('Gagal menghapus data transfer: ' + (err?.message || err), 'error');
+    } finally {
+      setIsDeletingTransferLogsForCekSaldo(false);
+    }
   };
 
   // Filtered redistribution moves for preview modal
@@ -5305,7 +5508,8 @@ export function DataGudang() {
             }
           }}
           title="Cek Saldo Stok - Paste Massal SKU (DevMode)"
-          size="xl"
+          size="5xl"
+          className="w-[96vw] max-w-[1200px]"
         >
           <div className="space-y-4">
             <div className="bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-2xl p-4 flex items-start space-x-3">
@@ -5502,6 +5706,17 @@ export function DataGudang() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={handleOpenDeleteTransferForCekSaldo}
+                  disabled={batchAutoFixProgress.isRunning || !bulkCheckBalanceInput.trim()}
+                  className="h-10 px-3.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md transition-all disabled:opacity-50 cursor-pointer"
+                  title="Hapus data log gudang TRANSFER (type IN & OUT) untuk SKU di atas jika bermasalah"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>Hapus Data Gudang: TRANSFER</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={async () => {
                     const skus = Array.from(new Set(bulkCheckBalanceInput.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean)));
                     if (skus.length === 0) {
@@ -5546,6 +5761,225 @@ export function DataGudang() {
                   )}
                 </button>
               </div>
+            </div>
+          </div>
+        </Modal>
+
+        {/* MODAL HAPUS DATA GUDANG TRANSFER UNTUK CEK SALDO */}
+        <Modal
+          isOpen={isDeleteTransferCekSaldoModalOpen}
+          onClose={() => {
+            if (!isDeletingTransferLogsForCekSaldo) {
+              setIsDeleteTransferCekSaldoModalOpen(false);
+            }
+          }}
+          title="Hapus Data Log Gudang: TRANSFER (Type IN & OUT)"
+          size="5xl"
+          className="w-[96vw] max-w-[1280px]"
+        >
+          <div className="space-y-4">
+            <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-start space-x-3">
+              <AlertCircle className="h-5 w-5 text-rose-600 mt-0.5 flex-shrink-0" />
+              <div className="text-xs text-rose-900 leading-relaxed">
+                <p className="font-bold text-rose-950 mb-1">
+                  Pembersihan Data Log Mutasi/Transfer Gudang Bermasalah:
+                </p>
+                <p>
+                  Fitur ini menghapus baris transaksi dengan <strong>Gudang: TRANSFER</strong> (baik type <strong>IN</strong> maupun <strong>OUT</strong>) untuk SKU yang dipilih.
+                  Gunakan ini jika data transfer tersebut salah/anomali sehingga merusak perhitungan saldo stok.
+                  Setelah dihapus, Anda dapat menjalankan ulang analisis saldo dan auto-fix dengan aman.
+                </p>
+                {targetSkusForDeleteTransfer.length > 0 && (
+                  <div className="mt-2 font-mono text-[11px] bg-white/70 px-2 py-1 rounded border border-rose-200 text-rose-800">
+                    Target SKU ({targetSkusForDeleteTransfer.length}): {targetSkusForDeleteTransfer.slice(0, 5).join(', ')}{targetSkusForDeleteTransfer.length > 5 ? '...' : ''}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {isLoadingTransferLogsForCekSaldo ? (
+              <div className="py-12 flex flex-col items-center justify-center space-y-3">
+                <RefreshCw className="h-8 w-8 text-rose-600 animate-spin" />
+                <p className="text-sm font-bold text-slate-600">Memuat data log gudang TRANSFER...</p>
+              </div>
+            ) : transferLogsForCekSaldo.length === 0 ? (
+              <div className="py-10 text-center space-y-3 bg-slate-50 rounded-2xl border border-slate-200 p-6">
+                <CheckCircle className="h-10 w-10 text-emerald-500 mx-auto" />
+                <p className="text-sm font-bold text-slate-800">
+                  Tidak ada data log gudang TRANSFER ditemukan untuk SKU ini.
+                </p>
+                <p className="text-xs text-slate-500">
+                  Semua log saat ini sudah bersih dari data transfer.
+                </p>
+              </div>
+            ) : (
+              <>
+                {(() => {
+                  const inLogs = transferLogsForCekSaldo.filter(l => (l.type || '').toUpperCase().includes('IN'));
+                  const outLogs = transferLogsForCekSaldo.filter(l => (l.type || '').toUpperCase().includes('OUT'));
+                  const inQty = inLogs.reduce((s, l) => s + Number(l.jumlah || 0), 0);
+                  const outQty = outLogs.reduce((s, l) => s + Number(l.jumlah || 0), 0);
+                  const allSelected = transferLogsForCekSaldo.length > 0 && transferLogsForCekSaldo.every(l => selectedTransferIdsForCekSaldo.has(l.id));
+
+                  return (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                        <div className="bg-slate-100 rounded-xl p-2.5 border border-slate-200 text-center">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase block">Total Data</span>
+                          <span className="text-base font-black text-slate-800">{transferLogsForCekSaldo.length} baris</span>
+                        </div>
+                        <div className="bg-emerald-50 rounded-xl p-2.5 border border-emerald-200 text-center">
+                          <span className="text-[10px] font-bold text-emerald-600 uppercase block">Transfer IN</span>
+                          <span className="text-base font-black text-emerald-700">{inLogs.length} baris ({inQty} pcs)</span>
+                        </div>
+                        <div className="bg-rose-50 rounded-xl p-2.5 border border-rose-200 text-center">
+                          <span className="text-[10px] font-bold text-rose-600 uppercase block">Transfer OUT</span>
+                          <span className="text-base font-black text-rose-700">{outLogs.length} baris ({outQty} pcs)</span>
+                        </div>
+                        <div className="bg-indigo-50 rounded-xl p-2.5 border border-indigo-200 text-center">
+                          <span className="text-[10px] font-bold text-indigo-600 uppercase block">Dipilih Hapus</span>
+                          <span className="text-base font-black text-indigo-700">{selectedTransferIdsForCekSaldo.size} baris</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between px-1">
+                        <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={allSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedTransferIdsForCekSaldo(new Set(transferLogsForCekSaldo.map(l => l.id)));
+                              } else {
+                                setSelectedTransferIdsForCekSaldo(new Set());
+                              }
+                            }}
+                            className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer"
+                          />
+                          <span>Pilih Semua ({transferLogsForCekSaldo.length} baris)</span>
+                        </label>
+                        <span className="text-[11px] text-slate-400">
+                          Klik baris atau centang kotak untuk memilih data yang akan dihapus
+                        </span>
+                      </div>
+
+                      <div className="max-h-72 overflow-y-auto border border-slate-200 rounded-xl shadow-inner bg-white">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead className="bg-slate-100 text-slate-700 sticky top-0 z-10 border-b border-slate-200">
+                            <tr>
+                              <th className="p-2 w-10 text-center">#</th>
+                              <th className="p-2">Tgl / Waktu</th>
+                              <th className="p-2">SKU</th>
+                              <th className="p-2 text-center">Type</th>
+                              <th className="p-2 text-center">Gudang</th>
+                              <th className="p-2">Rak</th>
+                              <th className="p-2 text-right">Qty</th>
+                              <th className="p-2">Tgl Scan</th>
+                              <th className="p-2">User / Info</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                            {transferLogsForCekSaldo.map((row) => {
+                              const isSelected = selectedTransferIdsForCekSaldo.has(row.id);
+                              const isOut = (row.type || '').toUpperCase().includes('OUT');
+                              return (
+                                <tr
+                                  key={row.id}
+                                  onClick={() => {
+                                    setSelectedTransferIdsForCekSaldo(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(row.id)) next.delete(row.id);
+                                      else next.add(row.id);
+                                      return next;
+                                    });
+                                  }}
+                                  className={`cursor-pointer transition-colors ${isSelected ? 'bg-rose-50/70 hover:bg-rose-100/60' : 'hover:bg-slate-50'}`}
+                                >
+                                  <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={() => {
+                                        setSelectedTransferIdsForCekSaldo(prev => {
+                                          const next = new Set(prev);
+                                          if (next.has(row.id)) next.delete(row.id);
+                                          else next.add(row.id);
+                                          return next;
+                                        });
+                                      }}
+                                      className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-3.5 h-3.5 cursor-pointer"
+                                    />
+                                  </td>
+                                  <td className="p-2 text-slate-800 font-medium">
+                                    {row.tgl} <span className="text-slate-400">{row.waktu}</span>
+                                  </td>
+                                  <td className="p-2 text-slate-900 font-bold max-w-[150px] truncate" title={row.sku}>
+                                    {row.sku}
+                                  </td>
+                                  <td className="p-2 text-center">
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-black ${isOut ? 'bg-rose-100 text-rose-700 border border-rose-300' : 'bg-emerald-100 text-emerald-700 border border-emerald-300'}`}>
+                                      {row.type}
+                                    </span>
+                                  </td>
+                                  <td className="p-2 text-center">
+                                    <span className="px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded text-[10px] font-bold">
+                                      {row.gudang}
+                                    </span>
+                                  </td>
+                                  <td className="p-2 font-bold text-slate-700">
+                                    {row.rak}
+                                  </td>
+                                  <td className="p-2 text-right font-black text-slate-900">
+                                    {row.jumlah}
+                                  </td>
+                                  <td className="p-2 text-slate-600">
+                                    {row.tgl_scan || <span className="text-slate-400 italic">(Kosong)</span>}
+                                  </td>
+                                  <td className="p-2 text-slate-500 max-w-[140px] truncate" title={row.user_name || row.log_update_user || ''}>
+                                    {row.user_name || row.log_update_user || '-'}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setIsDeleteTransferCekSaldoModalOpen(false)}
+                disabled={isDeletingTransferLogsForCekSaldo}
+                className="h-10 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-all"
+              >
+                Batal
+              </button>
+
+              {transferLogsForCekSaldo.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleExecuteDeleteTransferForCekSaldo}
+                  disabled={isDeletingTransferLogsForCekSaldo || selectedTransferIdsForCekSaldo.size === 0}
+                  className="h-10 px-5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                >
+                  {isDeletingTransferLogsForCekSaldo ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      <span>Menghapus Data...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="h-4 w-4" />
+                      <span>Hapus {selectedTransferIdsForCekSaldo.size} Data Transfer Sekarang</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </Modal>
