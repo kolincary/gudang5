@@ -44,7 +44,6 @@ import {
   Activity
 } from 'lucide-react';
 
-import { useDevMode } from '../lib/useDevMode';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -60,7 +59,9 @@ export function Layout({ children }: LayoutProps) {
   const [monitoringOpen, setMonitoringOpen] = React.useState(false);
   const [devModeOpen, setDevModeOpen] = React.useState(false);
   const { userEmail, userName, userAvatar, userRole, userPermissions, signOut } = useAuth();
-  const isDevMode = useDevMode(userName, userEmail);
+  // DevMode State: Terhide secara default untuk SEMUA akun (termasuk Admin & Developer),
+  // hanya aktif jika user mengetikkan 'devmode' pada keyboard.
+  const [isDevMode, setIsDevMode] = React.useState(false);
   const [scrolled, setScrolled] = React.useState(false);
 
   // Toast notification untuk feedback devmode toggle
@@ -78,18 +79,51 @@ export function Layout({ children }: LayoutProps) {
     setToast({ isOpen: true, message, type });
   }, []);
 
+  // Global Keyboard Listener untuk devmode di level Layout (berlaku di semua halaman)
   React.useEffect(() => {
-    const handleDevModeToggle = (e: any) => {
-      const active = e?.detail?.active ?? (localStorage.getItem('devmode') === 'true');
-      if (active) {
-        showToast('DevMode Aktif! Menu Admin & Dev Tools ditampilkan.', 'success');
-      } else {
-        showToast('DevMode Nonaktif. Menu Admin & Dev Tools disembunyikan.', 'warning');
+    let devModeSequence = '';
+    const targetSequence = 'DEVMODE';
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Abaikan jika fokus di dalam input atau textarea
+      const target = event.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+
+      // Abaikan jika menekan tombol modifier (Ctrl, Alt, Meta/Cmd)
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      if (event.key === 'Backspace') {
+        devModeSequence = devModeSequence.slice(0, -1);
+        return;
+      }
+
+      if (event.key.length === 1) {
+        const char = event.key.toUpperCase();
+        devModeSequence += char;
+
+        if (devModeSequence.length > targetSequence.length) {
+          devModeSequence = devModeSequence.slice(-targetSequence.length);
+        }
+
+        if (devModeSequence === targetSequence) {
+          devModeSequence = '';
+          setIsDevMode(prev => {
+            const next = !prev;
+            if (next) {
+              showToast('DevMode Aktif! Menu Admin & Dev Tools ditampilkan.', 'success');
+            } else {
+              showToast('DevMode Nonaktif. Menu Admin & Dev Tools disembunyikan.', 'warning');
+            }
+            localStorage.setItem('devmode', next.toString());
+            window.dispatchEvent(new CustomEvent('devmode-toggle', { detail: { active: next } }));
+            return next;
+          });
+        }
       }
     };
 
-    window.addEventListener('devmode-toggle', handleDevModeToggle);
-    return () => window.removeEventListener('devmode-toggle', handleDevModeToggle);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showToast]);
 
   React.useEffect(() => {
@@ -101,9 +135,10 @@ export function Layout({ children }: LayoutProps) {
   }, []);
 
   const hasAccess = (href: string) => {
-    // Khusus Admin & Dev Tools: Terhide default, hanya muncul saat ketik devmode
+    // Khusus Admin & Dev Tools: Terhide secara default untuk SEMUA akun (termasuk Admin & Developer),
+    // hanya muncul jika user mengetikkan 'devmode' pada keyboard.
     if (href === '/admin-dev-tools') {
-      return Boolean(isDevMode || location.pathname === '/admin-dev-tools');
+      return isDevMode;
     }
 
     // Khusus Prioritas Rak: Hanya muncul saat ketik devmode (default terhide)
