@@ -1,25 +1,26 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 
-export const useDevMode = (userName?: string | null, userEmail?: string | null) => {
-  const [isDevMode, setIsDevMode] = React.useState(() => {
-    return localStorage.getItem('devmode') === 'true';
-  });
+export const useDevMode = (_userName?: string | null, _userEmail?: string | null) => {
+  // Default terhide secara default saat halaman dimuat
+  const [isDevMode, setIsDevMode] = React.useState(false);
   const [keySequence, setKeySequence] = React.useState('');
   const navigate = useNavigate();
 
   React.useEffect(() => {
-    // Auto-enable for Dev Mode Admin
-    if (userName?.toLowerCase().includes('dev mode') || userEmail?.toLowerCase().includes('devmode')) {
-      if (localStorage.getItem('devmode') !== 'true') {
-        localStorage.setItem('devmode', 'true');
-        setIsDevMode(true);
-      }
-    }
-  }, [userName, userEmail]);
-
-  React.useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
+      // Abaikan jika fokus di dalam input atau textarea
+      const target = event.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+
+      // Abaikan jika menekan tombol modifier (Ctrl, Alt, Meta/Cmd)
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      if (event.key === 'Backspace') {
+        setKeySequence((prev) => prev.slice(0, -1));
+        return;
+      }
+
       if (event.key.length > 1) return;
       
       setKeySequence((prev) => {
@@ -29,7 +30,7 @@ export const useDevMode = (userName?: string | null, userEmail?: string | null) 
           const newDevMode = !isDevMode;
           setIsDevMode(newDevMode);
           localStorage.setItem('devmode', newDevMode.toString());
-          window.dispatchEvent(new Event('devmode-toggle'));
+          window.dispatchEvent(new CustomEvent('devmode-toggle', { detail: { active: newDevMode } }));
           console.log(`Dev mode ${newDevMode ? 'enabled' : 'disabled'}`);
           return '';
         }
@@ -43,8 +44,12 @@ export const useDevMode = (userName?: string | null, userEmail?: string | null) 
       });
     };
 
-    const handleDevModeEvent = () => {
-      setIsDevMode(localStorage.getItem('devmode') === 'true');
+    const handleDevModeEvent = (e: any) => {
+      if (e?.detail?.active !== undefined) {
+        setIsDevMode(e.detail.active);
+      } else {
+        setIsDevMode(localStorage.getItem('devmode') === 'true');
+      }
     };
     window.addEventListener('storage', handleDevModeEvent);
     window.addEventListener('devmode-toggle', handleDevModeEvent);
@@ -52,7 +57,7 @@ export const useDevMode = (userName?: string | null, userEmail?: string | null) 
     // Reset sequence after timeout
     const timeoutId = setTimeout(() => {
       setKeySequence('');
-    }, 2000);
+    }, 3000);
 
     window.addEventListener('keydown', handleKeyPress);
 

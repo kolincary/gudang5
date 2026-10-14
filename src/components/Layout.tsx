@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext';
 import { APP_VERSION } from './AppUpdateListener';
 import { DailyQuestOverlay } from './DailyQuestOverlay';
+import { Toast } from './ui/Toast';
 import { 
   navigationItems, 
   devNavigationItems, 
@@ -62,6 +63,35 @@ export function Layout({ children }: LayoutProps) {
   const isDevMode = useDevMode(userName, userEmail);
   const [scrolled, setScrolled] = React.useState(false);
 
+  // Toast notification untuk feedback devmode toggle
+  const [toast, setToast] = React.useState<{
+    isOpen: boolean;
+    message: string;
+    type: 'success' | 'info' | 'warning' | 'error';
+  }>({
+    isOpen: false,
+    message: '',
+    type: 'info'
+  });
+
+  const showToast = React.useCallback((message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
+    setToast({ isOpen: true, message, type });
+  }, []);
+
+  React.useEffect(() => {
+    const handleDevModeToggle = (e: any) => {
+      const active = e?.detail?.active ?? (localStorage.getItem('devmode') === 'true');
+      if (active) {
+        showToast('DevMode Aktif! Menu Admin & Dev Tools ditampilkan.', 'success');
+      } else {
+        showToast('DevMode Nonaktif. Menu Admin & Dev Tools disembunyikan.', 'warning');
+      }
+    };
+
+    window.addEventListener('devmode-toggle', handleDevModeToggle);
+    return () => window.removeEventListener('devmode-toggle', handleDevModeToggle);
+  }, [showToast]);
+
   React.useEffect(() => {
     const handleScroll = () => {
       setScrolled(window.scrollY > 20);
@@ -71,17 +101,14 @@ export function Layout({ children }: LayoutProps) {
   }, []);
 
   const hasAccess = (href: string) => {
+    // Khusus Admin & Dev Tools: Terhide default, hanya muncul saat ketik devmode
+    if (href === '/admin-dev-tools') {
+      return Boolean(isDevMode || location.pathname === '/admin-dev-tools');
+    }
+
     // Khusus Prioritas Rak: Hanya muncul saat ketik devmode (default terhide)
     if (href === '/rack-priority-settings') {
       return Boolean(isDevMode);
-    }
-
-    // Khusus Admin & Dev Tools: Hanya untuk Developer & Admin (bukan role staf gudang)
-    if (href === '/admin-dev-tools') {
-      const role = (userRole || '').trim().toLowerCase();
-      const isGudangStaff = role.includes('gudang') || role === 'staf_gudang';
-      const isAdminOrDev = role === 'developer' || role === 'admin' || role.includes('admin') || role.includes('developer') || isDevMode || userEmail === 'devmode';
-      return isAdminOrDev && !isGudangStaff;
     }
 
     if (userRole === 'developer' || isDevMode || userEmail === 'devmode') return true;
@@ -711,6 +738,14 @@ export function Layout({ children }: LayoutProps) {
           </div>
         </main>
       </div>
+
+      {/* Global Toast for Layout DevMode Feedback */}
+      <Toast
+        isOpen={toast.isOpen}
+        message={toast.message}
+        type={toast.type}
+        onClose={() => setToast(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }
