@@ -983,20 +983,21 @@ export function InputBarangMasuk() {
 
             if (cachedItem) return cachedItem.tersedia;
 
-            // If not in cache, fetch fresh from DB
+            // If not in cache, fetch fresh from DB (avoid .maybeSingle() to prevent PGRST116 if multiple rows exist)
             const { data, error } = await supabase
                 .from('stock_items')
                 .select('tersedia')
                 .eq('nama_produk', namaProduk)
-                .eq('rak', rak)
-                .maybeSingle();
+                .eq('rak', rak);
 
             if (error) {
                 console.error('Error fetching accurate stock:', error);
                 return 0;
             }
 
-            return data?.tersedia || 0;
+            if (!data || data.length === 0) return 0;
+
+            return data.reduce((sum, item) => sum + (item.tersedia || 0), 0);
         } catch (err) {
             console.error('Unexpected error calculating stock:', err);
             return 0;
