@@ -24,7 +24,9 @@ import {
   Clock,
   Calendar,
   AlertTriangle,
-  Info
+  Info,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 import { supabase, fetchAllStockItems, fetchAllProducts } from '../lib/supabase';
 import { DatabaseService } from '../lib/DatabaseService';
@@ -32,7 +34,7 @@ import { useDatabaseConfig } from '../lib/DatabaseContext';
 import { useAuth } from '../lib/AuthContext';
 import { useDevMode } from '../lib/useDevMode';
 import { getRealtimeDateTime, getOriginalReceiptDate } from '../lib/transferDateHelper';
-import { CekSaldo2Modal } from './CekSaldo2Modal';
+import { CekSaldo1DirectView } from './CekSaldo1DirectView';
 
 interface StockItem {
   id: string;
@@ -52,6 +54,28 @@ interface RackLocation {
   id: string;
   nama: string;
   status: string;
+}
+
+export interface SkuGroupForTransfer {
+  nama_produk: string;
+  packing: string;
+  satuan: string;
+  totalTersedia: number;
+  rackCount: number;
+  rackSummary: string;
+  items: StockItem[];
+}
+
+export interface OriginRackItemState {
+  stockItem: StockItem;
+  isSelected: boolean;
+  jumlahPindah: number;
+  detectedReceiptDate: {
+    tgl: string;
+    tgl_scan: string;
+    waktu: string;
+    loading: boolean;
+  };
 }
 
 const RESTRICTED_RACKS = ['LANTAI 2', 'LANTAI 4', 'ECER-M', 'ECER-N', 'ECER-O', 'BLOK-I'];
@@ -77,19 +101,18 @@ export function AdminDevTools() {
   }, []);
 
   // -------------------------------------------------------------
-  // FORM PINDAH BARANG (STANDAR) STATE
+  // FORM PINDAH BARANG (STANDAR) MULTI-RAK STATE
   // -------------------------------------------------------------
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedItem, setSelectedItem] = useState<StockItem | null>(null);
+  const [selectedSkuGroup, setSelectedSkuGroup] = useState<SkuGroupForTransfer | null>(null);
+  const [selectedOriginRacks, setSelectedOriginRacks] = useState<OriginRackItemState[]>([]);
   const [showItemDropdown, setShowItemDropdown] = useState(false);
   const [highlightedItemIndex, setHighlightedItemIndex] = useState(0);
 
   const [moveData, setMoveData] = useState<{
     rak_tujuan: string;
-    jumlah_pindah: number | '';
   }>({
-    rak_tujuan: '',
-    jumlah_pindah: ''
+    rak_tujuan: ''
   });
 
   const [showRakTujuanDropdown, setShowRakTujuanDropdown] = useState(false);
@@ -108,14 +131,6 @@ export function AdminDevTools() {
     steps: [],
     completedSteps: 0
   });
-
-  // Original incoming receipt date detection for standard transfer
-  const [detectedReceiptDate, setDetectedReceiptDate] = useState<{
-    tgl: string;
-    tgl_scan: string;
-    waktu: string;
-    loading: boolean;
-  } | null>(null);
 
   // DevGod state
   const [isDevGod, setIsDevGod] = useState<boolean>(() => {
@@ -202,55 +217,55 @@ export function AdminDevTools() {
   }, [loadInitialData]);
 
   // -------------------------------------------------------------
-  // AUTO-DETECT ORIGINAL RECEIPT DATE SAAT BARANG DIPILIH
+  // GROUPING STOCK ITEMS BY SKU (UNTUK MULTI-RAK TRANSFER)
   // -------------------------------------------------------------
-  useEffect(() => {
-    if (!selectedItem) {
-      setDetectedReceiptDate(null);
-      return;
-    }
+  const skuGroupsForTransfer = useMemo(() => {
+    const map = new Map<string, StockItem[]>();
+    stockItems.forEach(item => {
+      const avail = Number(item.tersedia) || 0;
+      if (avail <= 0) return;
+      const normSku = (item.nama_produk || '').trim().toUpperCase();
+      if (!normSku) return;
+      if (!map.has(normSku)) map.set(normSku, []);
+      map.get(normSku)!.push(item);
+    });
 
-    let isMounted = true;
-    setDetectedReceiptDate({ tgl: '', tgl_scan: '', waktu: '', loading: true });
+    const groups: SkuGroupForTransfer[] = [];
+    map.forEach((items) => {
+      const totalTersedia = items.reduce((sum, it) => sum + (Number(it.tersedia) || 0), 0);
+      const packing = items.find(it => it.packing)?.packing || '-';
+      const satuan = items.find(it => it.satuan)?.satuan || 'PCS';
+      const rackSummary = items
+        .map(it => `${it.rak || '-'}${it.sub_rak && it.sub_rak !== it.rak ? ` (${it.sub_rak})` : ''} (${(it.tersedia || 0).toLocaleString('id-ID')})`)
+        .join(', ');
 
-    getOriginalReceiptDate(selectedItem.nama_produk, selectedItem.rak)
-      .then(info => {
-        if (isMounted) {
-          setDetectedReceiptDate({ ...info, loading: false });
-        }
-      })
-      .catch(err => {
-        console.error('Error mendeteksi tanggal nota awal:', err);
-        if (isMounted) {
-          const { todayTgl, nowWaktu } = getRealtimeDateTime();
-          setDetectedReceiptDate({ tgl: todayTgl, tgl_scan: todayTgl, waktu: nowWaktu, loading: false });
-        }
+      groups.push({
+        nama_produk: items[0].nama_produk,
+        packing,
+        satuan,
+        totalTersedia,
+        rackCount: items.length,
+        rackSummary,
+        items
       });
+    });
 
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedItem]);
-
-  // -------------------------------------------------------------
-  // DROPDOWN FILTERING (TANPA BATASAN 1000 DATA)
-  // -------------------------------------------------------------
-  // Filter barang dengan stok tersedia > 0 untuk Form Pindah Barang
-  const itemsWithAvailableStock = useMemo(() => {
-    return stockItems.filter(item => (Number(item.tersedia) || 0) > 0);
+    return groups.sort((a, b) => a.nama_produk.localeCompare(b.nama_produk));
   }, [stockItems]);
 
-  const filteredItemsForTransfer = useMemo(() => {
+  const filteredSkuGroupsForTransfer = useMemo(() => {
     if (!searchTerm.trim()) {
-      return itemsWithAvailableStock;
+      return skuGroupsForTransfer;
     }
     const q = searchTerm.toLowerCase().trim();
-    return itemsWithAvailableStock.filter(item =>
-      (item.nama_produk || '').toLowerCase().includes(q) ||
-      (item.rak || '').toLowerCase().includes(q) ||
-      (item.sub_rak && item.sub_rak.toLowerCase().includes(q))
+    return skuGroupsForTransfer.filter(g =>
+      g.nama_produk.toLowerCase().includes(q) ||
+      g.items.some(it =>
+        (it.rak || '').toLowerCase().includes(q) ||
+        (it.sub_rak || '').toLowerCase().includes(q)
+      )
     );
-  }, [itemsWithAvailableStock, searchTerm]);
+  }, [skuGroupsForTransfer, searchTerm]);
 
   // Filter rak tujuan
   const filteredRacks = useMemo(() => {
@@ -259,38 +274,120 @@ export function AdminDevTools() {
       if (!isDevGod && RESTRICTED_RACKS.includes(rack.nama.toUpperCase())) {
         return false;
       }
-      if (selectedItem && rack.nama.toUpperCase() === selectedItem.rak.toUpperCase()) {
-        return false;
-      }
       if (!inputUpper) return true;
       return rack.nama.toUpperCase().includes(inputUpper);
     });
-  }, [rackLocations, moveData.rak_tujuan, selectedItem, isDevGod]);
+  }, [rackLocations, moveData.rak_tujuan, isDevGod]);
 
   // Keyboard navigation for Item Select
   const handleItemKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!showItemDropdown || filteredItemsForTransfer.length === 0) return;
+    if (!showItemDropdown || filteredSkuGroupsForTransfer.length === 0) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setHighlightedItemIndex(prev => (prev < filteredItemsForTransfer.length - 1 ? prev + 1 : 0));
+      setHighlightedItemIndex(prev => (prev < filteredSkuGroupsForTransfer.length - 1 ? prev + 1 : 0));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setHighlightedItemIndex(prev => (prev > 0 ? prev - 1 : filteredItemsForTransfer.length - 1));
+      setHighlightedItemIndex(prev => (prev > 0 ? prev - 1 : filteredSkuGroupsForTransfer.length - 1));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (filteredItemsForTransfer[highlightedItemIndex]) {
-        handleItemSelect(filteredItemsForTransfer[highlightedItemIndex]);
+      if (filteredSkuGroupsForTransfer[highlightedItemIndex]) {
+        handleSkuGroupSelect(filteredSkuGroupsForTransfer[highlightedItemIndex]);
       }
     } else if (e.key === 'Escape') {
       setShowItemDropdown(false);
     }
   };
 
-  const handleItemSelect = (item: StockItem) => {
-    setSelectedItem(item);
-    setSearchTerm(item.nama_produk);
+  // Pilih SKU Group (Mengambil seluruh macam rak & sub rak sekaligus)
+  const handleSkuGroupSelect = (group: SkuGroupForTransfer) => {
+    setSelectedSkuGroup(group);
+    setSearchTerm(group.nama_produk);
     setShowItemDropdown(false);
-    setMoveData(prev => ({ ...prev, jumlah_pindah: '' }));
+
+    // Default: Semua rak tercentang dan jumlah pindah terisi maksimal
+    const initialRacks: OriginRackItemState[] = group.items.map(it => ({
+      stockItem: it,
+      isSelected: true,
+      jumlahPindah: it.tersedia,
+      detectedReceiptDate: { tgl: '', tgl_scan: '', waktu: '', loading: true }
+    }));
+
+    setSelectedOriginRacks(initialRacks);
+
+    // Deteksi tanggal nota asli untuk setiap rak secara paralel
+    initialRacks.forEach((rackState, idx) => {
+      getOriginalReceiptDate(group.nama_produk, rackState.stockItem.rak)
+        .then(info => {
+          setSelectedOriginRacks(prev => {
+            const next = [...prev];
+            if (next[idx]) {
+              next[idx] = {
+                ...next[idx],
+                detectedReceiptDate: { ...info, loading: false }
+              };
+            }
+            return next;
+          });
+        })
+        .catch(err => {
+          console.error('Error mendeteksi tanggal nota awal rak:', rackState.stockItem.rak, err);
+          const { todayTgl, nowWaktu } = getRealtimeDateTime();
+          setSelectedOriginRacks(prev => {
+            const next = [...prev];
+            if (next[idx]) {
+              next[idx] = {
+                ...next[idx],
+                detectedReceiptDate: { tgl: todayTgl, tgl_scan: todayTgl, waktu: nowWaktu, loading: false }
+              };
+            }
+            return next;
+          });
+        });
+    });
+  };
+
+  // Toggle checklist semua rak
+  const handleToggleSelectAllRacks = (checked: boolean) => {
+    setSelectedOriginRacks(prev => prev.map(r => ({
+      ...r,
+      isSelected: checked,
+      jumlahPindah: checked ? r.stockItem.tersedia : 0
+    })));
+  };
+
+  // Gunakan maksimal semua rak
+  const handleSetMaxAllSelectedRacks = () => {
+    setSelectedOriginRacks(prev => prev.map(r => ({
+      ...r,
+      jumlahPindah: r.stockItem.tersedia
+    })));
+  };
+
+  // Toggle single rack checkbox
+  const handleToggleRackSelection = (idx: number, checked: boolean) => {
+    setSelectedOriginRacks(prev => {
+      const next = [...prev];
+      next[idx] = {
+        ...next[idx],
+        isSelected: checked,
+        jumlahPindah: checked ? (next[idx].jumlahPindah || next[idx].stockItem.tersedia) : 0
+      };
+      return next;
+    });
+  };
+
+  // Set jumlah pindah for single rack
+  const handleSetRackJumlahPindah = (idx: number, val: number | string) => {
+    setSelectedOriginRacks(prev => {
+      const next = [...prev];
+      if (val === '') {
+        next[idx] = { ...next[idx], jumlahPindah: 0 };
+      } else {
+        const num = Math.min(next[idx].stockItem.tersedia, Math.max(0, Number(val) || 0));
+        next[idx] = { ...next[idx], jumlahPindah: num };
+      }
+      return next;
+    });
   };
 
   // Keyboard navigation for Rak Tujuan
@@ -313,30 +410,47 @@ export function AdminDevTools() {
   };
 
   const handleRakTujuanSelect = (rakNama: string) => {
-    setMoveData(prev => ({ ...prev, rak_tujuan: rakNama }));
+    setMoveData({ rak_tujuan: rakNama });
     setShowRakTujuanDropdown(false);
     setIsRakTujuanValidated(true);
   };
 
   const clearTransferForm = () => {
-    setSelectedItem(null);
+    setSelectedSkuGroup(null);
+    setSelectedOriginRacks([]);
     setSearchTerm('');
-    setMoveData({ rak_tujuan: '', jumlah_pindah: '' });
+    setMoveData({ rak_tujuan: '' });
     setIsRakTujuanValidated(false);
     setShowItemDropdown(false);
     setShowRakTujuanDropdown(false);
   };
 
+  // Kalkulasi total
+  const selectedRacksToMove = useMemo(() => {
+    return selectedOriginRacks.filter(r => r.isSelected && r.jumlahPindah > 0);
+  }, [selectedOriginRacks]);
+
+  const totalQtyToMove = useMemo(() => {
+    return selectedRacksToMove.reduce((sum, r) => sum + r.jumlahPindah, 0);
+  }, [selectedRacksToMove]);
+
+  const totalAvailableAcrossSelectedRacks = useMemo(() => {
+    return selectedOriginRacks.reduce((sum, r) => sum + (r.isSelected ? r.stockItem.tersedia : 0), 0);
+  }, [selectedOriginRacks]);
+
+  const isAllRacksSelected = useMemo(() => {
+    return selectedOriginRacks.length > 0 && selectedOriginRacks.every(r => r.isSelected);
+  }, [selectedOriginRacks]);
+
   // -------------------------------------------------------------
-  // EKSEKUSI TRANSFER STANDAR (LOGIKA PINDAH BARANG STANDAR)
+  // EKSEKUSI TRANSFER STANDAR MULTI-RAK SEKALIGUS
   // -------------------------------------------------------------
-  const handleStandardTransfer = async () => {
-    if (!selectedItem || !moveData.rak_tujuan || moveData.jumlah_pindah === '' || Number(moveData.jumlah_pindah) <= 0) {
-      notify('Mohon lengkapi SKU, Rak Tujuan, dan Jumlah Pindah!', 'warning');
+  const handleMultiRackStandardTransfer = async () => {
+    if (!selectedSkuGroup || !moveData.rak_tujuan || selectedRacksToMove.length === 0 || totalQtyToMove <= 0) {
+      notify('Mohon pilih setidaknya 1 rak asal dengan jumlah pindah > 0 dan tentukan Rak Tujuan!', 'warning');
       return;
     }
 
-    const qtyPindah = Number(moveData.jumlah_pindah);
     const rakTujuanFinal = moveData.rak_tujuan.toUpperCase().trim();
 
     if (!isDevGod && RESTRICTED_RACKS.includes(rakTujuanFinal)) {
@@ -354,18 +468,20 @@ export function AdminDevTools() {
       return;
     }
 
-    if (qtyPindah > selectedItem.tersedia) {
-      notify(`Jumlah pindah (${qtyPindah}) tidak boleh melebihi stok tersedia (${selectedItem.tersedia})!`, 'error');
+    // Cek apakah rak tujuan sama dengan salah satu rak asal terpilih
+    const sameRackConflict = selectedRacksToMove.find(r => r.stockItem.rak.toUpperCase() === rakTujuanFinal);
+    if (sameRackConflict) {
+      notify(`Rak Tujuan (${rakTujuanFinal}) sama dengan rak asal. Mohon hilangkan centang rak ${sameRackConflict.stockItem.rak} atau ganti rak tujuan!`, 'warning');
       return;
     }
 
     try {
       setSubmitting(true);
       const steps = [
-        'Menyiapkan data transfer (Logika Standar: Tanggal Nota Asli)',
-        'Mencatat log OUT dari rak asal',
-        'Mencatat log IN ke rak tujuan',
-        'Menyesuaikan stok rak asal',
+        `Menyiapkan transfer ${selectedRacksToMove.length} rak asal (Total ${totalQtyToMove.toLocaleString('id-ID')} ${selectedSkuGroup.satuan})`,
+        'Mencatat data log OUT dari seluruh rak asal (Tgl Nota Asli)',
+        'Mencatat data log IN ke rak tujuan (Hari Ini)',
+        'Menyesuaikan stok di seluruh rak asal',
         'Memperbarui/membuat stok di rak tujuan',
         'Sinkronisasi selesai'
       ];
@@ -378,48 +494,60 @@ export function AdminDevTools() {
       });
 
       const now = new Date();
-
-      // 1. Ambil tanggal nota penerimaan awal supplier & tanggal real-time hari ini
-      setOperationProgress(prev => ({ ...prev, currentStep: steps[1], completedSteps: 1 }));
-      const originalInfo = await getOriginalReceiptDate(selectedItem.nama_produk, selectedItem.rak);
       const { todayTgl, nowWaktu } = getRealtimeDateTime();
-      const tglNotaAsli = originalInfo.tgl || todayTgl;
-      const tglScanAsli = originalInfo.tgl_scan || tglNotaAsli;
+      const userIdentifier = user?.user_metadata?.full_name || user?.email || userRole || 'System (Admin/Dev Tools)';
 
-      const createdAtOut = new Date(now.getTime() + 1000).toISOString();
-      const createdAtIn = new Date(now.getTime() + 2000).toISOString();
+      // 1 & 2. Build log entries for ALL origin racks
+      setOperationProgress(prev => ({ ...prev, currentStep: steps[1], completedSteps: 1 }));
 
-      // Aturan Tanggal:
-      // - OUT: tgl nota = tgl sekarang (real-time), tgl scan = tgl nota asli data IN
-      // - IN: tgl nota = tgl sekarang (real-time), tgl scan = tgl sekarang (real-time)
-      const logEntries = [
-        {
+      const logEntries: any[] = [];
+      let timeOffset = 0;
+
+      for (const rackState of selectedRacksToMove) {
+        const it = rackState.stockItem;
+        const qty = rackState.jumlahPindah;
+        let tglScanAsli = rackState.detectedReceiptDate.tgl_scan || rackState.detectedReceiptDate.tgl;
+
+        if (!tglScanAsli) {
+          const info = await getOriginalReceiptDate(it.nama_produk, it.rak);
+          tglScanAsli = info.tgl_scan || info.tgl || todayTgl;
+        }
+
+        timeOffset += 1000;
+        const createdAtOut = new Date(now.getTime() + timeOffset).toISOString();
+        timeOffset += 1000;
+        const createdAtIn = new Date(now.getTime() + timeOffset).toISOString();
+
+        // OUT from origin rack
+        logEntries.push({
           tgl: todayTgl,
           waktu: nowWaktu,
-          sku: selectedItem.nama_produk,
-          jumlah: qtyPindah,
+          sku: it.nama_produk,
+          jumlah: qty,
           type: 'OUT',
           gudang: 'TRANSFER',
-          rak: selectedItem.rak,
+          rak: it.rak,
           tgl_scan: tglScanAsli,
-          user_name: user?.user_metadata?.full_name || user?.email || userRole || 'System (Admin/Dev Tools)',
-          sub_rak: selectedItem.sub_rak || selectedItem.rak,
+          user_name: userIdentifier,
+          sub_rak: it.sub_rak || it.rak,
           created_at: createdAtOut
-        },
-        {
+        });
+
+        // IN to destination rack
+        logEntries.push({
           tgl: todayTgl,
           waktu: nowWaktu,
-          sku: selectedItem.nama_produk,
-          jumlah: qtyPindah,
+          sku: it.nama_produk,
+          jumlah: qty,
           type: 'IN',
           gudang: 'TRANSFER',
           rak: rakTujuanFinal,
           tgl_scan: todayTgl,
-          user_name: user?.user_metadata?.full_name || user?.email || userRole || 'System (Admin/Dev Tools)',
+          user_name: userIdentifier,
           sub_rak: rakTujuanFinal,
           created_at: createdAtIn
-        }
-      ];
+        });
+      }
 
       // 2. Insert Log Entries
       setOperationProgress(prev => ({ ...prev, currentStep: steps[2], completedSteps: 2 }));
@@ -437,7 +565,8 @@ export function AdminDevTools() {
         for (const l of insertedData) {
           if (l.id) {
             const expectedTgl = todayTgl;
-            const expectedTglScan = l.type === 'OUT' ? tglScanAsli : todayTgl;
+            const origMatch = logEntries.find(e => e.created_at === l.created_at || (e.type === l.type && e.rak === l.rak && e.jumlah === l.jumlah));
+            const expectedTglScan = origMatch?.tgl_scan || (l.type === 'OUT' ? todayTgl : todayTgl);
             if (l.tgl_scan !== expectedTglScan || l.tgl !== expectedTgl) {
               await DatabaseService.updateLog(l.id, { tgl_scan: expectedTglScan, tgl: expectedTgl }, writeMode);
             }
@@ -445,25 +574,29 @@ export function AdminDevTools() {
         }
       }
 
-      // 3. Kurangi stok asal
+      // 3. Kurangi stok di seluruh rak asal
       setOperationProgress(prev => ({ ...prev, currentStep: steps[3], completedSteps: 3 }));
-      if (selectedItem.id) {
-        await DatabaseService.updateStockItem(
-          selectedItem.id,
-          {
-            keluar: (selectedItem.keluar || 0) + qtyPindah,
-            tersedia: Math.max(0, (selectedItem.tersedia || 0) - qtyPindah)
-          },
-          writeMode
-        );
+      for (const rackState of selectedRacksToMove) {
+        const it = rackState.stockItem;
+        const qty = rackState.jumlahPindah;
+        if (it.id) {
+          await DatabaseService.updateStockItem(
+            it.id,
+            {
+              keluar: (it.keluar || 0) + qty,
+              tersedia: Math.max(0, (it.tersedia || 0) - qty)
+            },
+            writeMode
+          );
+        }
       }
 
-      // 4. Tambah stok tujuan
+      // 4. Tambah stok di rak tujuan (akumulasi total seluruh rak)
       setOperationProgress(prev => ({ ...prev, currentStep: steps[4], completedSteps: 4 }));
       const { data: existingStock, error: checkError } = await supabase
         .from('stock_items')
         .select('id, tersedia, masuk')
-        .eq('nama_produk', selectedItem.nama_produk)
+        .eq('nama_produk', selectedSkuGroup.nama_produk)
         .eq('rak', rakTujuanFinal)
         .maybeSingle();
 
@@ -476,22 +609,22 @@ export function AdminDevTools() {
         await DatabaseService.updateStockItem(
           existingStock.id,
           {
-            masuk: (existingStock.masuk || 0) + qtyPindah,
-            tersedia: (existingStock.tersedia || 0) + qtyPindah
+            masuk: (existingStock.masuk || 0) + totalQtyToMove,
+            tersedia: (existingStock.tersedia || 0) + totalQtyToMove
           },
           writeMode
         );
       } else {
         const { error: insertError } = await DatabaseService.insertStockItems([{
-          nama_produk: selectedItem.nama_produk,
-          packing: selectedItem.packing,
+          nama_produk: selectedSkuGroup.nama_produk,
+          packing: selectedSkuGroup.packing,
           rak: rakTujuanFinal,
           sub_rak: rakTujuanFinal,
-          satuan: selectedItem.satuan || 'PCS',
+          satuan: selectedSkuGroup.satuan || 'PCS',
           stok_awal: 0,
-          masuk: qtyPindah,
+          masuk: totalQtyToMove,
           keluar: 0,
-          tersedia: qtyPindah,
+          tersedia: totalQtyToMove,
           status: 'Aktif'
         }], writeMode);
 
@@ -506,8 +639,9 @@ export function AdminDevTools() {
 
       // 5. Finalisasi & Refresh
       setOperationProgress(prev => ({ ...prev, currentStep: steps[5], completedSteps: 6 }));
+      const rackNames = selectedRacksToMove.map(r => r.stockItem.rak).join(', ');
       notify(
-        `Berhasil memindahkan ${qtyPindah} ${selectedItem.satuan} ${selectedItem.nama_produk} dari ${selectedItem.rak} ke ${rakTujuanFinal}${stockCreated ? ' (stok tujuan baru dibuat)' : ''}!`,
+        `Sukses memindahkan total ${totalQtyToMove.toLocaleString('id-ID')} ${selectedSkuGroup.satuan} ${selectedSkuGroup.nama_produk} dari ${selectedRacksToMove.length} rak (${rackNames}) ke ${rakTujuanFinal}${stockCreated ? ' (stok tujuan baru dibuat)' : ''}!`,
         'success'
       );
 
@@ -515,10 +649,10 @@ export function AdminDevTools() {
         setOperationProgress(prev => ({ ...prev, isVisible: false }));
         clearTransferForm();
         loadInitialData();
-      }, 1000);
+      }, 1200);
 
     } catch (err: any) {
-      console.error('Error during transfer:', err);
+      console.error('Error during multi-rack transfer:', err);
       notify(`Terjadi kesalahan: ${err?.message || 'Gagal memproses transfer'}`, 'error');
       setOperationProgress(prev => ({ ...prev, isVisible: false }));
     } finally {
@@ -538,7 +672,7 @@ export function AdminDevTools() {
       )}
 
       {/* ======================================================== */}
-      {/* PREMIUM IMMERSIVE HEADER (SEPERTI INPUT BARANG MASUK) */}
+      {/* PREMIUM IMMERSIVE HEADER */}
       {/* ======================================================== */}
       <div className="flex flex-col mb-6 lg:mb-10">
         <div className="bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 pt-[75px] lg:pt-0 lg:h-[290px] pb-[35px] lg:pb-0 px-6 lg:px-12 rounded-b-[40px] lg:rounded-b-[55px] shadow-2xl shadow-blue-900/30 relative overflow-hidden transition-all duration-500 flex flex-col justify-center">
@@ -648,12 +782,11 @@ export function AdminDevTools() {
         </div>
 
         {/* ======================================================== */}
-        {/* TAB 1: 1. AUDIT & CEK SALDO 2 (AUTO-FIX) LANGSUNG VIEW */}
+        {/* TAB 1: 1. AUDIT & CEK SALDO (CEK SALDO 1 DIRECT VIEW) */}
         {/* ======================================================== */}
         {activeTab === 'cek-saldo' && (
           <div className="space-y-6 animate-in fade-in duration-300">
-            <CekSaldo2Modal
-              isInline={true}
+            <CekSaldo1DirectView
               allSkus={allSkus}
               onDataUpdated={loadInitialData}
               showToast={notify}
@@ -662,7 +795,7 @@ export function AdminDevTools() {
         )}
 
         {/* ======================================================== */}
-        {/* TAB 2: 2. PINDAH DATA BARANG (FORM STANDAR DENGAN DESAIN BARU) */}
+        {/* TAB 2: 2. PINDAH DATA BARANG (MULTI-RAK SEKALIGUS) */}
         {/* ======================================================== */}
         {activeTab === 'pindah-barang' && (
           <div className="space-y-6 animate-in fade-in duration-300">
@@ -673,7 +806,7 @@ export function AdminDevTools() {
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-bold uppercase tracking-wider text-blue-200 flex items-center gap-2">
                     <Loader className="w-4 h-4 animate-spin text-amber-300" />
-                    Memproses Pemindahan Stok Standar...
+                    Memproses Pemindahan Stok Standar Multi-Rak...
                   </span>
                   <span className="text-xs font-mono text-emerald-400 font-bold">
                     Langkah {operationProgress.completedSteps} dari {operationProgress.steps.length}
@@ -693,17 +826,17 @@ export function AdminDevTools() {
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
-              {/* KOLOM KIRI: FORM PINDAH BARANG (STANDAR) */}
-              <div className="lg:col-span-7 relative z-30">
+              {/* KOLOM KIRI: FORM PINDAH BARANG (MULTI-RAK STANDAR) */}
+              <div className="lg:col-span-8 relative z-30">
                 <Card className="border border-slate-200 shadow-md rounded-3xl overflow-visible bg-white relative z-30 min-h-[460px]">
                   <div className="p-6 border-b border-slate-100 bg-gradient-to-r from-blue-50/50 via-white to-indigo-50/30 flex items-center justify-between">
                     <div>
                       <h3 className="text-lg font-black text-slate-900 flex items-center gap-2">
                         <ArrowRightLeft className="h-5 w-5 text-blue-600" />
-                        <span>Form Pindah Barang (Standar)</span>
+                        <span>Form Pindah Barang (Standar Terpadu)</span>
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        Memindahkan stok antar-rak reguler dengan mempertahankan <strong>tanggal nota penerimaan awal supplier</strong>.
+                        Tarik semua macam rak &amp; sub rak sekaligus ke satu rak tujuan dengan mempertahankan <strong>tanggal nota penerimaan awal</strong>.
                       </p>
                     </div>
                     <span className="text-[11px] font-black px-3 py-1 bg-blue-100 text-blue-800 border border-blue-200 rounded-full uppercase tracking-wider shrink-0">
@@ -712,14 +845,14 @@ export function AdminDevTools() {
                   </div>
 
                   <CardContent className="p-6 space-y-5 overflow-visible">
-                    {/* INPUT 1: PILIH BARANG (SKU) */}
+                    {/* INPUT 1: PILIH BARANG (SKU DENGAN INFO SEMUA RAK & TOTAL) */}
                     <div className="relative z-30">
                       <div className="flex items-center justify-between mb-1.5">
                         <label className="text-xs font-bold text-slate-700 uppercase">
-                          Pilih Barang ({itemsWithAvailableStock.length.toLocaleString('id-ID')} Item Stok Tersedia)
+                          Pilih Barang ({skuGroupsForTransfer.length.toLocaleString('id-ID')} SKU dengan Stok Tersedia)
                         </label>
                         <span className="text-[11px] text-slate-400">
-                          {loading ? 'Memuat...' : 'Semua data tanpa batasan'}
+                          {loading ? 'Memuat...' : 'Mencari semua rak & total stok'}
                         </span>
                       </div>
 
@@ -732,7 +865,8 @@ export function AdminDevTools() {
                             setSearchTerm(e.target.value);
                             setShowItemDropdown(true);
                             if (!e.target.value) {
-                              setSelectedItem(null);
+                              setSelectedSkuGroup(null);
+                              setSelectedOriginRacks([]);
                             }
                           }}
                           onFocus={() => {
@@ -740,7 +874,7 @@ export function AdminDevTools() {
                             setHighlightedItemIndex(0);
                           }}
                           onKeyDown={handleItemKeyDown}
-                          placeholder="Ketik nama SKU / produk dengan stok tersedia..."
+                          placeholder="Ketik nama SKU / produk untuk melihat semua rak & total stok..."
                           className="w-full h-12 px-4 pr-10 border border-slate-300 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-xs bg-white text-sm font-medium text-slate-900"
                         />
 
@@ -748,9 +882,7 @@ export function AdminDevTools() {
                           <button
                             type="button"
                             onClick={() => {
-                              setSearchTerm('');
-                              setSelectedItem(null);
-                              setShowItemDropdown(false);
+                              clearTransferForm();
                             }}
                             className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 bg-rose-50 text-rose-500 hover:bg-rose-100 rounded-xl transition-all cursor-pointer"
                             title="Hapus pencarian"
@@ -759,31 +891,36 @@ export function AdminDevTools() {
                           </button>
                         )}
 
-                        {/* Autocomplete Dropdown List (Semua Data Tanpa Batasan 1000) */}
+                        {/* Autocomplete Dropdown List */}
                         {showItemDropdown && (
                           <div
                             ref={itemDropdownRef}
-                            className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-2xl shadow-2xl z-[9999] max-h-80 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-150 ring-1 ring-slate-900/10"
+                            className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-2xl shadow-2xl z-[9999] max-h-84 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-150 ring-1 ring-slate-900/10"
                           >
-                            {filteredItemsForTransfer.length > 0 ? (
-                              filteredItemsForTransfer.map((item, index) => (
+                            {filteredSkuGroupsForTransfer.length > 0 ? (
+                              filteredSkuGroupsForTransfer.map((group, index) => (
                                 <div
-                                  key={`${item.id}-${item.rak}-${index}`}
-                                  onClick={() => handleItemSelect(item)}
+                                  key={`${group.nama_produk}-${index}`}
+                                  onClick={() => handleSkuGroupSelect(group)}
                                   className={`px-4 py-3 text-sm cursor-pointer transition-colors flex items-center justify-between ${
                                     index === highlightedItemIndex ? 'bg-blue-50 text-blue-900' : 'hover:bg-slate-50'
                                   }`}
                                 >
                                   <div className="min-w-0 pr-3">
-                                    <div className="font-bold text-slate-900 truncate">{item.nama_produk}</div>
-                                    <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
-                                      <span className="px-2 py-0.5 bg-slate-100 rounded-md font-mono text-[11px] text-slate-700">Rak: {item.rak}</span>
-                                      {item.packing && <span>Packing: {item.packing}</span>}
+                                    <div className="font-bold text-slate-900 truncate">{group.nama_produk}</div>
+                                    <div className="text-xs text-slate-500 flex flex-wrap items-center gap-1.5 mt-0.5">
+                                      <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 font-bold rounded-md text-[11px] border border-indigo-200">
+                                        {group.rackCount} Lokasi Rak
+                                      </span>
+                                      <span className="text-[11px] text-slate-600 truncate max-w-[360px]" title={group.rackSummary}>
+                                        {group.rackSummary}
+                                      </span>
+                                      {group.packing && <span className="text-slate-400">| Packing: {group.packing}</span>}
                                     </div>
                                   </div>
                                   <div className="text-right shrink-0">
-                                    <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-xl border border-emerald-200">
-                                      {item.tersedia.toLocaleString('id-ID')} {item.satuan}
+                                    <span className="text-xs font-black text-emerald-700 bg-emerald-100 px-3 py-1.5 rounded-xl border border-emerald-300 block">
+                                      Total {group.totalTersedia.toLocaleString('id-ID')} {group.satuan}
                                     </span>
                                   </div>
                                 </div>
@@ -798,59 +935,155 @@ export function AdminDevTools() {
                       </div>
                     </div>
 
-                    {/* DETAIL BARANG TERPILIH & BADGE TGL NOTA MASUK */}
-                    {selectedItem && (
-                      <div className="p-4 bg-gradient-to-r from-emerald-50/70 to-blue-50/70 border border-emerald-200 rounded-2xl space-y-3">
-                        <div className="flex items-center justify-between flex-wrap gap-2">
-                          <span className="text-xs font-black text-emerald-900 uppercase tracking-wide flex items-center gap-1.5">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                            Barang Terpilih
-                          </span>
-
-                          {/* Badge Tgl Nota Masuk Terdeteksi */}
-                          {detectedReceiptDate && (
-                            <div className="inline-flex items-center gap-2 px-3 py-1 bg-white border border-blue-300 rounded-xl text-xs font-bold shadow-xs">
-                              {detectedReceiptDate.loading ? (
-                                <>
-                                  <RefreshCw className="h-3.5 w-3.5 animate-spin text-blue-600" />
-                                  <span className="text-blue-700">Mendeteksi Tgl Nota Asli...</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Calendar className="h-3.5 w-3.5 text-blue-600" />
-                                  <span className="text-slate-600">Tgl Nota Supplier:</span>
-                                  <span className="font-black text-blue-950 underline">{detectedReceiptDate.tgl}</span>
-                                </>
-                              )}
+                    {/* DETAIL BARANG TERPILIH & CHECKLIST SEMUA MACAM RAK */}
+                    {selectedSkuGroup && (
+                      <div className="p-5 bg-gradient-to-r from-emerald-50/70 via-blue-50/50 to-indigo-50/50 border border-emerald-200 rounded-3xl space-y-4">
+                        {/* Header Info SKU */}
+                        <div className="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-emerald-200/60">
+                          <div>
+                            <span className="text-xs font-black text-emerald-950 uppercase tracking-wide flex items-center gap-1.5">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                              Barang Terpilih: <strong className="text-blue-900 font-mono text-sm ml-1">{selectedSkuGroup.nama_produk}</strong>
+                            </span>
+                            <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-3">
+                              <span>Satuan: <strong>{selectedSkuGroup.satuan}</strong></span>
+                              <span>•</span>
+                              <span>Packing: <strong>{selectedSkuGroup.packing}</strong></span>
+                              <span>•</span>
+                              <span>Total Stok: <strong className="text-emerald-700 font-bold">{selectedSkuGroup.totalTersedia.toLocaleString('id-ID')} {selectedSkuGroup.satuan}</strong></span>
                             </div>
-                          )}
-                        </div>
-
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                          <div className="p-2 bg-white/80 rounded-xl border border-emerald-100">
-                            <span className="text-slate-400 block text-[10px] uppercase font-bold">Rak Asal</span>
-                            <span className="font-black text-slate-800 text-sm">{selectedItem.rak}</span>
                           </div>
-                          <div className="p-2 bg-white/80 rounded-xl border border-emerald-100">
-                            <span className="text-slate-400 block text-[10px] uppercase font-bold">Stok Tersedia</span>
-                            <span className="font-black text-emerald-700 text-sm">
-                              {selectedItem.tersedia.toLocaleString('id-ID')} {selectedItem.satuan}
+
+                          <div className="flex items-center gap-2">
+                            <span className="px-3 py-1 bg-white border border-emerald-300 rounded-xl text-xs font-black text-emerald-800 shadow-xs">
+                              {selectedOriginRacks.length} Lokasi Rak Ditemukan
                             </span>
                           </div>
-                          <div className="p-2 bg-white/80 rounded-xl border border-emerald-100">
-                            <span className="text-slate-400 block text-[10px] uppercase font-bold">Satuan</span>
-                            <span className="font-bold text-slate-800 text-sm">{selectedItem.satuan || 'PCS'}</span>
+                        </div>
+
+                        {/* Toolbar Checklist & Action */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 bg-white/90 p-3 rounded-2xl border border-slate-200 shadow-xs">
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleSelectAllRacks(!isAllRacksSelected)}
+                              className="flex items-center gap-2 text-xs font-black text-slate-800 hover:text-blue-600 cursor-pointer"
+                            >
+                              {isAllRacksSelected ? (
+                                <CheckSquare className="w-4 h-4 text-blue-600" />
+                              ) : (
+                                <Square className="w-4 h-4 text-slate-400" />
+                              )}
+                              <span>Pilih Semua Rak ({selectedOriginRacks.length})</span>
+                            </button>
                           </div>
-                          <div className="p-2 bg-white/80 rounded-xl border border-emerald-100">
-                            <span className="text-slate-400 block text-[10px] uppercase font-bold">Packing</span>
-                            <span className="font-bold text-slate-800 text-sm truncate block">{selectedItem.packing || '-'}</span>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={handleSetMaxAllSelectedRacks}
+                              className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs rounded-xl border border-blue-200 transition-colors cursor-pointer"
+                            >
+                              Gunakan Maksimal Semua Rak
+                            </button>
+
+                            <span className="px-3 py-1.5 bg-emerald-600 text-white font-black text-xs rounded-xl shadow-xs">
+                              Total Pindah: {totalQtyToMove.toLocaleString('id-ID')} {selectedSkuGroup.satuan}
+                            </span>
                           </div>
+                        </div>
+
+                        {/* Daftar Macam Rak & Sub Rak */}
+                        <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs max-h-72 overflow-y-auto">
+                          <table className="w-full text-xs text-left">
+                            <thead className="bg-slate-100 sticky top-0 border-b border-slate-200 text-slate-700 font-bold">
+                              <tr>
+                                <th className="p-3 w-10 text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={isAllRacksSelected}
+                                    onChange={(e) => handleToggleSelectAllRacks(e.target.checked)}
+                                    className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                  />
+                                </th>
+                                <th className="p-3">Lokasi Rak &amp; Sub Rak</th>
+                                <th className="p-3 text-center">Stok Tersedia</th>
+                                <th className="p-3 text-center w-40">Jumlah Pindah (PCS)</th>
+                                <th className="p-3 text-center">Tgl Nota Asli IN</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {selectedOriginRacks.map((rackState, idx) => {
+                                const it = rackState.stockItem;
+                                return (
+                                  <tr
+                                    key={`${it.id}-${it.rak}-${idx}`}
+                                    className={`transition-colors ${rackState.isSelected ? 'bg-blue-50/40 hover:bg-blue-50/70' : 'bg-slate-50/60 opacity-60 hover:opacity-90'}`}
+                                  >
+                                    <td className="p-3 text-center">
+                                      <input
+                                        type="checkbox"
+                                        checked={rackState.isSelected}
+                                        onChange={(e) => handleToggleRackSelection(idx, e.target.checked)}
+                                        className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                      />
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="font-bold text-slate-900 text-sm">{it.rak}</div>
+                                      {it.sub_rak && it.sub_rak !== it.rak && (
+                                        <div className="text-[10px] text-slate-500 italic mt-0.5">
+                                          Sub: {it.sub_rak}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td className="p-3 text-center font-bold text-emerald-700">
+                                      {it.tersedia.toLocaleString('id-ID')} {it.satuan}
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="flex items-center gap-1.5 justify-center">
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          max={it.tersedia}
+                                          disabled={!rackState.isSelected}
+                                          value={rackState.jumlahPindah === 0 ? '' : rackState.jumlahPindah}
+                                          onChange={(e) => handleSetRackJumlahPindah(idx, e.target.value)}
+                                          placeholder={`Maks ${it.tersedia}`}
+                                          className="w-24 h-9 px-2.5 text-center font-bold border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-xs disabled:bg-slate-100 disabled:text-slate-400"
+                                        />
+                                        <button
+                                          type="button"
+                                          disabled={!rackState.isSelected}
+                                          onClick={() => handleSetRackJumlahPindah(idx, it.tersedia)}
+                                          className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-[10px] transition-colors disabled:opacity-40 cursor-pointer"
+                                          title={`Gunakan maksimal ${it.tersedia}`}
+                                        >
+                                          Maks
+                                        </button>
+                                      </div>
+                                    </td>
+                                    <td className="p-3 text-center font-mono">
+                                      {rackState.detectedReceiptDate.loading ? (
+                                        <span className="inline-flex items-center gap-1 text-[11px] text-blue-600 animate-pulse">
+                                          <RefreshCw className="w-3 h-3 animate-spin" /> Mendeteksi...
+                                        </span>
+                                      ) : (
+                                        <span className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-800 shadow-xs">
+                                          {rackState.detectedReceiptDate.tgl_scan || rackState.detectedReceiptDate.tgl || '-'}
+                                        </span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     )}
 
-                    {/* INPUT 2: RAK TUJUAN */}
-                    {selectedItem && (
+                    {/* INPUT 2: RAK TUJUAN (TETAP SEPERTI BIASA) */}
+                    {selectedSkuGroup && (
                       <div className="relative z-20">
                         <label className="block text-xs font-bold text-slate-700 uppercase mb-1.5">
                           Rak Tujuan
@@ -862,7 +1095,7 @@ export function AdminDevTools() {
                             value={moveData.rak_tujuan}
                             onChange={(e) => {
                               const upperValue = e.target.value.toUpperCase().trimEnd();
-                              setMoveData(prev => ({ ...prev, rak_tujuan: upperValue }));
+                              setMoveData({ rak_tujuan: upperValue });
                               setShowRakTujuanDropdown(true);
                               setIsRakTujuanValidated(false);
                             }}
@@ -879,7 +1112,7 @@ export function AdminDevTools() {
                             <button
                               type="button"
                               onClick={() => {
-                                setMoveData(prev => ({ ...prev, rak_tujuan: '' }));
+                                setMoveData({ rak_tujuan: '' });
                                 setShowRakTujuanDropdown(false);
                                 setIsRakTujuanValidated(false);
                               }}
@@ -935,42 +1168,6 @@ export function AdminDevTools() {
                       </div>
                     )}
 
-                    {/* INPUT 3: JUMLAH PINDAH */}
-                    {selectedItem && (
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="text-xs font-bold text-slate-700 uppercase">
-                            Jumlah Pindah ({selectedItem.satuan || 'PCS'})
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => setMoveData(prev => ({ ...prev, jumlah_pindah: selectedItem.tersedia }))}
-                            className="text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors cursor-pointer"
-                          >
-                            Gunakan Maksimal ({selectedItem.tersedia})
-                          </button>
-                        </div>
-
-                        <input
-                          type="number"
-                          min="1"
-                          max={selectedItem.tersedia}
-                          value={moveData.jumlah_pindah}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            if (val === '') {
-                              setMoveData(prev => ({ ...prev, jumlah_pindah: '' }));
-                            } else {
-                              const parsed = parseInt(val, 10);
-                              setMoveData(prev => ({ ...prev, jumlah_pindah: isNaN(parsed) ? '' : parsed }));
-                            }
-                          }}
-                          placeholder={`Maksimal ${selectedItem.tersedia} ${selectedItem.satuan}`}
-                          className="w-full h-12 px-4 border border-slate-300 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-xs bg-white text-sm font-semibold text-slate-900"
-                        />
-                      </div>
-                    )}
-
                     {/* TOMBOL AKSI FORM */}
                     <div className="pt-2 flex flex-col sm:flex-row gap-3">
                       <Button
@@ -985,26 +1182,26 @@ export function AdminDevTools() {
 
                       <Button
                         type="button"
-                        onClick={handleStandardTransfer}
+                        onClick={handleMultiRackStandardTransfer}
                         disabled={
                           submitting ||
-                          !selectedItem ||
+                          !selectedSkuGroup ||
                           !moveData.rak_tujuan ||
                           !isRakTujuanValidated ||
-                          moveData.jumlah_pindah === '' ||
-                          Number(moveData.jumlah_pindah) <= 0
+                          selectedRacksToMove.length === 0 ||
+                          totalQtyToMove <= 0
                         }
-                        className="flex-1 h-12 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black rounded-2xl shadow-lg shadow-blue-500/25 active:scale-95 transition-all flex items-center justify-center gap-2 border border-white/20 disabled:opacity-50 cursor-pointer text-xs sm:text-sm uppercase tracking-wider"
+                        className="flex-1 h-12 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 text-white font-black rounded-2xl shadow-lg shadow-blue-500/25 active:scale-95 transition-all flex items-center justify-center gap-2 border border-white/20 disabled:opacity-50 cursor-pointer text-xs sm:text-sm uppercase tracking-wider"
                       >
                         {submitting ? (
                           <>
                             <Loader className="h-4 w-4 animate-spin text-white" />
-                            <span>Memindahkan Data...</span>
+                            <span>Memindahkan {selectedRacksToMove.length} Rak...</span>
                           </>
                         ) : (
                           <>
                             <Send className="h-4 w-4" />
-                            <span>Pindahkan (Tgl Nota Asli)</span>
+                            <span>Pindahkan Semua ({totalQtyToMove.toLocaleString('id-ID')} PCS dari {selectedRacksToMove.length} Rak)</span>
                           </>
                         )}
                       </Button>
@@ -1013,13 +1210,13 @@ export function AdminDevTools() {
                 </Card>
               </div>
 
-              {/* KOLOM KANAN: RINGKASAN & LOGIKA TRANSFER STANDAR */}
-              <div className="lg:col-span-5 space-y-5">
+              {/* KOLOM KANAN: RINGKASAN & SIMULASI MULTI-RAK */}
+              <div className="lg:col-span-4 space-y-5">
                 <Card className="border border-slate-200 shadow-sm rounded-3xl overflow-hidden bg-white">
                   <div className="p-6 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
                     <h4 className="text-sm font-black text-slate-800 uppercase flex items-center gap-2">
                       <Scale className="w-4 h-4 text-blue-600" />
-                      Prinsip Logika Transfer Standar
+                      Prinsip Transfer Multi-Rak
                     </h4>
                     <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md">
                       Anti-Anomali
@@ -1030,40 +1227,52 @@ export function AdminDevTools() {
                     <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-2xl text-blue-900 space-y-1">
                       <p className="font-bold flex items-center gap-1.5">
                         <Clock className="w-3.5 h-3.5 text-blue-600" />
-                        Logika Pemindahan Terpisah (Admin &amp; Dev Tools)
+                        Logika Pemindahan Terpadu (Admin &amp; Dev Tools)
                       </p>
                       <p className="text-[11px] text-blue-800">
-                        Proses ini mencatat data <strong>OUT</strong> dengan tanggal nota sekarang (real-time) dan tanggal scan sesuai nota asli penerimaan IN awal supplier. Sedangkan data <strong>IN</strong> dicatat dengan tanggal nota dan tanggal scan sekarang (real-time).
+                        Memindahkan seluruh stok dari beragam rak (seperti sub rak A1, D7, LORONG-1, ECER-M, LANTAI 2, dsb.) sekaligus ke satu rak tujuan dengan mempertahankan tanggal nota asli masing-masing rak.
                       </p>
                     </div>
 
                     <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
-                      <p className="font-bold text-slate-800 text-[11px] uppercase">Alur Pemindahan Otomatis:</p>
+                      <p className="font-bold text-slate-800 text-[11px] uppercase">Alur Pemindahan Terpadu:</p>
                       <ul className="space-y-1.5 text-slate-600 text-[11px]">
                         <li className="flex items-start gap-1.5">
                           <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
-                          <span>Mencatat <strong>1x OUT</strong> di rak asal dengan tgl nota: <strong>Hari Ini (Real-Time)</strong> &amp; tgl scan: <strong>Tgl Nota Asli IN</strong>.</span>
+                          <span>Mencatat <strong>1x OUT</strong> untuk setiap rak asal dengan tgl scan nota asli masing-masing.</span>
                         </li>
                         <li className="flex items-start gap-1.5">
                           <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
-                          <span>Mencatat <strong>1x IN</strong> di rak tujuan dengan tgl nota: <strong>Hari Ini (Real-Time)</strong> &amp; tgl scan: <strong>Hari Ini (Real-Time)</strong>.</span>
+                          <span>Mencatat <strong>1x IN</strong> di rak tujuan dengan tanggal nota dan scan hari ini (real-time).</span>
                         </li>
                         <li className="flex items-start gap-1.5">
                           <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
-                          <span>Mengurangi stok tersedia di rak asal &amp; menambah stok di rak tujuan.</span>
+                          <span>Mengurangi stok asal di masing-masing rak &amp; mengakumulasikan total di rak tujuan.</span>
                         </li>
                       </ul>
                     </div>
 
-                    {selectedItem && (
-                      <div className="p-4 bg-purple-50 border border-purple-200 rounded-2xl space-y-2">
+                    {selectedSkuGroup && (
+                      <div className="p-4 bg-purple-50 border border-purple-200 rounded-2xl space-y-2.5">
                         <p className="font-bold text-purple-900 text-xs flex items-center gap-1.5">
                           <Package className="w-4 h-4 text-purple-700" />
-                          Simulasi Perpindahan:
+                          Simulasi Rincian Transfer:
                         </p>
-                        <div className="text-[11px] text-purple-900 space-y-1 font-mono">
-                          <div>• Dari: <strong>{selectedItem.rak}</strong> (Sisa: {Math.max(0, selectedItem.tersedia - (Number(moveData.jumlah_pindah) || 0))} {selectedItem.satuan})</div>
-                          <div>• Ke: <strong>{moveData.rak_tujuan || '[Pilih Rak Tujuan]'}</strong> (+{moveData.jumlah_pindah || 0} {selectedItem.satuan})</div>
+                        <div className="text-[11px] text-purple-900 space-y-1.5">
+                          <div className="font-semibold text-slate-800">
+                            • Total Pindah: <strong>{totalQtyToMove.toLocaleString('id-ID')} {selectedSkuGroup.satuan}</strong> dari <strong>{selectedRacksToMove.length}</strong> lokasi rak:
+                          </div>
+                          <div className="max-h-40 overflow-y-auto space-y-1 pl-2 font-mono text-[10px] text-purple-950">
+                            {selectedRacksToMove.map((r, i) => (
+                              <div key={i} className="flex justify-between items-center bg-white/70 px-2 py-1 rounded border border-purple-200/50">
+                                <span>{r.stockItem.rak}:</span>
+                                <strong>-{r.jumlahPindah} {selectedSkuGroup.satuan}</strong>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="pt-1 border-t border-purple-200/60 font-semibold text-purple-950">
+                            • Menuju ke: <strong className="text-blue-900 underline">{moveData.rak_tujuan || '[Pilih Rak Tujuan]'}</strong> (+{totalQtyToMove.toLocaleString('id-ID')} {selectedSkuGroup.satuan})
+                          </div>
                         </div>
                       </div>
                     )}
